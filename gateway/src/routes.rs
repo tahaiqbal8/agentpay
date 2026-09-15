@@ -17,6 +17,7 @@ use solana_signer::Signer;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::chain::{verify_on_chain_session, ClaimedSession, SessionAccountFetcher, SessionVerificationError};
 use crate::claim::ClaimWire;
 use crate::db::Database;
 use crate::error::{Denial, ReasonCode};
@@ -39,6 +40,9 @@ pub struct AppState {
     /// None when running verify-only with no signing key configured.
     pub rpc: Option<Arc<RpcClient>>,
     pub provider_keypair: Option<Arc<Keypair>>,
+    /// Reads `Session` accounts for `/v1/session/open` reconciliation.
+    /// `None` only when reconciliation is explicitly disabled.
+    pub session_fetcher: Option<Arc<dyn SessionAccountFetcher>>,
 }
 
 impl AppState {
@@ -61,6 +65,22 @@ fn request_id() -> String {
 
 fn hex32(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn reconciliation_code(e: &SessionVerificationError) -> ReasonCode {
+    match e {
+        SessionVerificationError::AccountNotFound => ReasonCode::ERR_SESSION_ACCOUNT_NOT_FOUND,
+        SessionVerificationError::DepositMismatch { .. } => ReasonCode::ERR_DEPOSIT_MISMATCH,
+        SessionVerificationError::FieldMismatch { .. } => ReasonCode::ERR_SESSION_FIELD_MISMATCH,
+        SessionVerificationError::AlreadySettled => ReasonCode::ERR_SESSION_SETTLED,
+        SessionVerificationError::WrongProgramOwner { .. }
+        | SessionVerificationError::InvalidAccountData(_)
+        | SessionVerificationError::NotASessionAccount => {
+            ReasonCode::ERR_NOT_A_SESSION_ACCOUNT
+        }
+        // Fail closed: an unreachable node denies rather than trusting input.
+        SessionVerificationError::RpcUnavailable => ReasonCode::ERR_CHAIN_UNAVAILABLE,
+    }
 }
 
 fn store_denial(e: StoreError, rid: &str) -> Denial {
@@ -146,11 +166,50 @@ pub async fn open_session(
         return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
     };
 
-    // NOTE: this records what the caller *claims* the session is. It is not yet
-    // reconciled against the on-chain Session account, so a caller could
-    // overstate deposited_total and get claims admitted that settlement would
-    // later reject. Reconciliation lands with the RPC client; until then this
-    // endpoint is trusted-input. Tracked in docs/decisions.md D8.
+    // Reconcile against the chain before believing any of it (D8). Without
+    // this the endpoint mints credit: a caller could assert a deposit that was
+    // never escrowed and have claims authorised against it.
+    match &state.session_fetcher {
+        Some(fetcher) => {
+            let claimed = ClaimedSession {
+                agent,
+                provider,
+                mint,
+                deposited_total,
+                expires_at,
+            };
+            let account = verify_on_chain_session(
+                fetcher.as_ref(),
+                &state.program_id,
+                &session,
+                &claimed,
+            )
+            .await
+            .map_err(|e| {
+                warn!(
+                    request_id = %rid,
+                    session = %session,
+                    error = %e,
+                    "on-chain reconciliation refused this session"
+                );
+                Denial::new(reconciliation_code(&e), &rid)
+            })?;
+            info!(
+                request_id = %rid,
+                session = %session,
+                on_chain_deposit = account.deposited_total,
+                "session reconciled against chain"
+            );
+        }
+        None => {
+            warn!(
+                request_id = %rid,
+                session = %session,
+                "AGENTPAY_TRUST_OPEN_REQUESTS is set: accepting unverified session claims"
+            );
+        }
+    }
+
     let record = SessionRecord::new(
         session,
         agent,

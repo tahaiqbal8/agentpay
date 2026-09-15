@@ -29,6 +29,13 @@ pub struct Config {
     /// not survive a restart. That fallback is a development convenience and is
     /// warned about loudly at boot; production must set this.
     pub database_url: Option<String>,
+    /// Disables on-chain reconciliation in `/v1/session/open`.
+    ///
+    /// Named for what it does rather than for the convenience it buys. With
+    /// this set the gateway believes whatever a caller asserts about a session,
+    /// including a deposit that was never escrowed, so claims get authorised
+    /// against credit that does not exist. Development only.
+    pub trust_open_requests: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +78,8 @@ impl Config {
 
         let provider_keypair_path = std::env::var("AGENTPAY_PROVIDER_KEYPAIR").ok();
         let database_url = std::env::var("DATABASE_URL").ok();
+        let trust_open_requests =
+            std::env::var("AGENTPAY_TRUST_OPEN_REQUESTS").is_ok_and(|v| v == "1");
 
         Ok(Self {
             bind_addr,
@@ -78,6 +87,7 @@ impl Config {
             program_id,
             provider_keypair_path,
             database_url,
+            trust_open_requests,
         })
     }
 }

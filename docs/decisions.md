@@ -92,14 +92,61 @@ availability and policy, not for custody") survives.
 end up, but it requires a provider-side signing service and a callback protocol
 that does not exist yet. Recorded as future work rather than pretended.
 
-## D8 — `/v1/session/open` trusts its input
+## D8 — `/v1/session/open` is reconciled against the chain — CLOSED
 
-`deposited_total`, `agent`, `provider`, and `mint` are taken from the request and
-are **not** reconciled against the on-chain `Session` account. A caller that
-overstates `deposited_total` gets claims admitted that settlement would then
-reject on-chain, because the program enforces `cumulative <= deposited_total`
-itself. So the failure mode is a wasted resource, not stolen funds — but it is a
-real gap, and the fix is to fetch and verify the session account at open time.
+**Was:** `deposited_total`, `agent`, `provider`, and `mint` were taken from the
+request and never checked, so a caller could assert a deposit that was never
+escrowed and have claims authorised against credit that does not exist.
+
+**Now:** the handler reads the `Session` account from Solana and refuses
+anything that disagrees. Reconciled: `deposited_total`, `agent`, `provider`,
+`mint`, `expires_at`, plus `is_settled` and the account's owning program.
+
+**Every field is checked, not just the deposit.** `agent` is the sharpest of
+them: claim signatures are verified against the recorded agent key, so a
+caller-supplied agent would let an attacker open tracking under a key they
+control and have the gateway authorise claims the chain can never settle. The
+provider would deliver the resource for nothing. The deposit bounds how much
+credit can be invented; the agent decides *who* can invent it.
+
+**The owner check is not optional.** Without it an attacker could deploy their
+own program, create an account carrying the right discriminator and any values
+they like, and have the gateway treat it as a funded session.
+
+**Fails closed.** An unreachable RPC returns `ERR_CHAIN_UNAVAILABLE` and refuses
+the open. "Could not verify" is never allowed to mean "assume true".
+
+## D16 — `AGENTPAY_TRUST_OPEN_REQUESTS` exists and is named for its danger
+
+Reconciliation requires every session to exist on chain, which makes purely
+local testing against synthetic pubkeys impossible. The escape hatch is
+`AGENTPAY_TRUST_OPEN_REQUESTS=1`, deliberately named for what it does rather
+than the convenience it buys, warned about at boot and on every open that uses
+it. `tests/gateway-smoke.ts` is the only thing that needs it.
+
+## D17 — The `Session` account is parsed by hand, not with `AnchorDeserialize`
+
+**Chosen:** explicit byte offsets, with a test that parses real bytes fetched
+from a devnet account.
+
+**Rejected — `#[derive(AnchorDeserialize)]`.** `anchor-lang` pins the
+`solana-program` 3.x tree while the gateway is built on the 4.x split crates
+`solana-client` requires (see D10's neighbour note on the workspace split).
+Pulling Anchor in would either fail to resolve or build a second, incompatible
+`Pubkey` type.
+
+**The layout in the original brief was wrong, and would have failed silently.**
+It proposed `owner, session_pubkey, deposited_total, settled_amount, state: u8,
+nonce: u64`. The deployed account is
+`agent, provider, mint, vault, deposited_total, cumulative_settled,
+refunded_total, expires_at, session_id, bump, vault_bump, is_settled` — 187
+bytes. Because every field is fixed-size, Borsh would have deserialized the
+wrong layout *without error*, reading `deposited_total` from inside `mint`. On a
+real account holding 2,000,000 micro-USDC it would have reported
+`835041178529265003`. That is pinned by
+`the_naive_layout_would_have_read_garbage` so the failure mode stays visible.
+
+
 
 ## D9 — `claim_tickets` is a high-water mark, not an audit log
 
@@ -410,6 +457,26 @@ silently counted as "not admitted". Two fixes: genuinely random pubkeys, and
 counting admitted / rejected / errored separately so a future failure is
 diagnosable rather than ambiguous. It now asserts exactly 1 admitted, 15
 refused, 0 errors, and passes 20/20 in isolation.
+
+### On-chain reconciliation — proven on devnet
+
+One real escrow session, then ten registration attempts:
+
+```
+400  deposit inflated 100x                   ERR_DEPOSIT_MISMATCH
+400  deposit understated                     ERR_DEPOSIT_MISMATCH
+400  agent key substituted                   ERR_SESSION_FIELD_MISMATCH
+400  provider substituted                    ERR_SESSION_FIELD_MISMATCH
+400  mint substituted                        ERR_SESSION_FIELD_MISMATCH
+400  expiry extended by a day                ERR_SESSION_FIELD_MISMATCH
+404  session never opened on chain           ERR_SESSION_ACCOUNT_NOT_FOUND
+400  address owned by another program        ERR_NOT_A_SESSION_ACCOUNT
+200  all fields match the chain              OK
+409  duplicate open                          ERR_SESSION_ALREADY_OPEN
+```
+
+101 tests pass with a database; 83 hermetically without one — the reconciliation
+tests use a mock fetcher, so no cluster is needed to run them.
 
 ### Evidence log — proven end to end on devnet
 

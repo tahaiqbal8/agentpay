@@ -9,7 +9,8 @@
     "smoke": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/gateway-smoke.ts",
     "settle-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/settle-devnet.ts",
     "restart-test": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/restart-durability.ts",
-    "evidence-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/evidence-devnet.ts"
+    "evidence-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/evidence-devnet.ts",
+    "reconcile-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/reconcile-devnet.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

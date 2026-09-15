@@ -41,6 +41,13 @@ pub enum ReasonCode {
     ERR_SETTLEMENT_UNAVAILABLE,
     ERR_SETTLEMENT_FAILED,
 
+    // --- on-chain reconciliation ---
+    ERR_SESSION_ACCOUNT_NOT_FOUND,
+    ERR_DEPOSIT_MISMATCH,
+    ERR_SESSION_FIELD_MISMATCH,
+    ERR_NOT_A_SESSION_ACCOUNT,
+    ERR_CHAIN_UNAVAILABLE,
+
     // --- evidence log ---
     ERR_EVIDENCE_UNAVAILABLE,
     ERR_EVIDENCE_NOT_FOUND,
@@ -67,6 +74,11 @@ impl ReasonCode {
             Self::ERR_WRONG_PROVIDER_KEY => "ERR_WRONG_PROVIDER_KEY",
             Self::ERR_SETTLEMENT_UNAVAILABLE => "ERR_SETTLEMENT_UNAVAILABLE",
             Self::ERR_SETTLEMENT_FAILED => "ERR_SETTLEMENT_FAILED",
+            Self::ERR_SESSION_ACCOUNT_NOT_FOUND => "ERR_SESSION_ACCOUNT_NOT_FOUND",
+            Self::ERR_DEPOSIT_MISMATCH => "ERR_DEPOSIT_MISMATCH",
+            Self::ERR_SESSION_FIELD_MISMATCH => "ERR_SESSION_FIELD_MISMATCH",
+            Self::ERR_NOT_A_SESSION_ACCOUNT => "ERR_NOT_A_SESSION_ACCOUNT",
+            Self::ERR_CHAIN_UNAVAILABLE => "ERR_CHAIN_UNAVAILABLE",
             Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
             Self::ERR_EVIDENCE_NOT_FOUND => "ERR_EVIDENCE_NOT_FOUND",
             Self::ERR_STORE_UNAVAILABLE => "ERR_STORE_UNAVAILABLE",
@@ -105,6 +117,21 @@ impl ReasonCode {
             Self::ERR_SETTLEMENT_FAILED => {
                 "The settlement transaction could not be submitted or confirmed."
             }
+            Self::ERR_SESSION_ACCOUNT_NOT_FOUND => {
+                "No escrow session exists on chain at that address."
+            }
+            Self::ERR_DEPOSIT_MISMATCH => {
+                "The deposit in the request does not match the escrowed amount on chain."
+            }
+            Self::ERR_SESSION_FIELD_MISMATCH => {
+                "A session field in the request does not match the on-chain account."
+            }
+            Self::ERR_NOT_A_SESSION_ACCOUNT => {
+                "That address does not hold an AgentPay session account."
+            }
+            Self::ERR_CHAIN_UNAVAILABLE => {
+                "The session could not be verified against the chain, so it was refused."
+            }
             Self::ERR_EVIDENCE_UNAVAILABLE => {
                 "The evidence log could not be read, so no root could be produced."
             }
@@ -120,7 +147,13 @@ impl ReasonCode {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::ERR_MALFORMED_CLAIM | Self::ERR_MALFORMED_REQUEST => StatusCode::BAD_REQUEST,
-            Self::ERR_SESSION_UNKNOWN => StatusCode::NOT_FOUND,
+            Self::ERR_SESSION_UNKNOWN | Self::ERR_SESSION_ACCOUNT_NOT_FOUND => {
+                StatusCode::NOT_FOUND
+            }
+            Self::ERR_DEPOSIT_MISMATCH
+            | Self::ERR_SESSION_FIELD_MISMATCH
+            | Self::ERR_NOT_A_SESSION_ACCOUNT => StatusCode::BAD_REQUEST,
+            Self::ERR_CHAIN_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
             Self::ERR_SESSION_ALREADY_OPEN => StatusCode::CONFLICT,
             Self::ERR_INVALID_SIGNATURE => StatusCode::UNAUTHORIZED,
             // Every other denial is a policy/state decision, not a client error.
@@ -222,6 +255,11 @@ mod tests {
             ReasonCode::ERR_WRONG_PROVIDER_KEY,
             ReasonCode::ERR_SETTLEMENT_UNAVAILABLE,
             ReasonCode::ERR_SETTLEMENT_FAILED,
+            ReasonCode::ERR_SESSION_ACCOUNT_NOT_FOUND,
+            ReasonCode::ERR_DEPOSIT_MISMATCH,
+            ReasonCode::ERR_SESSION_FIELD_MISMATCH,
+            ReasonCode::ERR_NOT_A_SESSION_ACCOUNT,
+            ReasonCode::ERR_CHAIN_UNAVAILABLE,
             ReasonCode::ERR_EVIDENCE_UNAVAILABLE,
             ReasonCode::ERR_EVIDENCE_NOT_FOUND,
             ReasonCode::ERR_STORE_UNAVAILABLE,

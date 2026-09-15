@@ -1,6 +1,11 @@
 /**
  * Live smoke test against a running gateway.
  * Signs real claims with a real Ed25519 key and walks the claim ladder.
+ *
+ * Uses synthetic session pubkeys that do not exist on chain, so the gateway
+ * must be started with AGENTPAY_TRUST_OPEN_REQUESTS=1 to skip reconciliation.
+ * That flag is development-only; see docs/decisions.md D16. For the real path,
+ * use `npm run reconcile-devnet`.
  */
 import { Keypair, PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";

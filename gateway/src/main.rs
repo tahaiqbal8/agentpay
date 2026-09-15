@@ -8,6 +8,7 @@
 //! enforcement, never for custody. It holds no keys that can move funds beyond
 //! what the escrow program's on-chain constraints already permit.
 
+mod chain;
 mod claim;
 mod config;
 mod db;
@@ -34,6 +35,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::routes::{system_clock, AppState};
+use crate::chain::{RpcSessionFetcher, SessionAccountFetcher};
 use crate::db::Database;
 use crate::state::{InMemorySessionStore, SessionStore};
 
@@ -132,12 +134,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let rpc = provider_keypair.as_ref().map(|_| {
-        Arc::new(RpcClient::new_with_commitment(
-            config.rpc_url.clone(),
-            settle::commitment(),
-        ))
-    });
+    // One RPC client, shared. Previously this was created only when a provider
+    // keypair existed, which tied reading the chain to being able to settle;
+    // reconciliation needs to read regardless.
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        config.rpc_url.clone(),
+        settle::commitment(),
+    ));
+
+    let session_fetcher: Option<Arc<dyn SessionAccountFetcher>> = if config.trust_open_requests {
+        warn!(
+            "AGENTPAY_TRUST_OPEN_REQUESTS=1: /v1/session/open will NOT be reconciled \
+             against the chain. A caller can assert a deposit that was never escrowed \
+             and have claims authorised against credit that does not exist. \
+             Development only."
+        );
+        None
+    } else {
+        info!("on-chain session reconciliation enabled");
+        Some(Arc::new(RpcSessionFetcher::new(Arc::clone(&rpc))))
+    };
 
     let state = Arc::new(AppState {
         store,
@@ -145,8 +161,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         durable_state: durable,
         program_id: config.program_id,
         clock: Arc::new(system_clock),
-        rpc,
+        // Settlement additionally needs a signing key; without one it stays
+        // verify-only even though the RPC client exists.
+        rpc: provider_keypair.as_ref().map(|_| Arc::clone(&rpc)),
         provider_keypair,
+        session_fetcher,
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
