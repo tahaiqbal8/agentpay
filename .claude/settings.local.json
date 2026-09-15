@@ -22,7 +22,8 @@
       "Bash(echo \"exit: $?\")",
       "Bash(chmod +x scripts/deploy-devnet.sh)",
       "Bash(./scripts/deploy-devnet.sh)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }

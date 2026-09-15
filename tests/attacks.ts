@@ -21,8 +21,11 @@ import {
   expectAnchorError,
   expectRawError,
   Fixture,
+  isLocalCluster,
+  makeProvider,
   ONE_USDC,
   sleep,
+  throttle,
   USDC_DECIMALS,
   withRpcRetry,
 } from "./helpers";
@@ -55,7 +58,18 @@ interface SettleOpts {
   merkleRoot?: number[];
 }
 
+/**
+ * Retries only transport failures; a program error propagates untouched, so the
+ * attack assertions still see exactly what the chain returned.
+ */
 async function settle(f: Fixture, opts: SettleOpts): Promise<string> {
+  return await withRpcRetry("settle", async () => {
+    await throttle(env.connection);
+    return await settleOnce(f, opts);
+  });
+}
+
+async function settleOnce(f: Fixture, opts: SettleOpts): Promise<string> {
   const nonce = opts.nonce ?? 1n;
   const claimExpiresAt =
     opts.claimExpiresAt ?? (await chainTime(env.connection)) + 600;
@@ -120,6 +134,16 @@ async function refund(
   f: Fixture,
   opts?: { caller?: Keypair; agentTokenAccount?: PublicKey; mint?: PublicKey }
 ): Promise<string> {
+  return await withRpcRetry("refund", async () => {
+    await throttle(env.connection);
+    return await refundOnce(f, opts);
+  });
+}
+
+async function refundOnce(
+  f: Fixture,
+  opts?: { caller?: Keypair; agentTokenAccount?: PublicKey; mint?: PublicKey }
+): Promise<string> {
   const caller = opts?.caller ?? f.agent;
   return await program.methods
     .refundSession()
@@ -136,11 +160,12 @@ async function refund(
 }
 
 before(async function () {
-  this.timeout(120_000);
-  const anchorProvider = anchor.AnchorProvider.env();
+  this.timeout(300_000);
+  const anchorProvider = makeProvider();
   anchor.setProvider(anchorProvider);
   const idl = require("../target/idl/agentpay.json");
   program = new anchor.Program(idl, anchorProvider);
+  console.log(`    cluster: ${anchorProvider.connection.rpcEndpoint}`);
   env = await Env.create(program, anchorProvider);
 });
 
@@ -479,21 +504,33 @@ describe("expiry behaviour", () => {
   let expiredForRecovery: Fixture;
 
   before(async function () {
-    this.timeout(180_000);
+    this.timeout(600_000);
+
+    // The session must still be unexpired when `open_session` actually lands.
+    // On a public cluster, 429 backoff can burn tens of seconds between reading
+    // the chain clock and the transaction executing; a 3s window (fine locally)
+    // arrives already expired and fails with ExpiryInPast.
+    const margin = isLocalCluster(env.connection) ? 3 : 90;
+
     expiredForSettle = await env.newFixture();
-    expiredForSettle.expiresAt = (await chainTime(env.connection)) + 3;
+    expiredForSettle.expiresAt = (await chainTime(env.connection)) + margin;
     await env.openSession(expiredForSettle);
 
     expiredForRecovery = await env.newFixture({ deposit: 3n * ONE_USDC });
-    expiredForRecovery.expiresAt = (await chainTime(env.connection)) + 3;
+    expiredForRecovery.expiresAt = (await chainTime(env.connection)) + margin;
     await env.openSession(expiredForRecovery);
 
-    // Must exceed expires_at + CLOCK_SKEW_TOLERANCE_SECS on the chain clock.
-    while (
-      (await chainTime(env.connection)) <=
-      expiredForRecovery.expiresAt + CLOCK_SKEW_TOLERANCE_SECS + 2
-    ) {
-      await sleep(2000);
+    // Both sessions must be past expires_at + CLOCK_SKEW_TOLERANCE_SECS on the
+    // chain clock (the later of the two governs).
+    const target =
+      Math.max(expiredForSettle.expiresAt, expiredForRecovery.expiresAt) +
+      CLOCK_SKEW_TOLERANCE_SECS +
+      2;
+    let t = await chainTime(env.connection);
+    console.log(`    waiting ~${Math.max(0, target - t)}s for sessions to expire`);
+    while (t <= target) {
+      await sleep(3000);
+      t = await chainTime(env.connection);
     }
   });
 

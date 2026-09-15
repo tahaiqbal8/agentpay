@@ -161,6 +161,53 @@ remains defence-in-depth for a future multi-settle design, as D2 says — but no
 test currently proves it orders two non-zero claims correctly, and none can
 until multi-settle exists.
 
+### Devnet verification — Solana v4.3.0-rc.0
+
+The same 24 tests plus the diagnostics were re-run against public devnet, whose
+cluster runtime is **v4.3.0-rc.0** — a different minor version from the local
+validator (4.1.2) that the program was developed against.
+
+| | Localnet 4.1.2 | Devnet 4.3.0-rc.0 |
+|---|---|---|
+| Attack suite | 24 passing | **24 passing** |
+| Ed25519 header offsets | 48 / 16 / 112, size 73 | **identical** |
+| Instruction-index sentinels | 65535 × 3 | **identical** |
+| Double settle | `Allocate: … already in use` | **identical** |
+| Precompile accepts indirect reference | yes | **yes** |
+
+Deployment:
+
+- Program: `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`
+- ProgramData: `8yRjSoqWWpwbUsKtXAEAzrymYaqawHDith8e6BVY53Xw`
+- Deploy signature: `32umQj6KRURYVUSd1MQZo2XQeLYUu2k5BGfNGFUunVAZcdjJFPSghydvXXDt7nVXzQrn9cjpyuFhctNKbdXWaTRt`
+- Slot 498755700, 243560 bytes, upgrade authority `78Q6uycb…d3VHc`
+
+The version-skew question the run was meant to answer: **the precompile contract
+did not change between 4.1.2 and 4.3.0-rc.0.** In particular 4.3.0-rc.0 still
+*accepts* an Ed25519 instruction whose index fields name an instruction
+explicitly rather than using the `u16::MAX` sentinel, which is what keeps
+`verify_ed25519_claim` load-bearing rather than redundant. Compute for
+`settle_session` rose from 7,955 CU (local) to 12,455 CU (devnet) — same
+program, so this is runtime metering differences, not a code change. Both are
+far inside the 203,000 CU budget.
+
+### Public-cluster test harness
+
+Devnet exposed two harness bugs that localnet could not:
+
+1. `.rpc()` calls were not wrapped in `withRpcRetry`, so `429` and
+   `Blockhash not found` surfaced as *test* failures and looked like security
+   failures. Now wrapped, with throttling between transactions
+   (`PUBLIC_RPC_THROTTLE_MS`, default 400ms). The retry predicate still refuses
+   to retry anything carrying an Anchor error code, so an attack assertion can
+   never be masked by a retry.
+2. The expiry fixtures used a 3-second window, which is fine locally but arrives
+   already expired on devnet once rate-limit backoff is counted — it failed with
+   `ExpiryInPast`. The window is now cluster-dependent (3s local, 90s public).
+
+`AnchorProvider.env()` defaults to `processed` commitment; the suite now builds
+its provider at `confirmed`, which removed most spurious blockhash errors.
+
 ### Not covered by this suite
 
 - Concurrent duplicate settlement (the gateway-side dedup hazard). That is an

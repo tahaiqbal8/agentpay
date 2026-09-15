@@ -17,13 +17,23 @@ import {
   chainTime,
   decodeEd25519Header,
   Env,
+  makeProvider,
   ONE_USDC,
+  throttle,
+  withRpcRetry,
 } from "./helpers";
 
 let env: Env;
 let program: Program<any>;
 
 async function rawSettle(f: any, cumulative: bigint, nonce: bigint) {
+  return await withRpcRetry("rawSettle", async () => {
+    await throttle(env.connection);
+    return await rawSettleOnce(f, cumulative, nonce);
+  });
+}
+
+async function rawSettleOnce(f: any, cumulative: bigint, nonce: bigint) {
   const claimExpiresAt = (await chainTime(env.connection)) + 600;
   const message = buildClaimMessage(
     f.session,
@@ -69,10 +79,11 @@ function dump(label: string, e: any) {
 }
 
 before(async function () {
-  this.timeout(120_000);
-  const anchorProvider = anchor.AnchorProvider.env();
+  this.timeout(300_000);
+  const anchorProvider = makeProvider();
   anchor.setProvider(anchorProvider);
   program = new anchor.Program(require("../target/idl/agentpay.json"), anchorProvider);
+  console.log(`    cluster: ${anchorProvider.connection.rpcEndpoint}`);
   env = await Env.create(program, anchorProvider);
 });
 
@@ -132,13 +143,16 @@ describe("diagnostics", () => {
     // accepted it, which means in the attack test our program is the only thing
     // standing between that instruction and a settled claim.
     try {
-      const tx = new anchor.web3.Transaction().add(raw);
-      const sig = await anchor.web3.sendAndConfirmTransaction(
-        env.connection,
-        tx,
-        [env.payer],
-        { commitment: "confirmed" }
-      );
+      const sig = await withRpcRetry("standalone ed25519", async () => {
+        await throttle(env.connection);
+        const tx = new anchor.web3.Transaction().add(raw);
+        return await anchor.web3.sendAndConfirmTransaction(
+          env.connection,
+          tx,
+          [env.payer],
+          { commitment: "confirmed" }
+        );
+      });
       console.log(
         "\nprecompile ACCEPTED the indirect-reference instruction, sig:",
         sig

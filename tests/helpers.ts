@@ -235,7 +235,7 @@ export async function withRpcRetry<T>(
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       const transient =
-        /429|Too Many Requests|rate limit|blockhash not found|block height exceeded|failed to get recent blockhash|socket hang up|ETIMEDOUT|ECONNRESET|fetch failed/i.test(
+        /429|Too Many Requests|rate limit|blockhash not found|block height exceeded|failed to get recent blockhash|socket hang up|ETIMEDOUT|ECONNRESET|fetch failed|Unknown action|node is behind|Transaction was not confirmed|timed out/i.test(
           msg
         );
       // A program error is a result, not a failure to retry.
@@ -251,10 +251,14 @@ export async function withRpcRetry<T>(
 
 /** On-chain clock, which is what the program actually compares against. */
 export async function chainTime(connection: Connection): Promise<number> {
-  const slot = await connection.getSlot("confirmed");
-  const t = await connection.getBlockTime(slot);
-  if (t === null) throw new Error("getBlockTime returned null");
-  return t;
+  return await withRpcRetry("chainTime", async () => {
+    const slot = await connection.getSlot("confirmed");
+    const t = await connection.getBlockTime(slot);
+    // Devnet prunes block times for skipped slots; treat as transient so the
+    // retry wrapper picks a newer slot rather than failing the test.
+    if (t === null) throw new Error("getBlockTime returned null — node is behind");
+    return t;
+  });
 }
 
 /**
@@ -268,6 +272,27 @@ export const LAMPORTS_PER_TEST_KEYPAIR = 12_000_000; // 0.012 SOL
 
 /** Treasury floor for a public-cluster run; see the arithmetic above. */
 export const MIN_TREASURY_LAMPORTS = 800_000_000; // 0.8 SOL
+
+/**
+ * Minimum gap between transactions on a public cluster.
+ *
+ * api.devnet.solana.com rate-limits hard enough that an unthrottled run dies
+ * with 429s and expired blockhashes partway through. Set PUBLIC_RPC_THROTTLE_MS
+ * to tune for a less restrictive endpoint.
+ */
+export const PUBLIC_RPC_THROTTLE_MS = Number(
+  process.env.PUBLIC_RPC_THROTTLE_MS ?? 400
+);
+
+let lastTxAt = 0;
+
+/** Serializes outbound transactions so bursts do not trip the rate limiter. */
+export async function throttle(connection: Connection): Promise<void> {
+  if (isLocalCluster(connection)) return;
+  const wait = lastTxAt + PUBLIC_RPC_THROTTLE_MS - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastTxAt = Date.now();
+}
 
 export function isLocalCluster(connection: Connection): boolean {
   return /127\.0\.0\.1|localhost/.test(connection.rpcEndpoint);
@@ -305,6 +330,25 @@ export async function fundSol(
     return await sendAndConfirmTransaction(connection, tx, [treasury], {
       commitment: "confirmed",
     });
+  });
+}
+
+/**
+ * Provider pinned to `confirmed`.
+ *
+ * AnchorProvider.env() defaults to `processed`, which on a public cluster
+ * produces spurious "Blockhash not found" failures — those would surface as
+ * attack-test failures and obscure whether a defence actually held.
+ */
+export function makeProvider(): anchor.AnchorProvider {
+  const base = anchor.AnchorProvider.env();
+  const connection = new Connection(base.connection.rpcEndpoint, {
+    commitment: "confirmed",
+    confirmTransactionInitialTimeout: 120_000,
+  });
+  return new anchor.AnchorProvider(connection, base.wallet, {
+    commitment: "confirmed",
+    preflightCommitment: "confirmed",
   });
 }
 
@@ -535,6 +579,13 @@ export class Env {
   }
 
   async openSession(f: Fixture): Promise<string> {
+    return await withRpcRetry("openSession", async () => {
+      await throttle(this.connection);
+      return await this.openSessionOnce(f);
+    });
+  }
+
+  private async openSessionOnce(f: Fixture): Promise<string> {
     return await this.program.methods
       .openSession(
         Array.from(f.sessionId),
@@ -556,7 +607,9 @@ export class Env {
   }
 
   async tokenBalance(ata: PublicKey): Promise<bigint> {
-    const bal = await this.connection.getTokenAccountBalance(ata, "confirmed");
-    return BigInt(bal.value.amount);
+    return await withRpcRetry("tokenBalance", async () => {
+      const bal = await this.connection.getTokenAccountBalance(ata, "confirmed");
+      return BigInt(bal.value.amount);
+    });
   }
 }
