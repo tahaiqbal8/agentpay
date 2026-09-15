@@ -25,6 +25,8 @@ use crate::verify::{verify_claim_signature, SignatureVerdict};
 
 pub struct AppState {
     pub store: Arc<dyn SessionStore>,
+    /// False while running on the non-durable in-memory store.
+    pub durable_state: bool,
     pub program_id: Pubkey,
     /// Injected so tests can drive expiry deterministically.
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -70,13 +72,20 @@ pub struct HealthResponse {
     pub program_id: String,
     /// True while the gateway is using the non-durable in-memory store.
     pub ephemeral_state: bool,
+    /// "POSTGRES" or "EPHEMERAL_IN_MEMORY".
+    pub state_backend: &'static str,
 }
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         program_id: state.program_id.to_string(),
-        ephemeral_state: true,
+        ephemeral_state: !state.durable_state,
+        state_backend: if state.durable_state {
+            "POSTGRES"
+        } else {
+            "EPHEMERAL_IN_MEMORY"
+        },
     })
 }
 
@@ -144,6 +153,7 @@ pub async fn open_session(
     state
         .store
         .open(record)
+        .await
         .map_err(|e| store_denial(e, &rid))?;
 
     info!(
@@ -158,7 +168,11 @@ pub async fn open_session(
         session: session.to_string(),
         tracking: true,
         request_id: rid,
-        state_durability: "EPHEMERAL_IN_MEMORY",
+        state_durability: if state.durable_state {
+            "POSTGRES"
+        } else {
+            "EPHEMERAL_IN_MEMORY"
+        },
     }))
 }
 
@@ -206,6 +220,7 @@ pub async fn verify_claim(
     let record = state
         .store
         .get(&claim.session)
+        .await
         .map_err(|e| store_denial(e, &rid))?;
 
     // 4. Signature. The expensive step, so it runs after the cheap filters.
@@ -229,6 +244,7 @@ pub async fn verify_claim(
     let outcome = state
         .store
         .admit_claim(&claim, &signature, now)
+        .await
         .map_err(|e| store_denial(e, &rid))?;
 
     let accepted = match outcome {
@@ -343,6 +359,7 @@ pub async fn settle_session(
     let record = state
         .store
         .get(&session)
+        .await
         .map_err(|e| store_denial(e, &rid))?;
 
     if record.is_settled {
@@ -393,7 +410,7 @@ pub async fn settle_session(
 
     // Only after the chain confirms. Marking earlier would strand the session
     // as unsettleable if submission failed.
-    if let Err(e) = state.store.mark_settled(&session) {
+    if let Err(e) = state.store.mark_settled(&session).await {
         // The money moved; losing the local flag must not report failure.
         error!(
             request_id = %rid,

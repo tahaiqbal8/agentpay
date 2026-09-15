@@ -101,6 +101,52 @@ reject on-chain, because the program enforces `cumulative <= deposited_total`
 itself. So the failure mode is a wasted resource, not stolen funds — but it is a
 real gap, and the fix is to fetch and verify the session account at open time.
 
+## D9 — `claim_tickets` is a high-water mark, not an audit log
+
+**Chosen (per spec):** `claim_tickets.session_pubkey` is the PRIMARY KEY, so
+there is exactly one row per session holding the highest accepted claim.
+
+**Consequence, stated plainly.** Intermediate claims are *overwritten and
+unrecoverable*. After a 40-call session the database can prove what the final
+cumulative was; it cannot prove the 39 decisions that led there, and it holds
+**no record of denials at all** — denied claims never reach this table.
+
+That is in direct tension with the product thesis. "Every allowed and every
+denied request is recorded, hash-chained, and committed as a Merkle root" needs
+an append-only `decisions` table that this schema does not have, and the zero
+merkle root currently sent to `settle_session` is the visible symptom.
+
+This is fine as a settlement mechanism and insufficient as an evidence log. The
+evidence log is separate work, not a tweak to this table.
+
+## D10 — Ordering rules are not reimplemented in SQL
+
+**Chosen:** `upsert_claim_high_water_mark` opens a transaction, takes
+`SELECT ... FOR UPDATE` on the session row, and calls the same `evaluate_claim`
+function the in-memory store uses. The conditional `WHERE EXCLUDED.cumulative >
+claim_tickets.cumulative AND EXCLUDED.nonce > claim_tickets.nonce` on the upsert
+is retained as defence-in-depth.
+
+**Rejected — enforcing the rules purely in the upsert's WHERE clause.** Fewer
+round trips, but it puts the security-critical logic in a second place that can
+drift from the Rust copy, and the SQL copy is the one nobody unit-tests. It also
+cannot express the expiry and deposit-ceiling checks without duplicating those
+too.
+
+**Why a row lock rather than a bare atomic upsert:** admitting a claim needs
+session state (settled? expired? deposit ceiling?) *and* the current mark, then
+a decision, then a write. Those must see a consistent world. The lock serialises
+claims within one session — which they already are logically — while leaving
+different sessions fully concurrent (tested).
+
+## D11 — `sessions.expires_at` added to the specified schema
+
+The requested schema had no expiry column, but the gateway must refuse claims on
+an expired session, and after a restart it has nowhere else to learn the expiry
+from. Stored as `BIGINT` unix seconds rather than `TIMESTAMPTZ` so it compares
+bit-for-bit with the value the on-chain program enforces; a timezone conversion
+here could drift from the chain.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
@@ -276,6 +322,43 @@ worse than an honest zero.
 The token program is read from the mint account's owner rather than assumed, so
 a Token-2022 mint settles through Token-2022 without special-casing. That path
 still has no test.
+
+### Durable store — the restart hole is closed
+
+`InMemorySessionStore` is replaced by PostgreSQL via sqlx 0.8. The claim
+high-water mark now survives a restart, so a gateway bounce is no longer a
+security event.
+
+Proven end to end against a real process, not just unit tests:
+
+```
+boot 1     rehydrated 50 sessions
+phase 1    ladder 100000 -> 250000 -> 900000   (all ALLOW)
+kill -9    no graceful shutdown; confirmed not serving
+boot 2     rehydrated 51 sessions, marks restored from postgres
+phase 2    replay of 900000      -> 403 ERR_CLAIM_NOT_MONOTONIC
+           regression to 500000  -> 403 ERR_CLAIM_NOT_MONOTONIC
+           cumulative 1000000    -> 200, delta measured against 900000
+```
+
+That last line matters: the delta was computed from the *restored* mark rather
+than from zero, so the restored state is correct and not merely present.
+
+55 tests pass with a database attached; 42 pass without one. The build is
+hermetic — runtime `sqlx::query` is used rather than the `query!` macro, so
+`cargo build` needs no live database and no `.sqlx` cache. The trade is losing
+compile-time SQL verification; `cargo sqlx prepare` could buy it back at the
+cost of a checked-in cache that can go stale.
+
+**A test bug worth recording.** The concurrency test passed in the full suite
+and failed 20/20 in isolation. The cause was `Pubkey::new_unique()`, which
+increments a process-static counter and therefore produces identical pubkeys on
+every `cargo test` invocation — so each run collided with the previous run's
+rows and every claim was correctly rejected as non-monotonic, which the test
+silently counted as "not admitted". Two fixes: genuinely random pubkeys, and
+counting admitted / rejected / errored separately so a future failure is
+diagnosable rather than ambiguous. It now asserts exactly 1 admitted, 15
+refused, 0 errors, and passes 20/20 in isolation.
 
 ### Not covered by this suite
 

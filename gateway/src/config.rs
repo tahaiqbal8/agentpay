@@ -23,6 +23,12 @@ pub struct Config {
     /// exceed the agent's signed cumulative claim. It is optional so the
     /// gateway can run in verify-only mode with no signing key present at all.
     pub provider_keypair_path: Option<String>,
+    /// Postgres connection string.
+    ///
+    /// When absent the gateway falls back to the in-memory store, which does
+    /// not survive a restart. That fallback is a development convenience and is
+    /// warned about loudly at boot; production must set this.
+    pub database_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,12 +70,14 @@ impl Config {
             .map_err(|e| ConfigError::Invalid("AGENTPAY_PROGRAM_ID", e.to_string()))?;
 
         let provider_keypair_path = std::env::var("AGENTPAY_PROVIDER_KEYPAIR").ok();
+        let database_url = std::env::var("DATABASE_URL").ok();
 
         Ok(Self {
             bind_addr,
             rpc_url,
             program_id,
             provider_keypair_path,
+            database_url,
         })
     }
 }

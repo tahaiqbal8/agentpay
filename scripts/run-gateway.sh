@@ -24,7 +24,12 @@ export AGENTPAY_LOG="${AGENTPAY_LOG:-info,tower_http=debug}"
 echo "==> gateway    $AGENTPAY_BIND_ADDR"
 echo "==> rpc        $AGENTPAY_RPC_URL"
 echo "==> program    $AGENTPAY_PROGRAM_ID"
-echo "==> WARNING    session state is in-memory; a restart loses every"
-echo "               session's claim high-water mark"
+if [[ -n "${DATABASE_URL:-}" ]]; then
+  # Host only; the URL carries a password.
+  echo "==> database   ${DATABASE_URL##*@}"
+else
+  echo "==> WARNING    DATABASE_URL unset; session state is in-memory and a"
+  echo "               restart loses every session's claim high-water mark"
+fi
 
 exec cargo run --quiet

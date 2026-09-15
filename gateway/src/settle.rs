@@ -382,8 +382,10 @@ mod tests {
             Pubkey::find_program_address(&[b"settlement", session.as_ref()], &program_id).0
         );
         assert_ne!(vault, record);
-        // Canonical bumps only; the program refuses user-supplied ones.
-        assert!(vb <= 255 && rb <= 255);
+        // find_program_address only ever returns canonical bumps, and the
+        // program refuses user-supplied ones; a bump of 0 would mean the search
+        // exhausted every candidate, which is not a real address.
+        assert!(vb > 0 && rb > 0);
     }
 
     #[test]

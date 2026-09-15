@@ -10,6 +10,7 @@
 
 mod claim;
 mod config;
+mod db;
 mod error;
 mod routes;
 mod settle;
@@ -32,7 +33,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
 use crate::routes::{system_clock, AppState};
-use crate::state::InMemorySessionStore;
+use crate::db::Database;
+use crate::state::{InMemorySessionStore, SessionStore};
 
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -68,12 +70,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "starting agentpay-gateway"
     );
 
-    // Said once, loudly, at boot: losing this process loses every session's
-    // high-water mark, which reopens claim replay. See state.rs module docs.
-    warn!(
-        "session state is IN-MEMORY and does not survive restart; \
-         a restart is a security event until the durable store lands"
-    );
+    // Durable store when DATABASE_URL is set; otherwise the ephemeral one, with
+    // the security consequence stated loudly rather than buried.
+    let (store, durable): (Arc<dyn SessionStore>, bool) = match &config.database_url {
+        Some(url) => {
+            let db = Database::connect(url).await?;
+
+            // Cold-start hydration. This is what makes a restart survivable:
+            // without it the high-water marks are gone and every live session
+            // is open to claim replay.
+            let active = db.load_active_sessions().await?;
+            info!(
+                sessions = active.len(),
+                "rehydrated active sessions from postgres"
+            );
+            for s in &active {
+                info!(
+                    session = %s.session,
+                    cumulative = s.cumulative_accepted,
+                    nonce = ?s.last_nonce,
+                    "restored high-water mark"
+                );
+            }
+            (Arc::new(db), true)
+        }
+        None => {
+            warn!(
+                "DATABASE_URL is not set; session state is IN-MEMORY and does not \
+                 survive restart. A restart reopens claim replay for every live \
+                 session. Do not run this way in production."
+            );
+            (Arc::new(InMemorySessionStore::new()), false)
+        }
+    };
 
     // Settlement needs the provider's signing key. Without one the gateway
     // still verifies claims; it just cannot submit. See Config for the trust
@@ -101,7 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let state = Arc::new(AppState {
-        store: Arc::new(InMemorySessionStore::new()),
+        store,
+        durable_state: durable,
         program_id: config.program_id,
         clock: Arc::new(system_clock),
         rpc,

@@ -13,6 +13,7 @@
 //! `SessionStore` exists as a trait so a durable Postgres implementation can
 //! replace it without touching the verification path.
 
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
@@ -103,21 +104,23 @@ pub enum StoreError {
     Unknown,
 }
 
+#[async_trait]
 pub trait SessionStore: Send + Sync {
-    fn open(&self, record: SessionRecord) -> Result<(), StoreError>;
-    fn get(&self, session: &Pubkey) -> Result<SessionRecord, StoreError>;
+    async fn open(&self, record: SessionRecord) -> Result<(), StoreError>;
+    async fn get(&self, session: &Pubkey) -> Result<SessionRecord, StoreError>;
     /// Validates ordering and, on success, advances the high-water mark.
     ///
     /// Must be atomic: two concurrent requests carrying the same claim have to
     /// serialise, or both would observe the same previous value and both be
-    /// admitted.
-    fn admit_claim(
+    /// admitted. The in-memory store holds a write lock for the whole cycle;
+    /// the Postgres store uses a transaction with `SELECT ... FOR UPDATE`.
+    async fn admit_claim(
         &self,
         claim: &Claim,
         signature: &[u8; 64],
         now: i64,
     ) -> Result<Result<ClaimAccepted, ClaimRejection>, StoreError>;
-    fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError>;
+    async fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError>;
 }
 
 /// Pure ordering rules, separated from storage so they can be tested directly
@@ -206,8 +209,9 @@ fn poisoned<T>(_: PoisonError<T>) -> StoreError {
     StoreError::Unavailable
 }
 
+#[async_trait]
 impl SessionStore for InMemorySessionStore {
-    fn open(&self, record: SessionRecord) -> Result<(), StoreError> {
+    async fn open(&self, record: SessionRecord) -> Result<(), StoreError> {
         let mut guard = self.inner.write().map_err(poisoned)?;
         if guard.contains_key(&record.session) {
             return Err(StoreError::AlreadyOpen);
@@ -216,12 +220,12 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
-    fn get(&self, session: &Pubkey) -> Result<SessionRecord, StoreError> {
+    async fn get(&self, session: &Pubkey) -> Result<SessionRecord, StoreError> {
         let guard = self.inner.read().map_err(poisoned)?;
         guard.get(session).cloned().ok_or(StoreError::Unknown)
     }
 
-    fn admit_claim(
+    async fn admit_claim(
         &self,
         claim: &Claim,
         signature: &[u8; 64],
@@ -248,7 +252,7 @@ impl SessionStore for InMemorySessionStore {
         }
     }
 
-    fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError> {
+    async fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError> {
         let mut guard = self.inner.write().map_err(poisoned)?;
         let record = guard.get_mut(session).ok_or(StoreError::Unknown)?;
         record.is_settled = true;
@@ -289,20 +293,21 @@ mod tests {
         }
     }
 
-    fn store_with_session() -> InMemorySessionStore {
+    async fn store_with_session() -> InMemorySessionStore {
         let store = InMemorySessionStore::new();
-        store.open(record()).expect("opens");
+        store.open(record()).await.expect("opens");
         store
     }
 
-    #[test]
-    fn accepts_an_increasing_ladder_and_reports_deltas() {
-        let store = store_with_session();
+    #[tokio::test]
+    async fn accepts_an_increasing_ladder_and_reports_deltas() {
+        let store = store_with_session().await;
         for (i, (cum, expected_delta)) in
             [(100u64, 100u64), (250, 150), (251, 1)].into_iter().enumerate()
         {
             let accepted = store
                 .admit_claim(&claim(cum, i as u64 + 1), &SIG, NOW)
+                .await
                 .expect("store ok")
                 .expect("claim accepted");
             assert_eq!(accepted.delta, expected_delta);
@@ -310,138 +315,137 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_an_exact_replay() {
-        let store = store_with_session();
-        store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap().unwrap();
+    #[tokio::test]
+    async fn rejects_an_exact_replay() {
+        let store = store_with_session().await;
+        store.admit_claim(&claim(100, 1), &SIG, NOW).await.unwrap().unwrap();
         assert_eq!(
-            store.admit_claim(&claim(100, 2), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(100, 2), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::NotMonotonic)
         );
     }
 
-    #[test]
-    fn rejects_a_regression_to_a_lower_cumulative() {
-        let store = store_with_session();
-        store.admit_claim(&claim(500, 1), &SIG, NOW).unwrap().unwrap();
+    #[tokio::test]
+    async fn rejects_a_regression_to_a_lower_cumulative() {
+        let store = store_with_session().await;
+        store.admit_claim(&claim(500, 1), &SIG, NOW).await.unwrap().unwrap();
         assert_eq!(
-            store.admit_claim(&claim(499, 2), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(499, 2), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::NotMonotonic)
         );
     }
 
-    #[test]
-    fn rejects_a_reused_or_lowered_nonce() {
-        let store = store_with_session();
-        store.admit_claim(&claim(100, 5), &SIG, NOW).unwrap().unwrap();
+    #[tokio::test]
+    async fn rejects_a_reused_or_lowered_nonce() {
+        let store = store_with_session().await;
+        store.admit_claim(&claim(100, 5), &SIG, NOW).await.unwrap().unwrap();
         // Cumulative rises, but the sequence number does not.
         assert_eq!(
-            store.admit_claim(&claim(200, 5), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(200, 5), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::NonceNotMonotonic)
         );
         assert_eq!(
-            store.admit_claim(&claim(200, 4), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(200, 4), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::NonceNotMonotonic)
         );
     }
 
-    #[test]
-    fn a_rejected_claim_does_not_advance_the_mark() {
-        let store = store_with_session();
-        store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap().unwrap();
-        let _ = store.admit_claim(&claim(99, 2), &SIG, NOW).unwrap();
+    #[tokio::test]
+    async fn a_rejected_claim_does_not_advance_the_mark() {
+        let store = store_with_session().await;
+        store.admit_claim(&claim(100, 1), &SIG, NOW).await.unwrap().unwrap();
+        let _ = store.admit_claim(&claim(99, 2), &SIG, NOW).await.unwrap();
         // The next legitimate claim must still be measured against 100.
         let accepted = store
-            .admit_claim(&claim(150, 2), &SIG, NOW)
+            .admit_claim(&claim(150, 2), &SIG, NOW).await
             .unwrap()
             .expect("accepted");
         assert_eq!(accepted.previous_cumulative, 100);
         assert_eq!(accepted.delta, 50);
     }
 
-    #[test]
-    fn rejects_a_claim_above_the_deposit() {
-        let store = store_with_session();
+    #[tokio::test]
+    async fn rejects_a_claim_above_the_deposit() {
+        let store = store_with_session().await;
         assert_eq!(
-            store.admit_claim(&claim(5_000_001, 1), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(5_000_001, 1), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::ExceedsDeposit)
         );
         // Exactly the deposit is allowed.
-        assert!(store.admit_claim(&claim(5_000_000, 1), &SIG, NOW).unwrap().is_ok());
+        assert!(store.admit_claim(&claim(5_000_000, 1), &SIG, NOW).await.unwrap().is_ok());
     }
 
-    #[test]
-    fn rejects_claims_once_the_session_expires() {
-        let store = store_with_session();
+    #[tokio::test]
+    async fn rejects_claims_once_the_session_expires() {
+        let store = store_with_session().await;
         let past = NOW + 3600 + crate::claim::CLOCK_SKEW_TOLERANCE_SECS + 1;
         assert_eq!(
-            store.admit_claim(&claim(100, 1), &SIG, past).unwrap(),
+            store.admit_claim(&claim(100, 1), &SIG, past).await.unwrap(),
             Err(ClaimRejection::SessionExpired)
         );
     }
 
-    #[test]
-    fn honours_skew_tolerance_at_the_boundary() {
-        let store = store_with_session();
+    #[tokio::test]
+    async fn honours_skew_tolerance_at_the_boundary() {
+        let store = store_with_session().await;
         let edge = NOW + 3600 + crate::claim::CLOCK_SKEW_TOLERANCE_SECS;
-        assert!(store.admit_claim(&claim(100, 1), &SIG, edge).unwrap().is_ok());
+        assert!(store.admit_claim(&claim(100, 1), &SIG, edge).await.unwrap().is_ok());
     }
 
-    #[test]
-    fn rejects_claims_after_settlement() {
-        let store = store_with_session();
-        store.mark_settled(&session_key()).unwrap();
+    #[tokio::test]
+    async fn rejects_claims_after_settlement() {
+        let store = store_with_session().await;
+        store.mark_settled(&session_key()).await.unwrap();
         assert_eq!(
-            store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap(),
+            store.admit_claim(&claim(100, 1), &SIG, NOW).await.unwrap(),
             Err(ClaimRejection::SessionSettled)
         );
     }
 
-    #[test]
-    fn unknown_session_is_an_error_not_a_rejection() {
+    #[tokio::test]
+    async fn unknown_session_is_an_error_not_a_rejection() {
         let store = InMemorySessionStore::new();
         assert!(matches!(
-            store.admit_claim(&claim(100, 1), &SIG, NOW),
+            store.admit_claim(&claim(100, 1), &SIG, NOW).await,
             Err(StoreError::Unknown)
         ));
     }
 
-    #[test]
-    fn duplicate_open_is_refused() {
-        let store = store_with_session();
-        assert!(matches!(store.open(record()), Err(StoreError::AlreadyOpen)));
+    #[tokio::test]
+    async fn duplicate_open_is_refused() {
+        let store = store_with_session().await;
+        assert!(matches!(store.open(record()).await, Err(StoreError::AlreadyOpen)));
     }
 
-    #[test]
-    fn concurrent_duplicate_claims_admit_exactly_one() {
+    /// The same guarantee the Postgres store gets from SELECT ... FOR UPDATE:
+    /// concurrent identical claims must serialise so only one is admitted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_duplicate_claims_admit_exactly_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        use std::thread;
 
-        let store = Arc::new(store_with_session());
-        let barrier = Arc::new(std::sync::Barrier::new(16));
-        let admitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = Arc::new(store_with_session().await);
+        let admitted = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::new();
         for _ in 0..16 {
             let store = Arc::clone(&store);
-            let barrier = Arc::clone(&barrier);
             let admitted = Arc::clone(&admitted);
-            handles.push(thread::spawn(move || {
-                barrier.wait();
-                if let Ok(Ok(_)) = store.admit_claim(&claim(1_000, 1), &SIG, NOW) {
-                    admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            handles.push(tokio::spawn(async move {
+                if let Ok(Ok(_)) = store.admit_claim(&claim(1_000, 1), &SIG, NOW).await {
+                    admitted.fetch_add(1, Ordering::SeqCst);
                 }
             }));
         }
         for h in handles {
-            h.join().unwrap();
+            h.await.unwrap();
         }
 
-        // The whole point of holding the write lock across read-decide-write.
         assert_eq!(
-            admitted.load(std::sync::atomic::Ordering::SeqCst),
+            admitted.load(Ordering::SeqCst),
             1,
             "the same claim was admitted more than once"
         );
     }
+
 }

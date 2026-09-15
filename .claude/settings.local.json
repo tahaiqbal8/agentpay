@@ -24,7 +24,12 @@
       "Bash(git commit *)",
       "WebFetch(domain:docs.rs)",
       "Bash(lsof -nP -iTCP:8080 -sTCP:LISTEN)",
-      "Bash(ps -p 90123 -o pid,command)"
+      "Bash(ps -p 90123 -o pid,command)",
+      "Read(//private/tmp/**)",
+      "Bash(curl -s \"https://crates.io/api/v1/crates/sqlx/0.8.6\" -H 'User-Agent: agentpay-build')",
+      "Bash(node -e ' *)",
+      "Bash(python3 -)",
+      "Bash(grep -n \"store$\\\\|store\\\\.\\\\\\(open\\\\|get\\\\|admit_claim\\\\|mark_settled\\\\\\)\" src/routes.rs)"
     ]
   }
 }
