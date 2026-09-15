@@ -12,6 +12,7 @@ mod claim;
 mod config;
 mod error;
 mod routes;
+mod settle;
 mod state;
 mod verify;
 
@@ -21,6 +22,9 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_keypair::Keypair;
+use solana_signer::Signer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
@@ -71,10 +75,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
          a restart is a security event until the durable store lands"
     );
 
+    // Settlement needs the provider's signing key. Without one the gateway
+    // still verifies claims; it just cannot submit. See Config for the trust
+    // note on what holding this key does and does not permit.
+    let provider_keypair = match &config.provider_keypair_path {
+        Some(path) => {
+            let kp = load_keypair(path)?;
+            info!(provider = %kp.pubkey(), "settlement enabled");
+            Some(Arc::new(kp))
+        }
+        None => {
+            warn!(
+                "AGENTPAY_PROVIDER_KEYPAIR is not set; running VERIFY-ONLY. \
+                 /v1/session/settle will return ERR_SETTLEMENT_UNAVAILABLE"
+            );
+            None
+        }
+    };
+
+    let rpc = provider_keypair.as_ref().map(|_| {
+        Arc::new(RpcClient::new_with_commitment(
+            config.rpc_url.clone(),
+            settle::commitment(),
+        ))
+    });
+
     let state = Arc::new(AppState {
         store: Arc::new(InMemorySessionStore::new()),
         program_id: config.program_id,
         clock: Arc::new(system_clock),
+        rpc,
+        provider_keypair,
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
@@ -85,6 +116,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
+}
+
+/// Reads a Solana CLI keypair file: a JSON array of 64 bytes.
+fn load_keypair(path: &str) -> Result<Keypair, Box<dyn std::error::Error>> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read provider keypair at {path}: {e}"))?;
+    let bytes: Vec<u8> = serde_json::from_str(&raw)
+        .map_err(|e| format!("provider keypair at {path} is not a JSON byte array: {e}"))?;
+    let bytes: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| format!("provider keypair at {path} is not 64 bytes"))?;
+    Keypair::try_from(&bytes[..]).map_err(|e| format!("invalid provider keypair: {e}").into())
 }
 
 async fn shutdown_signal() {

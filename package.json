@@ -6,7 +6,8 @@
   "scripts": {
     "test": "ts-mocha -p ./tsconfig.json -t 1000000 tests/attacks.ts",
     "diagnostics": "ts-mocha -p ./tsconfig.json -t 1000000 tests/diagnostics.ts",
-    "smoke": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/gateway-smoke.ts"
+    "smoke": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/gateway-smoke.ts",
+    "settle-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/settle-devnet.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

@@ -20,6 +20,17 @@ use solana_pubkey::Pubkey;
 
 use crate::claim::Claim;
 
+/// A claim together with the signature that authorised it.
+///
+/// Settlement replays the *highest* accepted claim on-chain, so the signature
+/// must be retained verbatim: the Ed25519 precompile re-verifies these exact
+/// bytes, and the gateway cannot reproduce a signature it did not keep.
+#[derive(Debug, Clone, Copy)]
+pub struct SignedClaim {
+    pub claim: Claim,
+    pub signature: [u8; 64],
+}
+
 /// What the gateway knows about a session it is tracking.
 #[derive(Debug, Clone)]
 pub struct SessionRecord {
@@ -33,6 +44,8 @@ pub struct SessionRecord {
     pub cumulative_accepted: u64,
     /// Nonce of the last accepted claim. Never decreases.
     pub last_nonce: Option<u64>,
+    /// The highest accepted claim and its signature — what settlement submits.
+    pub highest_claim: Option<SignedClaim>,
     pub is_settled: bool,
 }
 
@@ -54,6 +67,7 @@ impl SessionRecord {
             expires_at,
             cumulative_accepted: 0,
             last_nonce: None,
+            highest_claim: None,
             is_settled: false,
         }
     }
@@ -100,6 +114,7 @@ pub trait SessionStore: Send + Sync {
     fn admit_claim(
         &self,
         claim: &Claim,
+        signature: &[u8; 64],
         now: i64,
     ) -> Result<Result<ClaimAccepted, ClaimRejection>, StoreError>;
     fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError>;
@@ -209,6 +224,7 @@ impl SessionStore for InMemorySessionStore {
     fn admit_claim(
         &self,
         claim: &Claim,
+        signature: &[u8; 64],
         now: i64,
     ) -> Result<Result<ClaimAccepted, ClaimRejection>, StoreError> {
         // Write lock for the whole read-decide-write cycle: concurrent
@@ -220,6 +236,12 @@ impl SessionStore for InMemorySessionStore {
             Ok(accepted) => {
                 record.cumulative_accepted = accepted.cumulative_amount;
                 record.last_nonce = Some(accepted.nonce);
+                // Monotonicity guarantees this claim is the new highest, so it
+                // is always the one settlement should submit.
+                record.highest_claim = Some(SignedClaim {
+                    claim: *claim,
+                    signature: *signature,
+                });
                 Ok(Ok(accepted))
             }
             Err(rejection) => Ok(Err(rejection)),
@@ -239,6 +261,9 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_000_000;
+    /// Ordering rules are what these tests exercise; signature validity is
+    /// verify.rs's job, so a fixed placeholder is correct here.
+    const SIG: [u8; 64] = [0u8; 64];
 
     fn session_key() -> Pubkey {
         Pubkey::new_from_array([1u8; 32])
@@ -277,7 +302,7 @@ mod tests {
             [(100u64, 100u64), (250, 150), (251, 1)].into_iter().enumerate()
         {
             let accepted = store
-                .admit_claim(&claim(cum, i as u64 + 1), NOW)
+                .admit_claim(&claim(cum, i as u64 + 1), &SIG, NOW)
                 .expect("store ok")
                 .expect("claim accepted");
             assert_eq!(accepted.delta, expected_delta);
@@ -288,9 +313,9 @@ mod tests {
     #[test]
     fn rejects_an_exact_replay() {
         let store = store_with_session();
-        store.admit_claim(&claim(100, 1), NOW).unwrap().unwrap();
+        store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap().unwrap();
         assert_eq!(
-            store.admit_claim(&claim(100, 2), NOW).unwrap(),
+            store.admit_claim(&claim(100, 2), &SIG, NOW).unwrap(),
             Err(ClaimRejection::NotMonotonic)
         );
     }
@@ -298,9 +323,9 @@ mod tests {
     #[test]
     fn rejects_a_regression_to_a_lower_cumulative() {
         let store = store_with_session();
-        store.admit_claim(&claim(500, 1), NOW).unwrap().unwrap();
+        store.admit_claim(&claim(500, 1), &SIG, NOW).unwrap().unwrap();
         assert_eq!(
-            store.admit_claim(&claim(499, 2), NOW).unwrap(),
+            store.admit_claim(&claim(499, 2), &SIG, NOW).unwrap(),
             Err(ClaimRejection::NotMonotonic)
         );
     }
@@ -308,14 +333,14 @@ mod tests {
     #[test]
     fn rejects_a_reused_or_lowered_nonce() {
         let store = store_with_session();
-        store.admit_claim(&claim(100, 5), NOW).unwrap().unwrap();
+        store.admit_claim(&claim(100, 5), &SIG, NOW).unwrap().unwrap();
         // Cumulative rises, but the sequence number does not.
         assert_eq!(
-            store.admit_claim(&claim(200, 5), NOW).unwrap(),
+            store.admit_claim(&claim(200, 5), &SIG, NOW).unwrap(),
             Err(ClaimRejection::NonceNotMonotonic)
         );
         assert_eq!(
-            store.admit_claim(&claim(200, 4), NOW).unwrap(),
+            store.admit_claim(&claim(200, 4), &SIG, NOW).unwrap(),
             Err(ClaimRejection::NonceNotMonotonic)
         );
     }
@@ -323,11 +348,11 @@ mod tests {
     #[test]
     fn a_rejected_claim_does_not_advance_the_mark() {
         let store = store_with_session();
-        store.admit_claim(&claim(100, 1), NOW).unwrap().unwrap();
-        let _ = store.admit_claim(&claim(99, 2), NOW).unwrap();
+        store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap().unwrap();
+        let _ = store.admit_claim(&claim(99, 2), &SIG, NOW).unwrap();
         // The next legitimate claim must still be measured against 100.
         let accepted = store
-            .admit_claim(&claim(150, 2), NOW)
+            .admit_claim(&claim(150, 2), &SIG, NOW)
             .unwrap()
             .expect("accepted");
         assert_eq!(accepted.previous_cumulative, 100);
@@ -338,11 +363,11 @@ mod tests {
     fn rejects_a_claim_above_the_deposit() {
         let store = store_with_session();
         assert_eq!(
-            store.admit_claim(&claim(5_000_001, 1), NOW).unwrap(),
+            store.admit_claim(&claim(5_000_001, 1), &SIG, NOW).unwrap(),
             Err(ClaimRejection::ExceedsDeposit)
         );
         // Exactly the deposit is allowed.
-        assert!(store.admit_claim(&claim(5_000_000, 1), NOW).unwrap().is_ok());
+        assert!(store.admit_claim(&claim(5_000_000, 1), &SIG, NOW).unwrap().is_ok());
     }
 
     #[test]
@@ -350,7 +375,7 @@ mod tests {
         let store = store_with_session();
         let past = NOW + 3600 + crate::claim::CLOCK_SKEW_TOLERANCE_SECS + 1;
         assert_eq!(
-            store.admit_claim(&claim(100, 1), past).unwrap(),
+            store.admit_claim(&claim(100, 1), &SIG, past).unwrap(),
             Err(ClaimRejection::SessionExpired)
         );
     }
@@ -359,7 +384,7 @@ mod tests {
     fn honours_skew_tolerance_at_the_boundary() {
         let store = store_with_session();
         let edge = NOW + 3600 + crate::claim::CLOCK_SKEW_TOLERANCE_SECS;
-        assert!(store.admit_claim(&claim(100, 1), edge).unwrap().is_ok());
+        assert!(store.admit_claim(&claim(100, 1), &SIG, edge).unwrap().is_ok());
     }
 
     #[test]
@@ -367,7 +392,7 @@ mod tests {
         let store = store_with_session();
         store.mark_settled(&session_key()).unwrap();
         assert_eq!(
-            store.admit_claim(&claim(100, 1), NOW).unwrap(),
+            store.admit_claim(&claim(100, 1), &SIG, NOW).unwrap(),
             Err(ClaimRejection::SessionSettled)
         );
     }
@@ -376,7 +401,7 @@ mod tests {
     fn unknown_session_is_an_error_not_a_rejection() {
         let store = InMemorySessionStore::new();
         assert!(matches!(
-            store.admit_claim(&claim(100, 1), NOW),
+            store.admit_claim(&claim(100, 1), &SIG, NOW),
             Err(StoreError::Unknown)
         ));
     }
@@ -403,7 +428,7 @@ mod tests {
             let admitted = Arc::clone(&admitted);
             handles.push(thread::spawn(move || {
                 barrier.wait();
-                if let Ok(Ok(_)) = store.admit_claim(&claim(1_000, 1), NOW) {
+                if let Ok(Ok(_)) = store.admit_claim(&claim(1_000, 1), &SIG, NOW) {
                     admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             }));

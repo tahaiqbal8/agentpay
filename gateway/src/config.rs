@@ -12,6 +12,17 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub rpc_url: String,
     pub program_id: Pubkey,
+    /// Path to the provider's Solana keypair JSON.
+    ///
+    /// TRUST NOTE: `settle_session` requires the provider's signature, so the
+    /// gateway must hold this key to settle on their behalf. This is the one
+    /// key the gateway holds, and its blast radius is bounded on-chain: the
+    /// program constrains `provider_token_account.owner == provider`, so a
+    /// compromised gateway can settle *early* or at a lower amount, but cannot
+    /// redirect funds anywhere except the provider's own account, and cannot
+    /// exceed the agent's signed cumulative claim. It is optional so the
+    /// gateway can run in verify-only mode with no signing key present at all.
+    pub provider_keypair_path: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,10 +63,13 @@ impl Config {
             .parse::<Pubkey>()
             .map_err(|e| ConfigError::Invalid("AGENTPAY_PROGRAM_ID", e.to_string()))?;
 
+        let provider_keypair_path = std::env::var("AGENTPAY_PROVIDER_KEYPAIR").ok();
+
         Ok(Self {
             bind_addr,
             rpc_url,
             program_id,
+            provider_keypair_path,
         })
     }
 }

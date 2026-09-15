@@ -66,6 +66,41 @@ party triggering the refund cannot redirect them. Permissionless recovery is wha
 makes "the agent gets its money back with no gateway and no provider cooperation"
 true — it does not depend on the agent being online or holding SOL for fees.
 
+## D7 — The gateway holds the provider's signing key
+
+**Chosen:** `settle_session` requires the provider's signature, so the gateway
+loads a provider keypair from `AGENTPAY_PROVIDER_KEYPAIR` and signs settlement
+transactions on their behalf. Without that variable the gateway runs
+**verify-only**: claims are still verified and ordered, and `/v1/session/settle`
+returns `ERR_SETTLEMENT_UNAVAILABLE` rather than failing somewhere deeper.
+
+**Blast radius, bounded on-chain.** This is the only key the gateway holds, and
+the program constrains what it can do:
+
+- `provider_token_account.owner == provider` means a compromised gateway cannot
+  redirect funds anywhere except the provider's own account.
+- The Ed25519 precompile must verify the *agent's* signature over the claim, so
+  the gateway cannot settle for more than the agent actually authorised.
+- `init` on `SettlementRecord` means it cannot settle twice.
+
+What a compromised gateway *can* do: settle earlier than the provider wanted, or
+settle a lower claim than the highest one available. Both cost the provider
+revenue; neither moves money to an attacker. The custody claim ("trusted for
+availability and policy, not for custody") survives.
+
+**Rejected — provider signs settlements itself.** Correct, and where this should
+end up, but it requires a provider-side signing service and a callback protocol
+that does not exist yet. Recorded as future work rather than pretended.
+
+## D8 — `/v1/session/open` trusts its input
+
+`deposited_total`, `agent`, `provider`, and `mint` are taken from the request and
+are **not** reconciled against the on-chain `Session` account. A caller that
+overstates `deposited_total` gets claims admitted that settlement would then
+reject on-chain, because the program enforces `cumulative <= deposited_total`
+itself. So the failure mode is a wasted resource, not stolen funds — but it is a
+real gap, and the fix is to fetch and verify the session account at open time.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
@@ -207,6 +242,40 @@ Devnet exposed two harness bugs that localnet could not:
 
 `AnchorProvider.env()` defaults to `processed` commitment; the suite now builds
 its provider at `confirmed`, which removed most spurious blockhash errors.
+
+### Gateway settlement — executed on devnet
+
+`POST /v1/session/settle` assembles the two-instruction transaction the program
+requires, signs as the provider, and submits it. Verified end to end
+(`npm run settle-devnet`): a real escrow session was opened on devnet, four
+claims were authorised off-chain, and **one** transaction settled them all.
+
+```
+session    CqSLKQ5FQLNv9VEaQJFEL2cMGpsTLYRd521qfwFK6FZL
+settle tx  cpdrU9cMVzePF7s34nvRMzDBB9JDS7WGgCEM22BkQtBxZkv6D4vAEvK3p7JrBYEYZCCVUB24LSbgdD6ubdAJ1Sh
+slot       498820656          fee 0.00001 SOL
+provider   +1,234,567 micro-USDC      vault 5,000,000 -> 3,765,433
+```
+
+Confirmed independently with `solana confirm -v` rather than trusting the
+gateway's own response:
+
+- **ix[0]** `Ed25519SigVerify`, header `[1, 0, 48,0, 255,255, 16,0, 255,255,
+  112,0, 73,0, 255,255]` — one signature, offsets 48/16/112, message size 73,
+  all three instruction-index fields `65535`. The message bytes carry
+  `agentpay:claim:v1`.
+- **ix[1]** the program, discriminator `[156,20,180,117,117,85,225,128]`
+  (`sha256("global:settle_session")[..8]`), then `1234567` and nonce `4` as
+  little-endian u64s, then 32 zero bytes for the evidence root.
+- A second settle attempt returned `403 ERR_SESSION_SETTLED`.
+
+The merkle root is currently **all zeroes**, meaning "no evidence committed".
+That is deliberate until the evidence log exists — a fabricated digest would be
+worse than an honest zero.
+
+The token program is read from the mint account's owner rather than assumed, so
+a Token-2022 mint settles through Token-2022 without special-casing. That path
+still has no test.
 
 ### Not covered by this suite
 

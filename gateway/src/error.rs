@@ -35,11 +35,14 @@ pub enum ReasonCode {
     ERR_CLAIM_EXCEEDS_DEPOSIT,
     ERR_INVALID_SIGNATURE,
 
+    // --- settlement ---
+    ERR_NOTHING_TO_SETTLE,
+    ERR_WRONG_PROVIDER_KEY,
+    ERR_SETTLEMENT_UNAVAILABLE,
+    ERR_SETTLEMENT_FAILED,
+
     // --- infrastructure: always deny, never allow ---
     ERR_STORE_UNAVAILABLE,
-
-    // --- not yet built; never returned as a success ---
-    ERR_NOT_IMPLEMENTED,
 }
 
 impl ReasonCode {
@@ -56,8 +59,11 @@ impl ReasonCode {
             Self::ERR_NONCE_NOT_MONOTONIC => "ERR_NONCE_NOT_MONOTONIC",
             Self::ERR_CLAIM_EXCEEDS_DEPOSIT => "ERR_CLAIM_EXCEEDS_DEPOSIT",
             Self::ERR_INVALID_SIGNATURE => "ERR_INVALID_SIGNATURE",
+            Self::ERR_NOTHING_TO_SETTLE => "ERR_NOTHING_TO_SETTLE",
+            Self::ERR_WRONG_PROVIDER_KEY => "ERR_WRONG_PROVIDER_KEY",
+            Self::ERR_SETTLEMENT_UNAVAILABLE => "ERR_SETTLEMENT_UNAVAILABLE",
+            Self::ERR_SETTLEMENT_FAILED => "ERR_SETTLEMENT_FAILED",
             Self::ERR_STORE_UNAVAILABLE => "ERR_STORE_UNAVAILABLE",
-            Self::ERR_NOT_IMPLEMENTED => "ERR_NOT_IMPLEMENTED",
         }
     }
 
@@ -81,10 +87,21 @@ impl ReasonCode {
                 "The cumulative amount is larger than the session deposit."
             }
             Self::ERR_INVALID_SIGNATURE => "The claim signature is not valid for this session.",
+            Self::ERR_NOTHING_TO_SETTLE => {
+                "No claims were accepted for this session, so there is nothing to settle."
+            }
+            Self::ERR_WRONG_PROVIDER_KEY => {
+                "The configured provider key does not match this session's provider."
+            }
+            Self::ERR_SETTLEMENT_UNAVAILABLE => {
+                "This gateway runs in verify-only mode and cannot submit settlements."
+            }
+            Self::ERR_SETTLEMENT_FAILED => {
+                "The settlement transaction could not be submitted or confirmed."
+            }
             Self::ERR_STORE_UNAVAILABLE => {
                 "Session state could not be read, so the request was denied."
             }
-            Self::ERR_NOT_IMPLEMENTED => "This endpoint is not implemented yet.",
         }
     }
 
@@ -100,11 +117,16 @@ impl ReasonCode {
             | Self::ERR_CLAIM_EXPIRED
             | Self::ERR_CLAIM_NOT_MONOTONIC
             | Self::ERR_NONCE_NOT_MONOTONIC
-            | Self::ERR_CLAIM_EXCEEDS_DEPOSIT => StatusCode::FORBIDDEN,
+            | Self::ERR_CLAIM_EXCEEDS_DEPOSIT
+            | Self::ERR_NOTHING_TO_SETTLE
+            | Self::ERR_WRONG_PROVIDER_KEY => StatusCode::FORBIDDEN,
+            // Configuration and chain trouble: the caller did nothing wrong.
+            Self::ERR_SETTLEMENT_UNAVAILABLE | Self::ERR_SETTLEMENT_FAILED => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             // Fail closed: an unreadable store is a denial, and 503 tells the
             // caller it may be worth retrying later.
             Self::ERR_STORE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ERR_NOT_IMPLEMENTED => StatusCode::NOT_IMPLEMENTED,
         }
     }
 }
@@ -183,8 +205,11 @@ mod tests {
             ReasonCode::ERR_NONCE_NOT_MONOTONIC,
             ReasonCode::ERR_CLAIM_EXCEEDS_DEPOSIT,
             ReasonCode::ERR_INVALID_SIGNATURE,
+            ReasonCode::ERR_NOTHING_TO_SETTLE,
+            ReasonCode::ERR_WRONG_PROVIDER_KEY,
+            ReasonCode::ERR_SETTLEMENT_UNAVAILABLE,
+            ReasonCode::ERR_SETTLEMENT_FAILED,
             ReasonCode::ERR_STORE_UNAVAILABLE,
-            ReasonCode::ERR_NOT_IMPLEMENTED,
         ];
         for c in all {
             assert!(!c.status().is_success(), "{} maps to 2xx", c.as_str());
