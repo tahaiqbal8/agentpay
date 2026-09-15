@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rustc --version)",
+      "Bash(solana --version)",
+      "Bash(anchor --version)",
+      "Bash(avm --version)",
+      "Bash(pnpm -v)",
+      "WebSearch",
+      "WebFetch(domain:www.anchor-lang.com)",
+      "WebFetch(domain:docs.anza.xyz)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(mkdir -p /Users/hamza/Downloads/AgentPay/programs/agentpay/src /Users/hamza/Downloads/AgentPay/docs && echo ok)",
+      "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
+      "Bash(sh -s -- -y --default-toolchain stable --profile default)"
+    ]
+  }
+}

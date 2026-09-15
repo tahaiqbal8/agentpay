@@ -1,0 +1,9 @@
+target/
+.anchor/
+node_modules/
+dist/
+.env
+.env.*
+*.log
+test-ledger/
+**/*.rs.bk
