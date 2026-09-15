@@ -41,6 +41,10 @@ pub enum ReasonCode {
     ERR_SETTLEMENT_UNAVAILABLE,
     ERR_SETTLEMENT_FAILED,
 
+    // --- evidence log ---
+    ERR_EVIDENCE_UNAVAILABLE,
+    ERR_EVIDENCE_NOT_FOUND,
+
     // --- infrastructure: always deny, never allow ---
     ERR_STORE_UNAVAILABLE,
 }
@@ -63,6 +67,8 @@ impl ReasonCode {
             Self::ERR_WRONG_PROVIDER_KEY => "ERR_WRONG_PROVIDER_KEY",
             Self::ERR_SETTLEMENT_UNAVAILABLE => "ERR_SETTLEMENT_UNAVAILABLE",
             Self::ERR_SETTLEMENT_FAILED => "ERR_SETTLEMENT_FAILED",
+            Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
+            Self::ERR_EVIDENCE_NOT_FOUND => "ERR_EVIDENCE_NOT_FOUND",
             Self::ERR_STORE_UNAVAILABLE => "ERR_STORE_UNAVAILABLE",
         }
     }
@@ -99,6 +105,12 @@ impl ReasonCode {
             Self::ERR_SETTLEMENT_FAILED => {
                 "The settlement transaction could not be submitted or confirmed."
             }
+            Self::ERR_EVIDENCE_UNAVAILABLE => {
+                "The evidence log could not be read, so no root could be produced."
+            }
+            Self::ERR_EVIDENCE_NOT_FOUND => {
+                "No evidence entry exists at that sequence number."
+            }
             Self::ERR_STORE_UNAVAILABLE => {
                 "Session state could not be read, so the request was denied."
             }
@@ -121,9 +133,10 @@ impl ReasonCode {
             | Self::ERR_NOTHING_TO_SETTLE
             | Self::ERR_WRONG_PROVIDER_KEY => StatusCode::FORBIDDEN,
             // Configuration and chain trouble: the caller did nothing wrong.
-            Self::ERR_SETTLEMENT_UNAVAILABLE | Self::ERR_SETTLEMENT_FAILED => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            Self::ERR_SETTLEMENT_UNAVAILABLE
+            | Self::ERR_SETTLEMENT_FAILED
+            | Self::ERR_EVIDENCE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ERR_EVIDENCE_NOT_FOUND => StatusCode::NOT_FOUND,
             // Fail closed: an unreadable store is a denial, and 503 tells the
             // caller it may be worth retrying later.
             Self::ERR_STORE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
@@ -209,6 +222,8 @@ mod tests {
             ReasonCode::ERR_WRONG_PROVIDER_KEY,
             ReasonCode::ERR_SETTLEMENT_UNAVAILABLE,
             ReasonCode::ERR_SETTLEMENT_FAILED,
+            ReasonCode::ERR_EVIDENCE_UNAVAILABLE,
+            ReasonCode::ERR_EVIDENCE_NOT_FOUND,
             ReasonCode::ERR_STORE_UNAVAILABLE,
         ];
         for c in all {

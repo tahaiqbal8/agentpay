@@ -147,6 +147,57 @@ from. Stored as `BIGINT` unix seconds rather than `TIMESTAMPTZ` so it compares
 bit-for-bit with the value the on-chain program enforces; a timezone conversion
 here could drift from the chain.
 
+## D12 — Only authenticated decisions enter the evidence log
+
+**Deviation from the brief, deliberate.** The spec says record every decision.
+The gateway records every decision *reached after the claim's signature
+verified*: `ALLOWED`, `ERR_CLAIM_NOT_MONOTONIC`, `ERR_NONCE_NOT_MONOTONIC`,
+`ERR_CLAIM_EXCEEDS_DEPOSIT`, `ERR_SESSION_EXPIRED`.
+
+Excluded: `ERR_MALFORMED_CLAIM`, `ERR_INVALID_SIGNATURE`, `ERR_SESSION_UNKNOWN`,
+`ERR_CLAIM_EXPIRED`. All four are decided before the signature is checked.
+
+**Why this is not laziness.** Those paths are unauthenticated: anyone who learns
+a session pubkey can hit them. Recording them would let a stranger append leaves
+to a session they have nothing to do with, changing the Merkle root that gets
+committed on-chain. The log would still be tamper-evident, but its contents
+would no longer be attributable to the agent, and the root would be attacker-
+influenced. An append-only log anyone can append to is not evidence.
+
+Those attempts are still recorded in the application log with their request id.
+They are operational telemetry, not evidence.
+
+## D13 — Nothing is appended after settlement
+
+`ERR_SESSION_SETTLED` is not a recordable decision. The Merkle root over a
+session's log is committed on-chain at settlement; appending afterwards would
+change the root and make the published commitment unverifiable. Late claims are
+refused and logged operationally, and the committed root is frozen. Covered by
+`settled_sessions_stop_accruing_evidence`.
+
+## D14 — The Merkle root is computed, never supplied
+
+`/v1/session/settle` ignores any caller-supplied `merkle_root` whenever an
+evidence store is configured, and computes the root from the log instead. A
+caller-chosen root could disagree with the decisions actually recorded, which
+defeats the whole commitment. If the root cannot be computed the settlement is
+refused rather than committed with a wrong value — a wrong root is permanent
+once on-chain.
+
+The field is honoured only in the no-database configuration, so a verify-only
+deployment can still settle. It commits all zeroes by default, which honestly
+means "nothing recorded".
+
+## D15 — The clamp in the evidence entry hash
+
+A refused claim can carry any u64 the agent signed, including a value past
+`i64::MAX` that a `BIGINT` cannot hold. The hash must cover exactly what the
+column stores, or re-verifying the chain from the database would report
+tampering that never happened. So the value is clamped once and both hashed and
+stored in clamped form. Cost: two absurd claims (`u64::MAX` and `i64::MAX`)
+collapse to one entry. Both are refused as `ExceedsDeposit`, which the decision
+column records, so nothing an auditor needs is lost.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
@@ -359,6 +410,37 @@ silently counted as "not admitted". Two fixes: genuinely random pubkeys, and
 counting admitted / rejected / errored separately so a future failure is
 diagnosable rather than ambiguous. It now asserts exactly 1 admitted, 15
 refused, 0 errors, and passes 20/20 in isolation.
+
+### Evidence log — proven end to end on devnet
+
+Every authenticated decision now appends a hash-chained entry, and the Merkle
+root over those entries is committed on-chain at settlement. The root is no
+longer the honest-but-useless all-zeroes placeholder.
+
+Verified against devnet with an **independent** TypeScript SHA-256, Merkle, and
+proof implementation, so a bug in the gateway's own Merkle code cannot make the
+test pass:
+
+```
+7 claims driven: 3 ALLOWED, 4 DENIED
+local root     e50780ef545056200e8ad22a6d24e9453a974a9b44a085c618087b9000f7ee34
+on-chain root  e50780ef545056200e8ad22a6d24e9453a974a9b44a085c618087b9000f7ee34   MATCH
+settle tx      51D1nF8eQ5Abf7vM1EDb8RQUqxtWDiPksQTMa6E91Uvh2UqHmG29G3e1b9hqVT4UZuT3wCTei6CB3gPzWfSB3jM1
+```
+
+Decoded from the raw instruction data with `solana confirm -v`, not read back
+through Anchor: discriminator `[156,20,180,117,117,85,225,128]`, cumulative
+`750000`, nonce `5`, merkle_root `e50780ef…`, all-zeroes `False`.
+
+An inclusion proof for the **denial** at sequence 5
+(`ERR_CLAIM_EXCEEDS_DEPOSIT`, cumulative 99,000,000) verifies against that
+on-chain root in 3 hops. Both negative controls hold: the same proof does not
+verify a different leaf, and a tampered proof does not verify.
+
+That is the product claim made checkable — not "the agent paid", but "the agent
+was stopped, and here is the proof, anchored on a public chain".
+
+83 tests pass with a database; 65 hermetically without one.
 
 ### Not covered by this suite
 

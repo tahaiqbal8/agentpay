@@ -18,13 +18,19 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::claim::ClaimWire;
+use crate::db::Database;
 use crate::error::{Denial, ReasonCode};
+use crate::evidence::{verify_chain, MerkleTree};
 use crate::settle::{submit_settlement, SettleError};
 use crate::state::{ClaimRejection, SessionRecord, SessionStore, StoreError};
 use crate::verify::{verify_claim_signature, SignatureVerdict};
 
 pub struct AppState {
     pub store: Arc<dyn SessionStore>,
+    /// Same object as `store` when Postgres is configured, exposed concretely
+    /// because the evidence log is not part of the `SessionStore` abstraction.
+    /// `None` on the in-memory store, which keeps no evidence.
+    pub db: Option<Arc<Database>>,
     /// False while running on the non-durable in-memory store.
     pub durable_state: bool,
     pub program_id: Pubkey,
@@ -51,6 +57,10 @@ pub fn system_clock() -> i64 {
 
 fn request_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn store_denial(e: StoreError, rid: &str) -> Denial {
@@ -305,6 +315,10 @@ pub struct SettleSessionRequest {
 pub struct SettleSessionResponse {
     pub decision: &'static str,
     pub session: String,
+    /// The evidence root committed on-chain by this settlement, hex-encoded.
+    pub merkle_root: String,
+    /// How many decisions that root covers.
+    pub evidence_entries: usize,
     /// The on-chain transaction signature. Real, confirmed, and verifiable.
     pub signature: String,
     pub cumulative_amount: String,
@@ -345,8 +359,39 @@ pub async fn settle_session(
     let Ok(session) = req.session.parse::<Pubkey>() else {
         return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
     };
-    let Some(merkle_root) = parse_merkle_root(&req.merkle_root) else {
-        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+
+    // The root is computed from the evidence log, not supplied by the caller.
+    // An operator-chosen root would let the committed digest disagree with the
+    // decisions actually recorded, which defeats the entire commitment.
+    //
+    // An explicit `merkle_root` in the request is honoured ONLY when no
+    // evidence store exists, so a verify-only deployment can still settle.
+    let mut evidence_count = 0usize;
+    let merkle_root = match &state.db {
+        Some(db) => match db.load_evidence_leaves(&session).await {
+            Ok(leaves) => {
+                evidence_count = leaves.len();
+                MerkleTree::new(leaves).root()
+            }
+            Err(e) => {
+                error!(request_id = %rid, session = %session, error = %e,
+                       "could not compute evidence root");
+                // Fail closed: settling with a wrong root is worse than not
+                // settling, because the wrong root is permanent once on-chain.
+                return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+            }
+        },
+        None => {
+            let Some(root) = parse_merkle_root(&req.merkle_root) else {
+                return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+            };
+            warn!(
+                request_id = %rid,
+                "no evidence store configured; committing the caller-supplied root \
+                 (all zeroes unless overridden)"
+            );
+            root
+        }
     };
 
     // Verify-only deployments have no signing key and cannot settle. Say so
@@ -432,12 +477,200 @@ pub async fn settle_session(
     Ok(Json(SettleSessionResponse {
         decision: "SETTLED",
         session: session.to_string(),
+        merkle_root: hex32(&merkle_root),
+        evidence_entries: evidence_count,
         signature: outcome.signature,
         cumulative_amount: outcome.cumulative_amount.to_string(),
         nonce: outcome.nonce.to_string(),
         provider_token_account: outcome.provider_token_account.to_string(),
         settlement_record: outcome.settlement_record.to_string(),
         token_program: outcome.token_program.to_string(),
+        request_id: rid,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /v1/session/{session}/evidence
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct EvidenceEntryView {
+    pub sequence_id: i64,
+    pub decision: String,
+    pub cumulative_amount: String,
+    pub nonce: String,
+    pub prev_hash: String,
+    pub entry_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionEvidenceResponse {
+    pub session: String,
+    pub merkle_root: String,
+    pub entry_count: usize,
+    /// Result of walking the hash chain server-side. An auditor should not
+    /// trust this field — it is a convenience. Recompute the chain from
+    /// `entries` and compare against the on-chain root instead.
+    pub chain_valid: bool,
+    pub chain_error: Option<String>,
+    pub entries: Vec<EvidenceEntryView>,
+    pub request_id: String,
+}
+
+pub async fn session_evidence(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(session_str): axum::extract::Path<String>,
+) -> Result<Json<SessionEvidenceResponse>, Denial> {
+    let rid = request_id();
+
+    let Ok(session) = session_str.parse::<Pubkey>() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    };
+    let Some(db) = &state.db else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    };
+
+    let entries = db.load_evidence_chain(&session).await.map_err(|e| {
+        error!(request_id = %rid, error = %e, "could not load evidence chain");
+        Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid)
+    })?;
+
+    let root = MerkleTree::new(entries.iter().map(|e| e.entry_hash).collect()).root();
+    let chain_error = verify_chain(&session, &entries).err().map(|e| format!("{e:?}"));
+
+    Ok(Json(SessionEvidenceResponse {
+        session: session.to_string(),
+        merkle_root: hex32(&root),
+        entry_count: entries.len(),
+        chain_valid: chain_error.is_none(),
+        chain_error,
+        entries: entries
+            .iter()
+            .map(|e| EvidenceEntryView {
+                sequence_id: e.sequence_id,
+                decision: e.decision.clone(),
+                cumulative_amount: e.cumulative_amount.to_string(),
+                nonce: e.nonce.to_string(),
+                prev_hash: hex32(&e.prev_hash),
+                entry_hash: hex32(&e.entry_hash),
+            })
+            .collect(),
+        request_id: rid,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// POST /v1/evidence/proof
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct EvidenceProofRequest {
+    pub session: String,
+    /// Which decision to prove, by its per-session sequence number.
+    pub sequence_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProofNodeView {
+    pub hash: String,
+    /// "left" or "right" — the side the sibling sits on. A verifier MUST
+    /// respect this when concatenating, or the recomputed root will not match.
+    pub side: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvidenceProofResponse {
+    pub session: String,
+    pub sequence_id: i64,
+    pub decision: String,
+    pub cumulative_amount: String,
+    pub nonce: String,
+    /// The leaf being proved: this entry's hash.
+    pub leaf_hash: String,
+    /// Root the proof reconstructs. Compare against the root committed on-chain
+    /// by the settlement transaction — that comparison is the actual audit.
+    pub merkle_root: String,
+    pub leaf_index: usize,
+    pub total_leaves: usize,
+    pub proof: Vec<ProofNodeView>,
+    /// Self-check that the returned proof reconstructs the returned root.
+    /// Guards against this server shipping a malformed proof; it is NOT
+    /// evidence of anything on its own, since both values come from here.
+    pub verified_locally: bool,
+    pub request_id: String,
+}
+
+/// Merkle inclusion proof for a single decision.
+///
+/// Lets a third party confirm that one specific decision — critically, a
+/// *denial* — is covered by the root committed on-chain, without being given
+/// the whole log. The denial is the product: an agent that was stopped is what
+/// a finance team needs proof of.
+pub async fn evidence_proof(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<EvidenceProofRequest>,
+) -> Result<Json<EvidenceProofResponse>, Denial> {
+    let rid = request_id();
+
+    let Ok(session) = req.session.parse::<Pubkey>() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    };
+    let Some(db) = &state.db else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    };
+
+    let entries = db.load_evidence_chain(&session).await.map_err(|e| {
+        error!(request_id = %rid, error = %e, "could not load evidence chain");
+        Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid)
+    })?;
+
+    // sequence_id is 0-based and contiguous, so it is also the leaf index.
+    // verify_chain enforces that invariant; this looks the entry up rather than
+    // assuming it, so a gap yields a clean 404 instead of an off-by-one proof.
+    let Some(leaf_index) = entries.iter().position(|e| e.sequence_id == req.sequence_id) else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_NOT_FOUND, &rid));
+    };
+    let entry = &entries[leaf_index];
+
+    let tree = MerkleTree::new(entries.iter().map(|e| e.entry_hash).collect());
+    let root = tree.root();
+    let Some(proof) = tree.proof(leaf_index) else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_NOT_FOUND, &rid));
+    };
+
+    let verified_locally =
+        crate::evidence::verify_proof(&entry.entry_hash, &proof, &root);
+    if !verified_locally {
+        error!(
+            request_id = %rid,
+            session = %session,
+            sequence_id = req.sequence_id,
+            "generated a proof that does not verify against its own root"
+        );
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    }
+
+    Ok(Json(EvidenceProofResponse {
+        session: session.to_string(),
+        sequence_id: entry.sequence_id,
+        decision: entry.decision.clone(),
+        cumulative_amount: entry.cumulative_amount.to_string(),
+        nonce: entry.nonce.to_string(),
+        leaf_hash: hex32(&entry.entry_hash),
+        merkle_root: hex32(&root),
+        leaf_index,
+        total_leaves: tree.leaf_count(),
+        proof: proof
+            .iter()
+            .map(|n| ProofNodeView {
+                hash: hex32(&n.hash),
+                side: match n.side {
+                    crate::evidence::Side::Left => "left",
+                    crate::evidence::Side::Right => "right",
+                },
+            })
+            .collect(),
+        verified_locally,
         request_id: rid,
     }))
 }

@@ -12,6 +12,7 @@ mod claim;
 mod config;
 mod db;
 mod error;
+mod evidence;
 mod routes;
 mod settle;
 mod state;
@@ -42,6 +43,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/session/open", post(routes::open_session))
         .route("/v1/claim/verify", post(routes::verify_claim))
         .route("/v1/session/settle", post(routes::settle_session))
+        .route("/v1/session/{session}/evidence", get(routes::session_evidence))
+        .route("/v1/evidence/proof", post(routes::evidence_proof))
         .layer(TraceLayer::new_for_http())
         // A hung upstream must not pin a connection indefinitely.
         .layer(TimeoutLayer::with_status_code(
@@ -72,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Durable store when DATABASE_URL is set; otherwise the ephemeral one, with
     // the security consequence stated loudly rather than buried.
-    let (store, durable): (Arc<dyn SessionStore>, bool) = match &config.database_url {
+    let (db_handle, durable): (Option<Arc<Database>>, bool) = match &config.database_url {
         Some(url) => {
             let db = Database::connect(url).await?;
 
@@ -92,16 +95,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "restored high-water mark"
                 );
             }
-            (Arc::new(db), true)
+            let db = Arc::new(db);
+            (Some(db), true)
         }
         None => {
             warn!(
                 "DATABASE_URL is not set; session state is IN-MEMORY and does not \
                  survive restart. A restart reopens claim replay for every live \
-                 session. Do not run this way in production."
+                 session, and NO evidence is recorded, so settlement commits an \
+                 all-zero Merkle root. Do not run this way in production."
             );
-            (Arc::new(InMemorySessionStore::new()), false)
+            (None, false)
         }
+    };
+
+    let store: Arc<dyn SessionStore> = match &db_handle {
+        Some(db) => Arc::clone(db) as Arc<dyn SessionStore>,
+        None => Arc::new(InMemorySessionStore::new()),
     };
 
     // Settlement needs the provider's signing key. Without one the gateway
@@ -131,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState {
         store,
+        db: db_handle,
         durable_state: durable,
         program_id: config.program_id,
         clock: Arc::new(system_clock),

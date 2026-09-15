@@ -30,6 +30,9 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::claim::Claim;
+use crate::evidence::{
+    compute_entry_hash, Decision, EvidenceEntry, MerkleTree, GENESIS_PREV_HASH,
+};
 use crate::state::{
     evaluate_claim, ClaimAccepted, ClaimRejection, SessionRecord, SessionStore, SignedClaim,
     StoreError,
@@ -52,6 +55,8 @@ pub enum DbError {
     BadPubkey(String),
     #[error("stored signature is {0} bytes, expected 64")]
     BadSignature(usize),
+    #[error("stored hash is {0} bytes, expected 32")]
+    BadHash(usize),
 }
 
 impl From<DbError> for StoreError {
@@ -187,6 +192,74 @@ impl Database {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Every entry hash for a session, ordered by `sequence_id ASC`.
+    ///
+    /// Order is the Merkle leaf order, so this query's `ORDER BY` is part of
+    /// the commitment: returning rows in any other order yields a different
+    /// root.
+    pub async fn load_evidence_leaves(&self, session: &Pubkey) -> Result<Vec<[u8; 32]>, DbError> {
+        let rows = sqlx::query(
+            "SELECT entry_hash FROM evidence_log \
+             WHERE session_pubkey = $1 ORDER BY sequence_id ASC",
+        )
+        .bind(session.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let raw: Vec<u8> = row.try_get("entry_hash")?;
+                let len = raw.len();
+                raw.try_into().map_err(|_| DbError::BadHash(len))
+            })
+            .collect()
+    }
+
+    /// The full chain, for verification and for the proof endpoint.
+    pub async fn load_evidence_chain(
+        &self,
+        session: &Pubkey,
+    ) -> Result<Vec<EvidenceEntry>, DbError> {
+        let rows = sqlx::query(
+            "SELECT sequence_id, cumulative_amount, nonce, decision, prev_hash, entry_hash \
+             FROM evidence_log WHERE session_pubkey = $1 ORDER BY sequence_id ASC",
+        )
+        .bind(session.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let prev_raw: Vec<u8> = row.try_get("prev_hash")?;
+                let prev_len = prev_raw.len();
+                let entry_raw: Vec<u8> = row.try_get("entry_hash")?;
+                let entry_len = entry_raw.len();
+                Ok(EvidenceEntry {
+                    sequence_id: row.try_get("sequence_id")?,
+                    cumulative_amount: to_u64(
+                        row.try_get("cumulative_amount")?,
+                        "cumulative_amount",
+                    )?,
+                    nonce: to_u64(row.try_get("nonce")?, "nonce")?,
+                    decision: row.try_get("decision")?,
+                    prev_hash: prev_raw.try_into().map_err(|_| DbError::BadHash(prev_len))?,
+                    entry_hash: entry_raw
+                        .try_into()
+                        .map_err(|_| DbError::BadHash(entry_len))?,
+                })
+            })
+            .collect()
+    }
+
+    /// The 32-byte Merkle root over a session's evidence.
+    ///
+    /// All zeroes when the session has no evidence, which honestly means
+    /// "nothing recorded" rather than pretending a commitment exists.
+    pub async fn get_session_merkle_root(&self, session: &Pubkey) -> Result<[u8; 32], DbError> {
+        let leaves = self.load_evidence_leaves(session).await?;
+        Ok(MerkleTree::new(leaves).root())
+    }
+
     /// Validates ordering and advances the high-water mark, atomically.
     ///
     /// The whole read-decide-write cycle runs inside one transaction holding a
@@ -254,11 +327,37 @@ impl Database {
             is_settled: settled_at.is_some(),
         };
 
-        let accepted = match evaluate_claim(&record, claim, now) {
+        let outcome = evaluate_claim(&record, claim, now);
+
+        // Map the outcome to a recordable decision.
+        //
+        // `SessionSettled` is deliberately absent: the Merkle root over this
+        // log is committed on-chain at settlement, so appending afterwards
+        // would change a root that is already published and make the
+        // commitment unverifiable. Post-settlement attempts are refused and
+        // logged to the application log only.
+        let decision = match &outcome {
+            Ok(_) => Some(Decision::Allowed),
+            Err(ClaimRejection::NotMonotonic) => Some(Decision::NotMonotonic),
+            Err(ClaimRejection::NonceNotMonotonic) => Some(Decision::NonceNotMonotonic),
+            Err(ClaimRejection::ExceedsDeposit) => Some(Decision::ExceedsDeposit),
+            Err(ClaimRejection::SessionExpired) => Some(Decision::SessionExpired),
+            Err(ClaimRejection::SessionSettled) => None,
+        };
+
+        // Denials are first-class evidence. A CFO's question is "was the agent
+        // ever stopped?", and a log that only records successes cannot answer
+        // it, so this runs before the early return below.
+        if let Some(decision) = decision {
+            append_evidence(&mut tx, claim, decision, signature).await?;
+        }
+
+        let accepted = match outcome {
             Ok(accepted) => accepted,
             Err(rejection) => {
-                // Nothing was written; rolling back is tidy rather than required.
-                tx.rollback().await?;
+                // The evidence entry must survive even though the claim did
+                // not, so this commits rather than rolls back.
+                tx.commit().await?;
                 return Ok(Err(rejection));
             }
         };
@@ -304,6 +403,88 @@ impl Database {
         tx.commit().await?;
         Ok(Ok(accepted))
     }
+}
+
+/// Appends one entry to a session's chain, inside the caller's transaction.
+///
+/// The caller MUST already hold the session row lock. That lock is what makes
+/// "read the latest sequence, add one, insert" safe; without it two writers
+/// could compute the same sequence number and one would lose to the unique
+/// constraint. The constraint is the backstop, not the mechanism.
+async fn append_evidence(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &Claim,
+    decision: Decision,
+    signature: &[u8; 64],
+) -> Result<(), DbError> {
+    let session_key = claim.session.to_string();
+
+    let last = sqlx::query(
+        "SELECT sequence_id, entry_hash FROM evidence_log \
+         WHERE session_pubkey = $1 ORDER BY sequence_id DESC LIMIT 1",
+    )
+    .bind(&session_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let (sequence_id, prev_hash) = match last {
+        Some(row) => {
+            let seq: i64 = row.try_get("sequence_id")?;
+            let raw: Vec<u8> = row.try_get("entry_hash")?;
+            let len = raw.len();
+            let prev: [u8; 32] = raw.try_into().map_err(|_| DbError::BadHash(len))?;
+            (
+                seq.checked_add(1).ok_or(DbError::OutOfRange {
+                    field: "sequence_id",
+                    value: u64::MAX,
+                })?,
+                prev,
+            )
+        }
+        None => (0, GENESIS_PREV_HASH),
+    };
+
+    // A refused claim may carry any value the agent signed, including one past
+    // i64::MAX that a BIGINT cannot hold. The hash MUST cover exactly what the
+    // column stores, or re-verifying the chain from the database would report
+    // tampering that never happened. So clamp once, then both hash and store
+    // the clamped value.
+    //
+    // Cost of the clamp: two absurd claims (u64::MAX and i64::MAX) collapse to
+    // one entry. Both are refused as ExceedsDeposit, which the decision column
+    // records, so nothing an auditor needs is lost.
+    let stored_cumulative = claim.cumulative_amount.min(i64::MAX as u64);
+    let stored_nonce = claim.nonce.min(i64::MAX as u64);
+
+    let entry_hash = compute_entry_hash(
+        &prev_hash,
+        &claim.session,
+        stored_cumulative,
+        stored_nonce,
+        decision.as_str(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO evidence_log (
+            session_pubkey, sequence_id, cumulative_amount, nonce,
+            decision, prev_hash, entry_hash, signature
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(&session_key)
+    .bind(sequence_id)
+    .bind(stored_cumulative as i64)
+    .bind(stored_nonce as i64)
+    .bind(decision.as_str())
+    .bind(&prev_hash[..])
+    .bind(&entry_hash[..])
+    .bind(&signature[..])
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 fn row_to_record(row: PgRow) -> Result<SessionRecord, DbError> {
@@ -827,6 +1008,207 @@ mod pg_tests {
             .admit_claim(&claim_for(random_pubkey(), 100, 1), &sig(1), NOW)
             .await;
         assert!(matches!(via_trait, Err(StoreError::Unknown)));
+    }
+
+    /// The spec's core requirement: every claim attempt, allowed or refused,
+    /// appends exactly one entry and advances sequence_id by one.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn every_authenticated_attempt_appends_one_entry() {
+        use crate::evidence::{verify_chain, Decision};
+
+        let db = connect_db().await;
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+
+        // A deliberate mix: allowed, replay, regression, nonce reuse, over-cap.
+        let attempts: Vec<(u64, u64, &str)> = vec![
+            (100, 1, "ALLOWED"),
+            (250, 2, "ALLOWED"),
+            (250, 3, "ERR_CLAIM_NOT_MONOTONIC"),
+            (100, 4, "ERR_CLAIM_NOT_MONOTONIC"),
+            (500, 2, "ERR_NONCE_NOT_MONOTONIC"),
+            (9_999_999, 9, "ERR_CLAIM_EXCEEDS_DEPOSIT"),
+            (500, 5, "ALLOWED"),
+        ];
+        for (cum, nonce, _) in &attempts {
+            let _ = db
+                .upsert_claim_high_water_mark(&claim_for(rec.session, *cum, *nonce), &sig(7), NOW)
+                .await
+                .unwrap();
+        }
+
+        let chain = db.load_evidence_chain(&rec.session).await.unwrap();
+        assert_eq!(
+            chain.len(),
+            attempts.len(),
+            "every attempt must appear, denials included"
+        );
+
+        for (i, (expected, entry)) in attempts.iter().zip(chain.iter()).enumerate() {
+            assert_eq!(entry.sequence_id, i as i64, "sequence must be contiguous");
+            assert_eq!(entry.cumulative_amount, expected.0);
+            assert_eq!(entry.nonce, expected.1);
+            assert_eq!(entry.decision, expected.2, "decision at seq {i}");
+        }
+
+        // Four of the seven were refused. A log recording only successes could
+        // not answer "was this agent ever stopped?".
+        let denials = chain.iter().filter(|e| e.decision != "ALLOWED").count();
+        assert_eq!(denials, 4);
+        assert!(Decision::parse(&chain[0].decision).unwrap().is_allowed());
+
+        assert_eq!(chain[0].prev_hash, GENESIS_PREV_HASH);
+        assert_eq!(verify_chain(&rec.session, &chain), Ok(()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn merkle_root_is_deterministic_and_grows_with_the_log() {
+        use crate::evidence::{verify_proof, MerkleTree};
+
+        let db = connect_db().await;
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+
+        assert_eq!(
+            db.get_session_merkle_root(&rec.session).await.unwrap(),
+            crate::evidence::EMPTY_ROOT,
+            "a session with no evidence commits all zeroes"
+        );
+
+        let mut roots = Vec::new();
+        for (cum, nonce) in [(100u64, 1u64), (200, 2), (200, 3), (300, 4), (400, 5)] {
+            let _ = db
+                .upsert_claim_high_water_mark(&claim_for(rec.session, cum, nonce), &sig(3), NOW)
+                .await
+                .unwrap();
+            let root = db.get_session_merkle_root(&rec.session).await.unwrap();
+            assert!(!roots.contains(&root), "each new entry must change the root");
+            roots.push(root);
+        }
+
+        // Deterministic: recomputing from the same log yields the same root.
+        let again = db.get_session_merkle_root(&rec.session).await.unwrap();
+        assert_eq!(again, *roots.last().unwrap());
+
+        // And every entry, including the refused one at index 2, proves against it.
+        let chain = db.load_evidence_chain(&rec.session).await.unwrap();
+        let tree = MerkleTree::new(chain.iter().map(|e| e.entry_hash).collect());
+        assert_eq!(tree.root(), again);
+        assert_eq!(chain[2].decision, "ERR_CLAIM_NOT_MONOTONIC");
+        for (i, entry) in chain.iter().enumerate() {
+            let proof = tree.proof(i).expect("proof");
+            assert!(
+                verify_proof(&entry.entry_hash, &proof, &again),
+                "entry {i} did not prove against the root"
+            );
+        }
+    }
+
+    /// Appending after settlement would change a root that is already committed
+    /// on-chain, making the commitment unverifiable.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn settled_sessions_stop_accruing_evidence() {
+        let db = connect_db().await;
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+        db.upsert_claim_high_water_mark(&claim_for(rec.session, 100, 1), &sig(1), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let root_at_settlement = db.get_session_merkle_root(&rec.session).await.unwrap();
+        let count_at_settlement = db.load_evidence_chain(&rec.session).await.unwrap().len();
+        db.mark_session_settled(&rec.session).await.unwrap();
+
+        // A late claim is refused...
+        assert_eq!(
+            db.upsert_claim_high_water_mark(&claim_for(rec.session, 900, 2), &sig(2), NOW)
+                .await
+                .unwrap(),
+            Err(ClaimRejection::SessionSettled)
+        );
+
+        // ...and leaves the committed root untouched.
+        assert_eq!(
+            db.load_evidence_chain(&rec.session).await.unwrap().len(),
+            count_at_settlement
+        );
+        assert_eq!(
+            db.get_session_merkle_root(&rec.session).await.unwrap(),
+            root_at_settlement,
+            "the root committed on-chain must not move after settlement"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn evidence_is_isolated_per_session() {
+        let a = record(1_000_000);
+        let b = record(1_000_000);
+        let db = connect_db().await;
+        db.save_session(&a).await.unwrap();
+        db.save_session(&b).await.unwrap();
+
+        db.upsert_claim_high_water_mark(&claim_for(a.session, 100, 1), &sig(1), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Identical claim values on a different session must still produce a
+        // different entry hash, because the session is in the preimage.
+        db.upsert_claim_high_water_mark(&claim_for(b.session, 100, 1), &sig(1), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let ca = db.load_evidence_chain(&a.session).await.unwrap();
+        let cb = db.load_evidence_chain(&b.session).await.unwrap();
+        assert_eq!(ca.len(), 1);
+        assert_eq!(cb.len(), 1);
+        assert_ne!(ca[0].entry_hash, cb[0].entry_hash);
+        assert_ne!(
+            db.get_session_merkle_root(&a.session).await.unwrap(),
+            db.get_session_merkle_root(&b.session).await.unwrap()
+        );
+    }
+
+    /// Concurrent claims must not fork the sequence. The unique constraint is
+    /// the backstop; the session row lock is what should actually prevent it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore = "requires DATABASE_URL"]
+    async fn concurrent_attempts_produce_a_contiguous_chain() {
+        use crate::evidence::verify_chain;
+        use std::sync::Arc;
+
+        let db = Arc::new(connect_db().await);
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..12u64 {
+            let db = Arc::clone(&db);
+            let session = rec.session;
+            handles.push(tokio::spawn(async move {
+                db.upsert_claim_high_water_mark(
+                    &claim_for(session, 1_000 + i, i + 1),
+                    &sig(1),
+                    NOW,
+                )
+                .await
+                .map(|_| ())
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().expect("no db errors");
+        }
+
+        let chain = db.load_evidence_chain(&rec.session).await.unwrap();
+        assert_eq!(chain.len(), 12, "every attempt recorded exactly once");
+        // Contiguous sequence and intact links prove the writes serialised.
+        assert_eq!(verify_chain(&rec.session, &chain), Ok(()));
     }
 
     #[tokio::test]
