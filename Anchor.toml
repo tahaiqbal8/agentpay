@@ -7,11 +7,14 @@ skip-lint = false
 [programs.localnet]
 agentpay = "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U"
 
+[programs.devnet]
+agentpay = "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U"
+
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "npm exec -- ts-mocha -p ./tsconfig.json -t 1000000 tests/attacks.ts"
 
 [hooks]

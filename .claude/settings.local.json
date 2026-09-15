@@ -13,7 +13,16 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(mkdir -p /Users/hamza/Downloads/AgentPay/programs/agentpay/src /Users/hamza/Downloads/AgentPay/docs && echo ok)",
       "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
-      "Bash(sh -s -- -y --default-toolchain stable --profile default)"
+      "Bash(sh -s -- -y --default-toolchain stable --profile default)",
+      "Bash(pgrep -qf \"[n]pm install\")",
+      "Bash(cd /Users/hamza/Downloads/AgentPay; ls node_modules 2>/dev/null | wc -l; ps aux | grep -c \"[n]pm install\"; echo \"--- npm log tail ---\"; ls -t ~/.npm/_logs/*.log 2>/dev/null | head -1 | xargs tail -20 2>/dev/null)",
+      "Bash(pkill -f \"[s]olana-test-validator\")",
+      "Bash(./scripts/test-local.sh)",
+      "Bash(npm exec *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(chmod +x scripts/deploy-devnet.sh)",
+      "Bash(./scripts/deploy-devnet.sh)",
+      "Bash(git add *)"
     ]
   }
 }

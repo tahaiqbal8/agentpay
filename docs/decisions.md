@@ -93,9 +93,13 @@ Installed versions on this machine:
 | Tool | Version |
 |---|---|
 | rustc / cargo | 1.98.1 |
-| Agave / Solana CLI | 4.2.2 (`src:e29e5d91`) |
-| anchor-cli | 1.2.0 (provenance-verified via avm) |
-| Anchor-managed SBF toolchain | 4.1.2 |
+| Agave / Solana CLI | 4.1.2 (`src:182084b8`) |
+| anchor-cli / avm | 1.2.0 (provenance-verified via avm) |
+| Node / npm | 25.9.0 / 11.12.1 |
+| `@anchor-lang/core` (TS client) | 1.2.0 |
+
+> An earlier revision of this table recorded the Solana CLI as 4.2.2; the
+> binary on PATH reports 4.1.2, which is what built and deployed the program.
 
 ## Resolved during the build
 
@@ -120,21 +124,53 @@ Confirmed working as written: `CpiContext::new(token_program.key(), ...)` with a
 `Pubkey` under Anchor 1.x, `ctx.bumps.<name>` field access, `token::token_program`
 constraint syntax, and `#[derive(InitSpace)]`.
 
-## Still unverified — compiles, but not yet executed
+## Runtime verification — executed against a local validator
 
-`anchor build` proves the code typechecks. It proves **nothing** about runtime
-behaviour. These remain open until the attack test suite runs against a validator:
+Deployed to `solana-test-validator` (Agave 4.1.2) at program ID
+`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`. The attack suite
+(`tests/attacks.ts`, 24 tests) passes; `tests/diagnostics.ts` dumps the raw
+on-chain failures for the two defences that are structural rather than Anchor
+error codes, so the loose regexes in the suite are checked rather than trusted.
 
-| Assumption | Risk |
-|---|---|
-| Ed25519 precompile data layout `[num_sigs u8][padding u8][7 × u16 offsets]` is parsed correctly | **High** — silently wrong parsing means claim verification passes on forged input |
-| `u16::MAX` self-reference sentinel is what real clients emit | **High** — if clients emit the literal instruction index, strict checking rejects *valid* claims and settlement never works |
-| `init` on `settlement_record` actually rejects the second settle | Medium — the double-settle defence, untested |
-| Permissionless post-expiry refund works with no agent signature | Medium — the central trust claim, untested |
-| PDA signer seeds authorise the vault transfer | Medium — untested |
+Every previously-open assumption is now resolved:
 
-**No instruction in this program has ever been executed.** Nothing here should be
-treated as working until Phase 3 (attack suite) is green.
+| Assumption | Prior risk | Outcome |
+|---|---|---|
+| Ed25519 precompile layout `[num_sigs u8][padding u8][7 × u16 offsets]` parsed correctly | High | **Confirmed.** Canonical header observed: `numSignatures=1, padding=0, signatureOffset=48, publicKeyOffset=16, messageOffset=112, messageSize=73` |
+| `u16::MAX` self-reference sentinel is what real clients emit | High | **Confirmed.** `Ed25519Program.createInstructionWithPrivateKey` emits `65535` for all three instruction-index fields. Strict checking accepts valid claims (happy path settles) and rejects indirect references |
+| `init` on `settlement_record` rejects the second settle | Medium | **Confirmed.** Second settle fails in the System Program: `Allocate: account 3robLv… already in use`. Provider balance stays at exactly one payment |
+| Permissionless post-expiry refund with no agent signature | Medium | **Confirmed.** A third-party `rescuer` keypair recovered the full 3 USDC deposit to the agent's ATA; the agent never signed |
+| PDA signer seeds authorise the vault transfer | Medium | **Confirmed.** Both settle and refund move tokens out of the vault under session-PDA authority |
+
+### The indirect-reference defence is genuinely ours
+
+Worth stating precisely, because it is easy to get false comfort here. A
+standalone transaction containing the tampered Ed25519 instruction — offsets
+intact but all three instruction-index fields set to `0` instead of the
+sentinel — **lands successfully on chain**. The precompile accepts it. So when
+the attack test gets `Ed25519IndirectReference`, that rejection is
+`verify_ed25519_claim` firing, not the precompile doing the work for us.
+
+### Honest limitation: monotonicity is still untested as such
+
+`ClaimNotMonotonic` is covered by a test, but only in the degenerate form
+`cumulative_amount == 0`. Under D2 (single settle), `cumulative_settled` is
+always `0` when `settle_session` runs, so a *prior non-zero settled value*
+is unreachable state and the ordering comparison cannot be exercised. The check
+remains defence-in-depth for a future multi-settle design, as D2 says — but no
+test currently proves it orders two non-zero claims correctly, and none can
+until multi-settle exists.
+
+### Not covered by this suite
+
+- Concurrent duplicate settlement (the gateway-side dedup hazard). That is an
+  off-chain correctness problem and belongs to the gateway phase; on-chain, the
+  `settlement_record` PDA already makes a second settle impossible.
+- Token-2022 mints. Every test uses `TOKEN_PROGRAM_ID`. The `token_interface`
+  code path for Token-2022 compiles but has never executed.
+- Compute-unit headroom under adversarial input sizes.
+- Vault substitution, which is structurally blocked by `has_one = vault` plus
+  the seeds constraint, but has no dedicated test.
 
 # External facts verified this session, with sources
 
