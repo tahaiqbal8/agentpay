@@ -1,0 +1,194 @@
+//! Machine-readable reason codes.
+//!
+//! Every allow and every deny carries one of these. They appear in the API
+//! response, the logs, and eventually the dashboard and the evidence log, so
+//! they are a stable interface — renaming one is a breaking change.
+//!
+//! Codes mirror the program's `AgentPayError` names where the same rule is
+//! enforced in both places, so a denial can be traced across the boundary.
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::Serialize;
+
+// The variant names ARE the wire codes; they appear verbatim in API responses,
+// logs, and the dashboard. Renaming them to CamelCase would either change the
+// contract or force a hand-written mapping that could drift from the enum.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ReasonCode {
+    // --- request shape ---
+    ERR_MALFORMED_CLAIM,
+    ERR_MALFORMED_REQUEST,
+
+    // --- session state ---
+    ERR_SESSION_UNKNOWN,
+    ERR_SESSION_ALREADY_OPEN,
+    ERR_SESSION_EXPIRED,
+    ERR_SESSION_SETTLED,
+
+    // --- claim validity ---
+    ERR_CLAIM_EXPIRED,
+    ERR_CLAIM_NOT_MONOTONIC,
+    ERR_NONCE_NOT_MONOTONIC,
+    ERR_CLAIM_EXCEEDS_DEPOSIT,
+    ERR_INVALID_SIGNATURE,
+
+    // --- infrastructure: always deny, never allow ---
+    ERR_STORE_UNAVAILABLE,
+
+    // --- not yet built; never returned as a success ---
+    ERR_NOT_IMPLEMENTED,
+}
+
+impl ReasonCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ERR_MALFORMED_CLAIM => "ERR_MALFORMED_CLAIM",
+            Self::ERR_MALFORMED_REQUEST => "ERR_MALFORMED_REQUEST",
+            Self::ERR_SESSION_UNKNOWN => "ERR_SESSION_UNKNOWN",
+            Self::ERR_SESSION_ALREADY_OPEN => "ERR_SESSION_ALREADY_OPEN",
+            Self::ERR_SESSION_EXPIRED => "ERR_SESSION_EXPIRED",
+            Self::ERR_SESSION_SETTLED => "ERR_SESSION_SETTLED",
+            Self::ERR_CLAIM_EXPIRED => "ERR_CLAIM_EXPIRED",
+            Self::ERR_CLAIM_NOT_MONOTONIC => "ERR_CLAIM_NOT_MONOTONIC",
+            Self::ERR_NONCE_NOT_MONOTONIC => "ERR_NONCE_NOT_MONOTONIC",
+            Self::ERR_CLAIM_EXCEEDS_DEPOSIT => "ERR_CLAIM_EXCEEDS_DEPOSIT",
+            Self::ERR_INVALID_SIGNATURE => "ERR_INVALID_SIGNATURE",
+            Self::ERR_STORE_UNAVAILABLE => "ERR_STORE_UNAVAILABLE",
+            Self::ERR_NOT_IMPLEMENTED => "ERR_NOT_IMPLEMENTED",
+        }
+    }
+
+    /// Plain-language text intended for a human reading the dashboard.
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::ERR_MALFORMED_CLAIM => "The claim could not be decoded.",
+            Self::ERR_MALFORMED_REQUEST => "The request body was not valid.",
+            Self::ERR_SESSION_UNKNOWN => "No such session is being tracked.",
+            Self::ERR_SESSION_ALREADY_OPEN => "That session is already being tracked.",
+            Self::ERR_SESSION_EXPIRED => "The session has expired and can no longer be used.",
+            Self::ERR_SESSION_SETTLED => "The session has already settled.",
+            Self::ERR_CLAIM_EXPIRED => "The claim's own expiry has passed.",
+            Self::ERR_CLAIM_NOT_MONOTONIC => {
+                "The cumulative amount did not increase over the last accepted claim."
+            }
+            Self::ERR_NONCE_NOT_MONOTONIC => {
+                "The claim sequence number did not increase over the last accepted claim."
+            }
+            Self::ERR_CLAIM_EXCEEDS_DEPOSIT => {
+                "The cumulative amount is larger than the session deposit."
+            }
+            Self::ERR_INVALID_SIGNATURE => "The claim signature is not valid for this session.",
+            Self::ERR_STORE_UNAVAILABLE => {
+                "Session state could not be read, so the request was denied."
+            }
+            Self::ERR_NOT_IMPLEMENTED => "This endpoint is not implemented yet.",
+        }
+    }
+
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::ERR_MALFORMED_CLAIM | Self::ERR_MALFORMED_REQUEST => StatusCode::BAD_REQUEST,
+            Self::ERR_SESSION_UNKNOWN => StatusCode::NOT_FOUND,
+            Self::ERR_SESSION_ALREADY_OPEN => StatusCode::CONFLICT,
+            Self::ERR_INVALID_SIGNATURE => StatusCode::UNAUTHORIZED,
+            // Every other denial is a policy/state decision, not a client error.
+            Self::ERR_SESSION_EXPIRED
+            | Self::ERR_SESSION_SETTLED
+            | Self::ERR_CLAIM_EXPIRED
+            | Self::ERR_CLAIM_NOT_MONOTONIC
+            | Self::ERR_NONCE_NOT_MONOTONIC
+            | Self::ERR_CLAIM_EXCEEDS_DEPOSIT => StatusCode::FORBIDDEN,
+            // Fail closed: an unreadable store is a denial, and 503 tells the
+            // caller it may be worth retrying later.
+            Self::ERR_STORE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ERR_NOT_IMPLEMENTED => StatusCode::NOT_IMPLEMENTED,
+        }
+    }
+}
+
+/// Error body returned to the agent.
+///
+/// Deliberately carries no internal detail: no RPC endpoints, no provider
+/// credentials, no Rust error strings. The reason code is the contract.
+#[derive(Debug, Serialize)]
+pub struct ApiError {
+    pub reason_code: &'static str,
+    pub message: &'static str,
+    pub request_id: String,
+}
+
+impl ApiError {
+    pub fn new(code: ReasonCode, request_id: impl Into<String>) -> (StatusCode, Self) {
+        (
+            code.status(),
+            Self {
+                reason_code: code.as_str(),
+                message: code.message(),
+                request_id: request_id.into(),
+            },
+        )
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        // Callers use `ApiError::new` to get an explicit status; this fallback
+        // only fires if one is constructed directly.
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+    }
+}
+
+/// A denial carrying its status, for use as a handler `Err` type.
+pub struct Denial(pub StatusCode, pub ApiError);
+
+impl Denial {
+    pub fn new(code: ReasonCode, request_id: &str) -> Self {
+        let (status, body) = ApiError::new(code, request_id);
+        Self(status, body)
+    }
+}
+
+impl IntoResponse for Denial {
+    fn into_response(self) -> Response {
+        (self.0, Json(self.1)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_unavailable_is_a_denial_not_a_pass() {
+        // Fail-closed, stated as a test: infrastructure trouble must never
+        // produce a 2xx.
+        assert!(ReasonCode::ERR_STORE_UNAVAILABLE.status().is_server_error());
+        assert!(!ReasonCode::ERR_STORE_UNAVAILABLE.status().is_success());
+    }
+
+    #[test]
+    fn no_reason_code_maps_to_success() {
+        let all = [
+            ReasonCode::ERR_MALFORMED_CLAIM,
+            ReasonCode::ERR_MALFORMED_REQUEST,
+            ReasonCode::ERR_SESSION_UNKNOWN,
+            ReasonCode::ERR_SESSION_ALREADY_OPEN,
+            ReasonCode::ERR_SESSION_EXPIRED,
+            ReasonCode::ERR_SESSION_SETTLED,
+            ReasonCode::ERR_CLAIM_EXPIRED,
+            ReasonCode::ERR_CLAIM_NOT_MONOTONIC,
+            ReasonCode::ERR_NONCE_NOT_MONOTONIC,
+            ReasonCode::ERR_CLAIM_EXCEEDS_DEPOSIT,
+            ReasonCode::ERR_INVALID_SIGNATURE,
+            ReasonCode::ERR_STORE_UNAVAILABLE,
+            ReasonCode::ERR_NOT_IMPLEMENTED,
+        ];
+        for c in all {
+            assert!(!c.status().is_success(), "{} maps to 2xx", c.as_str());
+            assert_eq!(c.as_str(), format!("{:?}", c));
+        }
+    }
+}

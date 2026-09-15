@@ -1,0 +1,32 @@
+[package]
+name = "agentpay-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "AgentPay enforcement gateway: claim verification, policy, evidence"
+
+# Deliberately its own workspace root. The Anchor program pins solana-program 3.x
+# through anchor-lang, while the gateway needs the 4.x split crates that
+# solana-client depends on. Sharing a workspace would force cargo to unify those
+# trees and fail. The root Cargo.toml excludes this directory.
+[workspace]
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http = { version = "0.7", features = ["trace", "timeout"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+ed25519-dalek = "3.0"
+solana-pubkey = "4.2"
+bs58 = "0.5"
+
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+overflow-checks = true

@@ -23,7 +23,8 @@
       "Bash(chmod +x scripts/deploy-devnet.sh)",
       "Bash(./scripts/deploy-devnet.sh)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }

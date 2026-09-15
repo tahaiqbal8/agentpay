@@ -1,5 +1,7 @@
 [workspace]
 members = ["programs/*"]
+# The gateway is its own workspace root; see gateway/Cargo.toml for why.
+exclude = ["gateway"]
 resolver = "2"
 
 [profile.release]
