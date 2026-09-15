@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+/*
+ * AgentPay console.
+ *
+ * Dark by default and committed to it: this is an operator surface that lives
+ * next to a terminal, not a marketing page. Emerald is reserved for confirmed
+ * on-chain state and nothing else, so "green" always means "the chain agrees".
+ * Denials are amber rather than red — a denial is the system working correctly,
+ * and colouring it like an outage teaches operators to dismiss it.
+ */
+
+@theme {
+  --color-bg: #09090b;
+  --color-surface: #0e0e11;
+  --color-surface-2: #131317;
+  --color-border: #1f1f25;
+  --color-border-bright: #2a2a33;
+
+  --color-fg: #e4e4e7;
+  --color-fg-muted: #a1a1aa;
+  --color-fg-dim: #71717a;
+
+  /* Confirmed on-chain / allowed */
+  --color-accent: #10b981;
+  --color-accent-dim: #065f46;
+  --color-accent-glow: #10b98133;
+
+  /* Cryptographic / informational */
+  --color-cyan: #22d3ee;
+  --color-cyan-dim: #155e75;
+
+  /* Denials: the system working, not an error */
+  --color-warn: #f59e0b;
+  --color-warn-dim: #78350f;
+
+  /* Genuine faults */
+  --color-danger: #ef4444;
+
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Tabular numerals everywhere numbers are compared down a column. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Subtle inner glow used on cards carrying on-chain state. */
+.glow-accent {
+  box-shadow: 0 0 0 1px var(--color-accent-glow), 0 0 24px -12px var(--color-accent);
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(to right, #ffffff06 1px, transparent 1px),
+    linear-gradient(to bottom, #ffffff06 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+@keyframes pulse-ring {
+  0% { opacity: 1; transform: scale(0.9); }
+  70% { opacity: 0; transform: scale(1.8); }
+  100% { opacity: 0; transform: scale(1.8); }
+}
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in-row {
+  animation: slide-in 220ms ease-out;
+}
+
+/* Respect users who have asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot::after,
+  .animate-in-row {
+    animation: none;
+  }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-bright);
+  border-radius: 6px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }

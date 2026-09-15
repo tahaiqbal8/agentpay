@@ -733,3 +733,123 @@ pub async fn evidence_proof(
         request_id: rid,
     }))
 }
+
+// --------------------------------------------------------------------------
+// GET /v1/sessions   — the monitor's table + high-water-mark bars
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct SessionSummaryView {
+    pub session: String,
+    pub agent: String,
+    pub provider: String,
+    pub mint: String,
+    /// Micro-USDC as strings; a JS client would round these as JSON numbers.
+    pub deposited_total: String,
+    pub cumulative_accepted: String,
+    pub remaining: String,
+    pub last_nonce: Option<String>,
+    pub expires_at: i64,
+    pub is_settled: bool,
+    pub evidence_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionSummaryView>,
+    pub request_id: String,
+}
+
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SessionListResponse>, Denial> {
+    let rid = request_id();
+    let Some(db) = &state.db else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    };
+
+    let rows = db.list_sessions(200).await.map_err(|e| {
+        error!(request_id = %rid, error = %e, "could not list sessions");
+        Denial::new(ReasonCode::ERR_STORE_UNAVAILABLE, &rid)
+    })?;
+
+    Ok(Json(SessionListResponse {
+        sessions: rows
+            .into_iter()
+            .map(|s| SessionSummaryView {
+                session: s.session.to_string(),
+                agent: s.agent.to_string(),
+                provider: s.provider.to_string(),
+                mint: s.mint.to_string(),
+                deposited_total: s.deposited_total.to_string(),
+                cumulative_accepted: s.cumulative_accepted.to_string(),
+                // Saturating: the invariant says this cannot go negative, but a
+                // dashboard must not panic if the database ever disagrees.
+                remaining: s
+                    .deposited_total
+                    .saturating_sub(s.cumulative_accepted)
+                    .to_string(),
+                last_nonce: s.last_nonce.map(|n| n.to_string()),
+                expires_at: s.expires_at,
+                is_settled: s.is_settled,
+                evidence_count: s.evidence_count,
+                created_at: s.created_at.to_rfc3339(),
+            })
+            .collect(),
+        request_id: rid,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /v1/decisions/recent   — the live claim feed
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct RecentDecisionView {
+    pub session: String,
+    pub sequence_id: i64,
+    pub decision: String,
+    pub allowed: bool,
+    pub cumulative_amount: String,
+    pub nonce: String,
+    pub entry_hash: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentDecisionsResponse {
+    pub decisions: Vec<RecentDecisionView>,
+    pub request_id: String,
+}
+
+pub async fn recent_decisions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<RecentDecisionsResponse>, Denial> {
+    let rid = request_id();
+    let Some(db) = &state.db else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    };
+
+    let rows = db.recent_decisions(60).await.map_err(|e| {
+        error!(request_id = %rid, error = %e, "could not load recent decisions");
+        Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid)
+    })?;
+
+    Ok(Json(RecentDecisionsResponse {
+        decisions: rows
+            .into_iter()
+            .map(|d| RecentDecisionView {
+                session: d.session.to_string(),
+                sequence_id: d.sequence_id,
+                allowed: d.decision == "ALLOWED",
+                decision: d.decision,
+                cumulative_amount: d.cumulative_amount.to_string(),
+                nonce: d.nonce.to_string(),
+                entry_hash: hex32(&d.entry_hash),
+                created_at: d.created_at.to_rfc3339(),
+            })
+            .collect(),
+        request_id: rid,
+    }))
+}

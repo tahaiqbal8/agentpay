@@ -82,6 +82,34 @@ fn parse_pubkey(s: &str) -> Result<Pubkey, DbError> {
         .map_err(|_| DbError::BadPubkey(s.to_string()))
 }
 
+/// One session as the dashboard needs it.
+#[derive(Debug, Clone)]
+pub struct SessionSummary {
+    pub session: Pubkey,
+    pub agent: Pubkey,
+    pub provider: Pubkey,
+    pub mint: Pubkey,
+    pub deposited_total: u64,
+    pub cumulative_accepted: u64,
+    pub last_nonce: Option<u64>,
+    pub expires_at: i64,
+    pub is_settled: bool,
+    pub evidence_count: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One decision for the live feed.
+#[derive(Debug, Clone)]
+pub struct RecentDecision {
+    pub session: Pubkey,
+    pub sequence_id: i64,
+    pub decision: String,
+    pub cumulative_amount: u64,
+    pub nonce: u64,
+    pub entry_hash: [u8; 32],
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
@@ -211,6 +239,91 @@ impl Database {
                 let raw: Vec<u8> = row.try_get("entry_hash")?;
                 let len = raw.len();
                 raw.try_into().map_err(|_| DbError::BadHash(len))
+            })
+            .collect()
+    }
+
+    /// One row per session for the dashboard, with its evidence count.
+    ///
+    /// `LEFT JOIN` plus `COUNT` rather than N+1 queries: the monitor polls this
+    /// on an interval, so it must stay one round trip regardless of session count.
+    pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionSummary>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT s.session_pubkey, s.agent_pubkey, s.provider_pubkey, s.mint_pubkey,
+                   s.deposited_total, s.expires_at, s.settled_at, s.created_at,
+                   COALESCE(c.cumulative_amount, 0) AS cumulative_accepted,
+                   c.nonce AS last_nonce,
+                   COALESCE(e.entry_count, 0)       AS evidence_count
+            FROM sessions s
+            LEFT JOIN claim_tickets c ON c.session_pubkey = s.session_pubkey
+            LEFT JOIN (
+                SELECT session_pubkey, COUNT(*) AS entry_count
+                FROM evidence_log GROUP BY session_pubkey
+            ) e ON e.session_pubkey = s.session_pubkey
+            ORDER BY s.created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let settled_at: Option<chrono::DateTime<chrono::Utc>> = row.try_get("settled_at")?;
+                let last_nonce: Option<i64> = row.try_get("last_nonce")?;
+                Ok(SessionSummary {
+                    session: parse_pubkey(row.try_get("session_pubkey")?)?,
+                    agent: parse_pubkey(row.try_get("agent_pubkey")?)?,
+                    provider: parse_pubkey(row.try_get("provider_pubkey")?)?,
+                    mint: parse_pubkey(row.try_get("mint_pubkey")?)?,
+                    deposited_total: to_u64(row.try_get("deposited_total")?, "deposited_total")?,
+                    cumulative_accepted: to_u64(
+                        row.try_get("cumulative_accepted")?,
+                        "cumulative_accepted",
+                    )?,
+                    last_nonce: last_nonce.map(|n| n.max(0) as u64),
+                    expires_at: row.try_get("expires_at")?,
+                    is_settled: settled_at.is_some(),
+                    evidence_count: row.try_get("evidence_count")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Most recent decisions across every session, for the live feed.
+    pub async fn recent_decisions(&self, limit: i64) -> Result<Vec<RecentDecision>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT session_pubkey, sequence_id, decision, cumulative_amount,
+                   nonce, entry_hash, created_at
+            FROM evidence_log
+            ORDER BY created_at DESC, id DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let raw: Vec<u8> = row.try_get("entry_hash")?;
+                let len = raw.len();
+                Ok(RecentDecision {
+                    session: parse_pubkey(row.try_get("session_pubkey")?)?,
+                    sequence_id: row.try_get("sequence_id")?,
+                    decision: row.try_get("decision")?,
+                    cumulative_amount: to_u64(
+                        row.try_get("cumulative_amount")?,
+                        "cumulative_amount",
+                    )?,
+                    nonce: to_u64(row.try_get("nonce")?, "nonce")?,
+                    entry_hash: raw.try_into().map_err(|_| DbError::BadHash(len))?,
+                    created_at: row.try_get("created_at")?,
+                })
             })
             .collect()
     }
