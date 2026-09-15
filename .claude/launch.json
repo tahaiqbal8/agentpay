@@ -5,7 +5,8 @@
       "name": "gateway",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["scripts/run-gateway.sh"],
-      "port": 8080
+      "port": 8080,
+      "autoPort": true
     }
   ]
 }

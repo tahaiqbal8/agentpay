@@ -24,7 +24,9 @@
       "Bash(./scripts/deploy-devnet.sh)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(lsof -nP -iTCP:8080 -sTCP:LISTEN)",
+      "Bash(ps -p 90123 -o pid,command)"
     ]
   }
 }

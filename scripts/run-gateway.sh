@@ -13,7 +13,10 @@ cd "$REPO_ROOT/gateway"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-export AGENTPAY_BIND_ADDR="${AGENTPAY_BIND_ADDR:-127.0.0.1:8080}"
+# Honour PORT when the launcher assigns one (autoPort), else default to 8080.
+# AGENTPAY_BIND_ADDR still wins if set explicitly.
+PORT="${PORT:-8080}"
+export AGENTPAY_BIND_ADDR="${AGENTPAY_BIND_ADDR:-127.0.0.1:${PORT}}"
 export AGENTPAY_RPC_URL="${AGENTPAY_RPC_URL:-https://api.devnet.solana.com}"
 export AGENTPAY_PROGRAM_ID="${AGENTPAY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}"
 export AGENTPAY_LOG="${AGENTPAY_LOG:-info,tower_http=debug}"
