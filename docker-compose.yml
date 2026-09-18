@@ -1,0 +1,105 @@
+# AgentPay — full stack.
+#
+# Identical on Windows (Docker Desktop + WSL2), macOS (Intel and Apple Silicon)
+# and Linux. Every base image is multi-arch, so nothing here is pinned to an
+# architecture and no `platform:` override is needed.
+#
+#   cp .env.example .env
+#   docker compose up -d --build
+#   open http://localhost:3100
+#
+# First build compiles ~450 Rust crates: 10-20 minutes on 2 cores. Later builds
+# reuse the dependency layer and take seconds.
+
+name: agentpay
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — the claim high-water marks and the evidence log.
+  #
+  # This is security state, not a cache: the high-water mark is the only thing
+  # stopping an agent replaying an old claim, and the chain cannot help because
+  # it only ever sees one settlement per session. The named volume is what makes
+  # a `docker compose restart` survivable.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentpay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentpay}
+      POSTGRES_DB: ${POSTGRES_DB:-agentpay}
+    ports:
+      # 5434 on the host: 5432 and 5433 are commonly taken by other projects.
+      # Bound to loopback so the database is not reachable off the machine.
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - agentpay-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The gateway waits on this, so it must mean "accepting queries",
+      # not merely "process started".
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentpay} -d ${POSTGRES_DB:-agentpay}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Gateway — verifies claims, enforces limits, writes evidence, settles.
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # Not just "started": sqlx runs migrations at boot and would fail
+        # against a database still initialising.
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-agentpay}:${POSTGRES_PASSWORD:-agentpay}@postgres:5432/${POSTGRES_DB:-agentpay}
+      AGENTPAY_RPC_URL: ${AGENTPAY_RPC_URL:-https://api.devnet.solana.com}
+      AGENTPAY_PROGRAM_ID: ${AGENTPAY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}
+      AGENTPAY_LOG: ${AGENTPAY_LOG:-info,tower_http=warn}
+      # Both of these are empty unless you set them in .env. The gateway treats
+      # an empty value as unset, because Compose interpolates an unset ${VAR}
+      # to "" rather than omitting it.
+      #
+      # No keypair  -> verify-only; /v1/session/settle returns
+      #                ERR_SETTLEMENT_UNAVAILABLE. A valid deployment mode.
+      AGENTPAY_PROVIDER_KEYPAIR: ${AGENTPAY_PROVIDER_KEYPAIR:-}
+      # DEVELOPMENT ONLY. Disables on-chain reconciliation, so a caller can
+      # assert a deposit that was never escrowed. Required by `npm run demo`
+      # because its sessions are synthetic. Never set this in production.
+      AGENTPAY_TRUST_OPEN_REQUESTS: ${AGENTPAY_TRUST_OPEN_REQUESTS:-}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      # Read-only. Put provider.json here and point
+      # AGENTPAY_PROVIDER_KEYPAIR=/secrets/provider.json in .env.
+      # A relative path works identically on Windows, macOS and Linux.
+      - ./secrets:/secrets:ro
+
+  # ---------------------------------------------------------------------------
+  # Console — the operator UI.
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      # Service name, not localhost: the browser never talks to the gateway
+      # directly. /api/gw/[...path] proxies server-side, so this resolves
+      # inside the compose network and the gateway URL never reaches the client.
+      AGENTPAY_GATEWAY_URL: http://gateway:8080
+    ports:
+      - "${WEB_PORT:-3100}:3100"
+
+volumes:
+  agentpay-pgdata:
+    driver: local

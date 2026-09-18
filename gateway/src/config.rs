@@ -51,8 +51,16 @@ pub enum ConfigError {
     MainnetRefused(String),
 }
 
+/// Reads an optional variable, treating empty and whitespace-only as unset.
+fn optional_env(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    }
+}
+
 fn require(key: &'static str) -> Result<String, ConfigError> {
-    std::env::var(key).map_err(|_| ConfigError::Missing(key))
+    optional_env(key).ok_or(ConfigError::Missing(key))
 }
 
 impl Config {
@@ -76,8 +84,14 @@ impl Config {
             .parse::<Pubkey>()
             .map_err(|e| ConfigError::Invalid("AGENTPAY_PROGRAM_ID", e.to_string()))?;
 
-        let provider_keypair_path = std::env::var("AGENTPAY_PROVIDER_KEYPAIR").ok();
-        let database_url = std::env::var("DATABASE_URL").ok();
+        // An EMPTY value means absent, not "use the empty string".
+        //
+        // Docker Compose interpolates an unset `${VAR}` to an empty string
+        // rather than omitting it, so without this the gateway would try to open
+        // a keypair at path "" and exit at startup — a confusing failure for
+        // something the operator deliberately left blank.
+        let provider_keypair_path = optional_env("AGENTPAY_PROVIDER_KEYPAIR");
+        let database_url = optional_env("DATABASE_URL");
         let trust_open_requests =
             std::env::var("AGENTPAY_TRUST_OPEN_REQUESTS").is_ok_and(|v| v == "1");
 
@@ -100,6 +114,23 @@ mod tests {
     fn mainnet_url_is_refused_without_the_override() {
         let err = ConfigError::MainnetRefused("https://api.mainnet-beta.solana.com".into());
         assert!(err.to_string().contains("devnet-only"));
+    }
+
+    #[test]
+    fn empty_env_values_count_as_unset() {
+        // Docker Compose turns an unset ${VAR} into an empty string. Treating
+        // that as a real value makes the gateway die on a path of "".
+        std::env::set_var("AGENTPAY_TEST_EMPTY", "");
+        std::env::set_var("AGENTPAY_TEST_BLANK", "   ");
+        std::env::set_var("AGENTPAY_TEST_REAL", "/etc/key.json");
+
+        assert_eq!(optional_env("AGENTPAY_TEST_EMPTY"), None);
+        assert_eq!(optional_env("AGENTPAY_TEST_BLANK"), None);
+        assert_eq!(
+            optional_env("AGENTPAY_TEST_REAL"),
+            Some("/etc/key.json".to_string())
+        );
+        assert_eq!(optional_env("AGENTPAY_TEST_NEVER_SET"), None);
     }
 
     #[test]

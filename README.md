@@ -55,7 +55,8 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 
 | Read this | For |
 |---|---|
-| **[SERVER_SETUP.md](docs/SERVER_SETUP.md)** | Fresh machine → running stack |
+| **[DOCKER.md](docs/DOCKER.md)** | Docker Compose on Windows / macOS / Linux |
+| [SERVER_SETUP.md](docs/SERVER_SETUP.md) | Fresh machine → running stack, without Docker |
 | [DEPLOY.md](docs/DEPLOY.md) | Deploying each component; mainnet caveats |
 | [HACKATHON_KT.md](docs/HACKATHON_KT.md) | How it works, end to end |
 | [PITCH_AND_QA.md](docs/PITCH_AND_QA.md) | Pitch + judge Q&A |
@@ -64,6 +65,17 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 ---
 
 ## Quick start
+
+**Docker (any OS — Windows, macOS, Linux):**
+
+```bash
+cp .env.example .env
+docker compose up -d --build     # first build ~10-20 min (Rust)
+```
+
+Then open **http://localhost:3100**. See [DOCKER.md](docs/DOCKER.md).
+
+**Or run the parts directly:**
 
 ```bash
 ./scripts/dev-db.sh up                                    # Postgres :5434
