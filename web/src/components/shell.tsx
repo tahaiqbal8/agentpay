@@ -102,7 +102,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const nav = (
     <nav className="flex flex-col gap-0.5 p-2">
       {NAV.map((item) => {
-        const active = pathname === item.href;
+        const active =
+          item.href === "/"
+            ? pathname === "/" || pathname?.startsWith("/session/")
+            : pathname === item.href;
         const Icon = item.icon;
         return (
           <Link
@@ -200,7 +203,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-sm font-semibold">
-              {NAV.find((n) => n.href === pathname)?.label ?? "AgentPay"}
+              {NAV.find((n) => n.href === pathname)?.label ??
+                (pathname?.startsWith("/session/") ? "Session" : "AgentPay")}
             </h1>
           </div>
           <div className="ml-auto flex items-center gap-3">

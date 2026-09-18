@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { MonoKey } from "@/components/mono";
 import { useToast } from "@/components/toast";
 import { api, type SessionSummary } from "@/lib/api";
+import { sessionStatus } from "@/lib/session-status";
 import { explorerAddress, explorerTx, formatUsdc, truncateHash } from "@/lib/format";
 
 interface SettleResult {
@@ -17,6 +18,15 @@ interface SettleResult {
   cumulative_amount: string;
   settlement_record: string;
   provider_token_account: string;
+}
+
+/**
+ * `!is_settled` is not enough. `settle_session` refuses once expiry plus
+ * clock-skew tolerance has passed, so listing an expired session here would
+ * offer an action the program will reject.
+ */
+function settleable(s: SessionSummary): boolean {
+  return sessionStatus(s).status === "active" || sessionStatus(s).status === "expiring";
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -38,7 +48,7 @@ export default function SettlePage() {
 
   React.useEffect(() => {
     api.sessions().then((res) => {
-      if (res.ok) setSessions(res.data.sessions.filter((s) => !s.is_settled));
+      if (res.ok) setSessions(res.data.sessions.filter(settleable));
     });
   }, []);
 
@@ -61,7 +71,7 @@ export default function SettlePage() {
       body: res.data.signature.slice(0, 32) + "…",
     });
     api.sessions().then((r) => {
-      if (r.ok) setSessions(r.data.sessions.filter((s) => !s.is_settled));
+      if (r.ok) setSessions(r.data.sessions.filter(settleable));
     });
     setSelected(null);
   };
@@ -76,8 +86,10 @@ export default function SettlePage() {
       <Card>
         <CardHeader>
           <div>
-            <CardTitle>Unsettled sessions</CardTitle>
-            <CardDescription>Select one to settle on Solana devnet</CardDescription>
+            <CardTitle>Settleable sessions</CardTitle>
+            <CardDescription>
+              Unsettled and still inside their expiry window
+            </CardDescription>
           </div>
           <Badge variant="neutral">{sessions.length}</Badge>
         </CardHeader>
@@ -109,7 +121,8 @@ export default function SettlePage() {
           ))}
           {sessions.length === 0 && (
             <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-              No unsettled sessions.
+              No sessions can be settled right now. Expired sessions are excluded —
+              the program refuses them.
             </p>
           )}
         </CardContent>
