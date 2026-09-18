@@ -93,6 +93,44 @@ fn store_denial(e: StoreError, rid: &str) -> Denial {
 }
 
 // --------------------------------------------------------------------------
+// GET /   — API index
+//
+// Exists because a bare 404 here is a confusing first impression: the natural
+// thing to try after `docker compose up` is the port in the logs, and this is a
+// JSON API with no page at `/`. Saying where the UI lives costs one route.
+// --------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct IndexResponse {
+    pub service: &'static str,
+    pub description: &'static str,
+    pub note: &'static str,
+    pub console: &'static str,
+    pub program_id: String,
+    pub endpoints: Vec<&'static str>,
+}
+
+pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
+    Json(IndexResponse {
+        service: "agentpay-gateway",
+        description: "Enforcement and audit layer for agent payments on Solana.",
+        note: "This is a JSON API, not a web page. The operator console is a separate service.",
+        console: "http://localhost:3100",
+        program_id: state.program_id.to_string(),
+        endpoints: vec![
+            "GET  /health",
+            "GET  /v1/sessions",
+            "GET  /v1/decisions/recent",
+            "GET  /v1/session/{pubkey}/evidence",
+            "POST /v1/session/open",
+            "POST /v1/claim/verify",
+            "POST /v1/session/settle",
+            "POST /v1/evidence/proof",
+        ],
+    })
+}
+
+// --------------------------------------------------------------------------
 // GET /health
 // --------------------------------------------------------------------------
 

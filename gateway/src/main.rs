@@ -41,6 +41,7 @@ use crate::state::{InMemorySessionStore, SessionStore};
 
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(routes::index))
         .route("/health", get(routes::health))
         .route("/v1/session/open", post(routes::open_session))
         .route("/v1/claim/verify", post(routes::verify_claim))

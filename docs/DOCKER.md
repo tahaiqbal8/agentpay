@@ -8,7 +8,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Open **http://localhost:3100**
+Open **http://localhost:3100** — that is the UI.
+
+> ⚠️ **Not `:8080`.** That is the gateway's JSON API, not a web page. Visiting
+> it returns a small index telling you so. The console is on **3100**.
 
 > Every base image is multi-arch (`amd64` + `arm64`), so there is no
 > `platform:` pin anywhere and no emulation. Apple Silicon builds and runs
@@ -21,7 +24,7 @@ Open **http://localhost:3100**
 | Service | Host port | Image | Purpose |
 |---|---|---|---|
 | `web` | **3100** | built locally, 431 MB | Operator console |
-| `gateway` | 8080 *(loopback)* | built locally, 175 MB | Claim verification, evidence, settlement |
+| `gateway` | 8080 *(loopback)* | built locally, 175 MB | JSON API — **not a web page** |
 | `postgres` | 5434 *(loopback)* | `postgres:16-alpine` | High-water marks + evidence log |
 
 **Only 3100 is meant for you.** The gateway and database bind to `127.0.0.1`
@@ -227,6 +230,8 @@ needs devnet SOL and the Solana toolchain on the host, not in Docker.
 | Very slow builds on Windows | Repo on `/mnt/c` | Move it into the WSL2 filesystem (§2) |
 | `docker-compose: command not found` | v1 not installed | Use `docker compose` (plugin) |
 | `28P01` after changing `POSTGRES_PASSWORD` | Password only applies on **first** init | `docker compose down -v` (destroys data) or change it inside the DB |
+| 404 at `localhost:8080` | Wrong port — that is the API | Use **3100**. `:8080/` now returns an index |
+| `/health` shows a `program_id` you did not set | Container still holds env from when it was **created** | `docker compose up -d --force-recreate gateway` |
 
 ### Useful commands
 
