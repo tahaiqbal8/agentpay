@@ -52,6 +52,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/sessions", get(routes::list_sessions))
         .route("/v1/decisions/recent", get(routes::recent_decisions))
         .route("/v1/session/{session}/evidence", get(routes::session_evidence))
+        .route(
+            "/v1/session/{session}/settlement",
+            get(routes::on_chain_settlement),
+        )
         .route("/v1/evidence/proof", post(routes::evidence_proof))
         .layer(TraceLayer::new_for_http())
         // A hung upstream must not pin a connection indefinitely.

@@ -146,6 +146,24 @@ export const api = {
       nonce: string;
     }>("/v1/claim/verify", { method: "POST", body: JSON.stringify({ claim }) }),
   /**
+   * Reads the evidence root the program actually stored, back off the chain.
+   *
+   * This is the last hop of the audit. `merkle_root` here comes from the
+   * settlement PDA, not from the gateway's memory of what it submitted, so a
+   * gateway that committed a different root than its own log produces would be
+   * caught by comparing the two.
+   */
+  onChainSettlement: (session: string) =>
+    call<{
+      session: string;
+      settlement_record: string;
+      settled: boolean;
+      merkle_root?: string;
+      claim_hash?: string;
+      settled_amount?: string;
+      settled_at?: number;
+    }>(`/v1/session/${session}/settlement`),
+  /**
    * Re-checks a session against its on-chain escrow.
    *
    * A session opened while reconciliation was disabled is recorded unverified,

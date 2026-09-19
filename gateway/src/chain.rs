@@ -49,6 +49,79 @@ const OFF_BUMP: usize = 184;
 const OFF_VAULT_BUMP: usize = 185;
 const OFF_IS_SETTLED: usize = 186;
 
+/// `sha256("account:SettlementRecord")[..8]`, checked against the real account
+/// `6hs7LfYXeh6TTgVytN4Wyvv71YHyKB1r9oNdX69hYxmU` on devnet.
+pub const SETTLEMENT_DISCRIMINATOR: [u8; 8] = [172, 159, 67, 74, 96, 85, 37, 205];
+
+/// 8-byte discriminator + session + claim_hash + merkle_root + i64 + u64 + bump.
+pub const SETTLEMENT_RECORD_LEN: usize = 8 + 32 + 32 + 32 + 8 + 8 + 1;
+
+const OFF_SR_SESSION: usize = 8;
+const OFF_SR_CLAIM_HASH: usize = 40;
+const OFF_SR_MERKLE_ROOT: usize = 72;
+const OFF_SR_SETTLED_AT: usize = 104;
+const OFF_SR_SETTLED_AMOUNT: usize = 112;
+
+/// The on-chain `SettlementRecord`.
+///
+/// This is what closes the audit: the evidence root the console recomputes in
+/// the browser has to equal the one the program stored here, and that equality
+/// is the whole claim. Reading it back rather than echoing what the gateway
+/// said at settlement time is the point — a gateway that lied about the root
+/// it committed would be caught exactly here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementRecordAccount {
+    pub session: Pubkey,
+    pub claim_hash: [u8; 32],
+    pub merkle_root: [u8; 32],
+    pub settled_at: i64,
+    pub settled_amount: u64,
+}
+
+/// Parses a `SettlementRecord`, refusing anything that is not exactly one.
+pub fn parse_settlement_record(
+    owner: &Pubkey,
+    program_id: &Pubkey,
+    data: &[u8],
+) -> Result<SettlementRecordAccount, SessionVerificationError> {
+    if owner != program_id {
+        return Err(SessionVerificationError::WrongProgramOwner {
+            expected: *program_id,
+            actual: *owner,
+        });
+    }
+    if data.len() != SETTLEMENT_RECORD_LEN {
+        return Err(SessionVerificationError::InvalidAccountData(data.len()));
+    }
+    if data[..8] != SETTLEMENT_DISCRIMINATOR {
+        return Err(SessionVerificationError::NotASessionAccount);
+    }
+
+    let pk = |off: usize| -> Pubkey {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(&data[off..off + 32]);
+        Pubkey::new_from_array(b)
+    };
+    let arr = |off: usize| -> [u8; 32] {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(&data[off..off + 32]);
+        b
+    };
+    let u64_at = |off: usize| -> u64 {
+        u64::from_le_bytes(data[off..off + 8].try_into().expect("8 bytes"))
+    };
+
+    Ok(SettlementRecordAccount {
+        session: pk(OFF_SR_SESSION),
+        claim_hash: arr(OFF_SR_CLAIM_HASH),
+        merkle_root: arr(OFF_SR_MERKLE_ROOT),
+        settled_at: i64::from_le_bytes(
+            data[OFF_SR_SETTLED_AT..OFF_SR_SETTLED_AT + 8].try_into().expect("8 bytes"),
+        ),
+        settled_amount: u64_at(OFF_SR_SETTLED_AMOUNT),
+    })
+}
+
 /// The on-chain `Session`, mirroring `programs/agentpay/src/lib.rs` exactly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionAccount {
@@ -358,6 +431,69 @@ mod tests {
         async fn fetch(&self, _: &Pubkey) -> Result<Option<(Pubkey, Vec<u8>)>, ()> {
             self.result.clone()
         }
+    }
+
+    /// Real bytes, base64, read from devnet settlement record
+    /// 6hs7LfYXeh6TTgVytN4Wyvv71YHyKB1r9oNdX69hYxmU — the settlement the
+    /// operator console performed for session ArqVZrM9pZ…nqusq.
+    ///
+    /// Ground truth for the offsets above, exactly as REAL_ACCOUNT_B64 is for
+    /// `Session`. The merkle_root asserted below is the one the browser
+    /// recomputed from the evidence log, so this test pins the equality the
+    /// whole audit rests on.
+    const REAL_SETTLEMENT_B64: &str = concat!(
+        "rJ9DSmBVJc2SfXj/0vePknVOX4FpfnYnAboNfmgb3Kf/Ssv4/vLhRK53zfPCQ/3MJRGMvP",
+        "5vm0hbJ7/TZduMTgQqVzXm4HI3uTn8p0UWwnH7wHX3Uj8k/dpreuAzj8r/uZbEBkaF6Zmu",
+        "mq5qAAAAAODIEAAAAAAA/Q=="
+    );
+
+    #[test]
+    fn the_real_settlement_record_parses_to_the_root_the_browser_recomputed() {
+        let data = base64_decode::decode(REAL_SETTLEMENT_B64);
+        assert_eq!(data.len(), SETTLEMENT_RECORD_LEN);
+
+        let rec = parse_settlement_record(&program_id(), &program_id(), &data).unwrap();
+
+        assert_eq!(
+            hex(&rec.merkle_root),
+            "b939fca74516c271fbc075f7523f24fdda6b7ae0338fcaffb996c4064685e999",
+            "the on-chain root must equal the one recomputed from the evidence log"
+        );
+        assert_eq!(rec.settled_amount, 1_100_000);
+        assert_eq!(rec.settled_at, 1_789_827_758);
+        assert_eq!(
+            rec.session.to_string(),
+            "ArqVZrM9pZGpT9bR6e3CU2HdS2wXF9ATDUvDfL8nqusq"
+        );
+    }
+
+    #[test]
+    fn a_settlement_record_from_another_program_is_refused() {
+        let data = base64_decode::decode(REAL_SETTLEMENT_B64);
+        let impostor = Pubkey::new_from_array([9u8; 32]);
+        // Fail closed: same bytes, wrong owner. Anyone can create an account
+        // with these contents under a program they control.
+        let err = parse_settlement_record(&impostor, &program_id(), &data).unwrap_err();
+        assert!(matches!(
+            err,
+            SessionVerificationError::WrongProgramOwner { .. }
+        ));
+    }
+
+    #[test]
+    fn a_session_account_is_not_mistaken_for_a_settlement_record() {
+        // Both are owned by the program. Only the discriminator and length
+        // separate them, so this is the check that must not be skipped.
+        let session_data = real_account_bytes();
+        let err = parse_settlement_record(&program_id(), &program_id(), &session_data).unwrap_err();
+        assert!(matches!(
+            err,
+            SessionVerificationError::InvalidAccountData(_)
+        ));
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
     fn program_id() -> Pubkey {

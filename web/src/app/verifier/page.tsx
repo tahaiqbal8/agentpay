@@ -135,6 +135,14 @@ function VerifierInner() {
   const [proof, setProof] = React.useState<EvidenceProof | null>(null);
   const [steps, setSteps] = React.useState<Step[]>([]);
   const [recomputed, setRecomputed] = React.useState<string | null>(null);
+  // What the PROGRAM stored, read back off the chain — not what the gateway
+  // remembers submitting. `null` while unknown, so an unreachable node reads as
+  // "unknown" rather than as a mismatch.
+  const [onChain, setOnChain] = React.useState<{
+    settled: boolean;
+    merkle_root?: string;
+    settlement_record: string;
+  } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -146,6 +154,12 @@ function VerifierInner() {
       setProof(null);
       setSteps([]);
       setRecomputed(null);
+      setOnChain(null);
+      // Runs alongside the evidence load; the root it returns is the one the
+      // program committed, and is what the recomputed root is judged against.
+      void api.onChainSettlement(key.trim()).then((r) => {
+        if (r.ok) setOnChain(r.data);
+      });
       const res = await api.evidence(key.trim());
       setBusy(false);
       if (!res.ok) {
@@ -198,6 +212,13 @@ function VerifierInner() {
   };
 
   const valid = recomputed !== null && proof !== null && recomputed === proof.merkle_root;
+
+  // Three-way agreement, and the third is the one that matters: the gateway
+  // could report anything, but the program's stored root is a public fact.
+  const chainRoot = onChain?.settled ? onChain.merkle_root : undefined;
+  const anchored = valid && chainRoot !== undefined && chainRoot === recomputed;
+  const chainDisagrees =
+    valid && chainRoot !== undefined && chainRoot !== recomputed;
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
@@ -412,20 +433,54 @@ function VerifierInner() {
                   </p>
                   <code className="break-all font-mono text-[11px]">{proof.merkle_root}</code>
                 </div>
+                {/* The third value is the only one neither this page nor the
+                    gateway controls. It decides the audit. */}
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
+                    root committed on chain
+                  </p>
+                  {chainRoot !== undefined ? (
+                    <code
+                      className={`break-all font-mono text-[11px] ${
+                        anchored ? "text-[var(--color-accent)]" : "text-[var(--color-danger)]"
+                      }`}
+                    >
+                      {chainRoot}
+                    </code>
+                  ) : (
+                    <span className="text-[11px] text-[var(--color-fg-dim)]">
+                      {onChain === null
+                        ? "reading the chain…"
+                        : "not settled yet — nothing is committed on chain for this session"}
+                    </span>
+                  )}
+                </div>
               </div>
               <p
                 className={`mt-2 text-xs font-semibold ${
-                  valid ? "text-[var(--color-accent)]" : "text-[var(--color-danger)]"
+                  !valid || chainDisagrees
+                    ? "text-[var(--color-danger)]"
+                    : anchored
+                    ? "text-[var(--color-accent)]"
+                    : "text-[var(--color-warn)]"
                 }`}
               >
-                {valid
-                  ? "Match — this decision is provably covered by the committed root."
-                  : "Mismatch — do not trust this proof."}
+                {!valid
+                  ? "Mismatch — do not trust this proof."
+                  : chainDisagrees
+                  ? "The chain committed a DIFFERENT root — the gateway's log does not match what it settled."
+                  : anchored
+                  ? "Anchored — this decision is provably covered by a root committed on Solana."
+                  : "Proof holds, but nothing is anchored on chain until this session settles."}
               </p>
-              <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
-                Compare this root against the one stored in the settlement transaction to complete
-                the audit.
-              </p>
+              {anchored && (
+                <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
+                  Check it yourself:{" "}
+                  <code className="font-mono">
+                    solana account {onChain?.settlement_record} -u devnet
+                  </code>
+                </p>
+              )}
             </div>
           </CardContent>
         )}

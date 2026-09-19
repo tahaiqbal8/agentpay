@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -17,12 +17,15 @@ use solana_signer::Signer;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::chain::{verify_on_chain_session, ClaimedSession, SessionAccountFetcher, SessionVerificationError};
+use crate::chain::{
+    parse_settlement_record, verify_on_chain_session, ClaimedSession, SessionAccountFetcher,
+    SessionVerificationError,
+};
 use crate::claim::ClaimWire;
 use crate::db::Database;
 use crate::error::{Denial, ReasonCode};
 use crate::evidence::{verify_chain, MerkleTree};
-use crate::settle::{submit_settlement, SettleError};
+use crate::settle::{derive_settlement_record, submit_settlement, SettleError};
 use crate::state::{ClaimRejection, SessionRecord, SessionStore, StoreError};
 use crate::verify::{verify_claim_signature, SignatureVerdict};
 
@@ -130,6 +133,7 @@ pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
             "POST /v1/claim/verify",
             "POST /v1/session/settle",
             "POST /v1/session/reconcile",
+            "GET  /v1/session/{pubkey}/settlement",
             "POST /v1/evidence/proof",
             "GET  /v1/buy/{resource}   (402 without a claim)",
         ],
@@ -404,6 +408,95 @@ pub async fn verify_claim(
         delta: accepted.delta.to_string(),
         nonce: accepted.nonce.to_string(),
         request_id: rid,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// GET /v1/session/{session}/settlement
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct OnChainSettlementResponse {
+    pub session: String,
+    /// The PDA the root is stored in, so the answer can be checked by hand
+    /// with `solana account <this>`.
+    pub settlement_record: String,
+    /// False when the session has not been settled. Everything below is then
+    /// absent rather than zeroed, because a zero root is a real value the
+    /// program can store and must not be confused with "no settlement".
+    pub settled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merkle_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_amount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<i64>,
+}
+
+fn to_hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Reads the evidence root the program actually stored, back off the chain.
+///
+/// This is the last hop of the audit. The console recomputes the Merkle root
+/// from the evidence log in the browser; this returns what is committed on
+/// chain. If a gateway ever committed a root other than the one its own log
+/// produces, the two would differ here — which is why this reads the account
+/// rather than replaying what the settlement response said at the time.
+pub async fn on_chain_settlement(
+    State(state): State<Arc<AppState>>,
+    Path(session): Path<String>,
+) -> Result<Json<OnChainSettlementResponse>, Denial> {
+    let rid = request_id();
+
+    let Ok(session) = session.parse::<Pubkey>() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    };
+
+    let Some(fetcher) = state.session_fetcher.as_ref() else {
+        return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
+    };
+
+    let (record_pda, _) = derive_settlement_record(&state.program_id, &session);
+
+    // Fail closed: an unreachable node must not read as "not settled".
+    let Ok(fetched) = fetcher.fetch(&record_pda).await else {
+        return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
+    };
+
+    let Some((owner, data)) = fetched else {
+        return Ok(Json(OnChainSettlementResponse {
+            session: session.to_string(),
+            settlement_record: record_pda.to_string(),
+            settled: false,
+            merkle_root: None,
+            claim_hash: None,
+            settled_amount: None,
+            settled_at: None,
+        }));
+    };
+
+    let record = parse_settlement_record(&owner, &state.program_id, &data).map_err(|e| {
+        warn!(
+            request_id = %rid,
+            settlement_record = %record_pda,
+            error = %e,
+            "account at the settlement PDA is not a settlement record"
+        );
+        Denial::new(reconciliation_code(&e), &rid)
+    })?;
+
+    Ok(Json(OnChainSettlementResponse {
+        session: session.to_string(),
+        settlement_record: record_pda.to_string(),
+        settled: true,
+        merkle_root: Some(to_hex(&record.merkle_root)),
+        claim_hash: Some(to_hex(&record.claim_hash)),
+        settled_amount: Some(record.settled_amount.to_string()),
+        settled_at: Some(record.settled_at),
     }))
 }
 

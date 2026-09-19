@@ -299,6 +299,37 @@ Real sessions are distinguishable from the debris by expiry alone: an
 `expires_at` below 100,000,000 predates March 1973 and cannot be a session
 anyone opened.
 
+## D20 — The audit ends on the chain, not on the gateway's word
+
+The Verifier recomputed the Merkle root in the browser and compared it against
+the root the gateway reported. Both numbers came from the same gateway: one
+from its evidence log, one from its memory of what it submitted. A gateway that
+committed a root other than the one its log produces would pass that comparison
+unnoticed, and the page closed by telling the operator to go check the
+settlement transaction by hand.
+
+`GET /v1/session/{pubkey}/settlement` reads the `SettlementRecord` PDA and
+returns the root the program actually stored. The Verifier now shows three
+values, and only the third is outside the gateway's control:
+
+```
+recomputed in browser      b939fca7…4685e999
+root reported by gateway   b939fca7…4685e999
+root committed on chain    b939fca7…4685e999   ← the program's own bytes
+```
+
+The verdict wording follows the third value: *Anchored* only when the chain
+agrees, a distinct warning when the chain committed something different, and an
+honest "nothing is anchored until this session settles" when no settlement
+exists. A missing account and an unreachable node are kept apart — the latter
+reads as unknown, never as "not settled".
+
+The parser is pinned to the real record
+`6hs7LfYXeh6TTgVytN4Wyvv71YHyKB1r9oNdX69hYxmU`, and asserts the root equals the
+one the browser recomputed. Two negative tests hold: the same bytes under a
+different program owner are refused, and a `Session` account — same owner,
+different discriminator and length — is not mistaken for a settlement record.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
