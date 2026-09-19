@@ -273,6 +273,32 @@ The console now offers the check instead of making the claim, and only for
 sessions still inside their window, since verifying an expired one changes
 nothing.
 
+## D19 — Write tests get their own database
+
+The Postgres suite was documented as
+
+```text
+DATABASE_URL=postgres://…/agentpay cargo test -- --ignored
+```
+
+which is the database a running gateway serves from. The tests write sessions
+and never roll them back, so every run left rows behind. 70 of them
+accumulated, and the console rendered them as real: 263 USDC of escrow across
+sessions whose accounts do not exist on any cluster. Their `expires_at` values
+are around 1,003,600 — January 1970 — because the suite's `NOW` constant is
+1,000,000.
+
+This is the failure mode rule 0.2 exists to prevent, arriving through the test
+harness rather than through the UI.
+
+The suite now reads `TEST_DATABASE_URL`, a different variable, and asserts the
+database name contains `test` before writing anything. Running it against
+`agentpay` fails with a message saying why instead of quietly polluting it.
+
+Real sessions are distinguishable from the debris by expiry alone: an
+`expires_at` below 100,000,000 predates March 1973 and cannot be a session
+anyone opened.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied

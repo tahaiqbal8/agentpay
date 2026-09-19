@@ -76,12 +76,22 @@ export function sessionStatus(
  * That matters operationally: the money is recoverable by anyone via
  * `refund_session` once expiry passes, but until somebody calls it the funds
  * just sit there. Worth surfacing rather than leaving the row looking inert.
+ *
+ * `chain_verified` is required, and that requirement is the whole point. The
+ * gateway's `deposited_total` is only what the opener asserted; under
+ * AGENTPAY_TRUST_OPEN_REQUESTS nothing checked it against a vault. Summing
+ * unverified rows produced a headline figure of hundreds of USDC "sitting
+ * there" when the accounts did not exist on chain at all — a seeded number
+ * rendered as a live balance. Only escrow that was actually read from the
+ * chain gets counted.
  */
 export function isStrandedEscrow(s: {
   is_settled: boolean;
   expires_at: number;
   remaining: string;
+  chain_verified: boolean;
 }): boolean {
+  if (!s.chain_verified) return false;
   const st = sessionStatus(s);
   if (st.status !== "expired") return false;
   try {

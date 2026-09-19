@@ -243,10 +243,17 @@ export default function MonitorPage() {
   const denials = decisions.filter((d) => !d.allowed).length;
   const denialRate = decisions.length ? Math.round((denials / decisions.length) * 100) : 0;
 
-  // Escrow that is live and spendable, not merely unsettled.
+  // Escrow that is live, spendable, AND confirmed to exist on chain.
+  //
+  // `deposited_total` is what the opener asserted. Without reconciliation
+  // nothing checked it against a vault, so counting unverified rows would
+  // render an asserted number as a held balance.
   const escrowedLive = withStatus
-    .filter((x) => x.st.wouldAccept)
+    .filter((x) => x.st.wouldAccept && x.s.chain_verified)
     .reduce((acc, x) => acc + BigInt(x.s.deposited_total), 0n);
+  const unconfirmed = withStatus.filter(
+    (x) => x.st.wouldAccept && !x.s.chain_verified
+  ).length;
   const stranded = withStatus.filter((x) => isStrandedEscrow(x.s));
   const strandedTotal = stranded.reduce((acc, x) => acc + BigInt(x.s.remaining), 0n);
   const committed = sessions.reduce((acc, s) => acc + BigInt(s.cumulative_accepted), 0n);
@@ -264,8 +271,13 @@ export default function MonitorPage() {
         <Stat
           label="Escrowed (live)"
           value={formatUsdcCompact(escrowedLive)}
-          sub="in sessions still accepting"
+          sub={
+            unconfirmed > 0
+              ? `confirmed on chain · ${unconfirmed} unconfirmed excluded`
+              : "confirmed on chain, still accepting"
+          }
           icon={Wallet}
+          tone={unconfirmed > 0 ? "warn" : "default"}
         />
         <Stat
           label="Claimed cumulative"

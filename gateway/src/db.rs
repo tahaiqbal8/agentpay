@@ -762,11 +762,18 @@ mod tests {
 
 /// Integration tests against a real PostgreSQL instance.
 ///
-/// Skipped when `DATABASE_URL` is unset so `cargo test` stays hermetic. Run
-/// them with:
+/// These WRITE rows and do not roll them back, so they need a database of
+/// their own. They read `TEST_DATABASE_URL`, deliberately not `DATABASE_URL`:
+/// that variable names the database a running gateway is serving from, and
+/// pointing the suite at it fills the operator console with sessions that look
+/// real. It happened — 70 test rows showed up as 263 USDC of escrow that never
+/// existed. A separate variable makes the mistake impossible to make by
+/// accident.
 ///
 /// ```text
-/// DATABASE_URL=postgres://agentpay:agentpay@127.0.0.1:5434/agentpay cargo test -- --ignored
+/// docker exec agentpay-postgres-1 createdb -U agentpay agentpay_test
+/// TEST_DATABASE_URL=postgres://agentpay:agentpay@127.0.0.1:5434/agentpay_test \
+///   cargo test -- --ignored
 /// ```
 #[cfg(test)]
 mod pg_tests {
@@ -790,7 +797,20 @@ mod pg_tests {
     }
 
     async fn connect_db() -> Database {
-        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for pg_tests");
+        let url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL must be set for pg_tests (NOT DATABASE_URL)");
+
+        // Second line of defence, in case someone copies the gateway's URL into
+        // the test variable. A database whose name gives no hint that it is
+        // disposable is treated as one that is not.
+        let name = url.rsplit('/').next().unwrap_or("");
+        let name = name.split('?').next().unwrap_or("");
+        assert!(
+            name.contains("test"),
+            "refusing to run write tests against database {name:?}: \
+             the name must contain \"test\", because these tests leave rows behind"
+        );
+
         Database::connect(&url).await.expect("connects")
     }
 
