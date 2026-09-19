@@ -110,6 +110,17 @@ npm run buy
     no data returned — the provider was never contacted
 ```
 
+Both of those run against synthetic sessions. For a **real** one on devnet:
+
+```bash
+npm run evidence-devnet     # opens, drives claims, settles, proves the root
+npm run stage-settleable    # the same, but stops before settling
+```
+
+`stage-settleable` leaves a funded session waiting so the console's Settlement
+page has something to act on — otherwise every script settles its own session
+and the Settle button is never seen working.
+
 ---
 
 ## Trust model
