@@ -38,6 +38,9 @@ solana-transaction = "4.1"
 solana-commitment-config = "3.1"
 solana-sdk-ids = "3.1"
 
+# Already in the tree via solana-client; declared directly for /v1/buy forwarding.
+reqwest = { version = "0.12", features = ["json"] }
+
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"

@@ -43,6 +43,10 @@ pub struct AppState {
     /// Reads `Session` accounts for `/v1/session/open` reconciliation.
     /// `None` only when reconciliation is explicitly disabled.
     pub session_fetcher: Option<Arc<dyn SessionAccountFetcher>>,
+    /// The provider sitting behind /v1/buy. `None` disables the paid path.
+    pub upstream: Option<crate::buy::SharedUpstream>,
+    /// CAIP-2-ish network label echoed in 402 responses.
+    pub network: String,
 }
 
 impl AppState {
@@ -126,6 +130,7 @@ pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
             "POST /v1/claim/verify",
             "POST /v1/session/settle",
             "POST /v1/evidence/proof",
+            "GET  /v1/buy/{resource}   (402 without a claim)",
         ],
     })
 }
@@ -890,4 +895,220 @@ pub async fn recent_decisions(
             .collect(),
         request_id: rid,
     }))
+}
+
+// --------------------------------------------------------------------------
+// GET /v1/buy/{resource}  — the paid path
+//
+// No claim  -> 402 with the price and how to sign.
+// With claim -> verify, enforce, THEN forward. Never the other way round.
+// --------------------------------------------------------------------------
+
+/// Header carrying the base64 JSON claim.
+pub const CLAIM_HEADER: &str = "x-agentpay-claim";
+
+fn upstream_denial(e: &crate::buy::UpstreamError, rid: &str) -> Denial {
+    use crate::buy::UpstreamError as U;
+    let code = match e {
+        U::NotConfigured => ReasonCode::ERR_UPSTREAM_NOT_CONFIGURED,
+        U::UnknownResource(_) => ReasonCode::ERR_UNKNOWN_RESOURCE,
+        // A malformed price is the provider's bug, but charging a guessed
+        // amount would be worse than refusing.
+        U::BadPrice { .. } | U::BadCatalogue(_) | U::Unreachable(_) => {
+            ReasonCode::ERR_UPSTREAM_UNAVAILABLE
+        }
+    };
+    Denial::new(code, rid)
+}
+
+#[derive(Debug, Serialize)]
+pub struct BuyResponse {
+    pub resource: String,
+    pub price: String,
+    pub cumulative_amount: String,
+    pub delta: String,
+    pub nonce: String,
+    /// Straight from the provider, untouched.
+    pub data: serde_json::Value,
+    /// The provider's own header, so a caller can confirm who answered.
+    pub served_by: Option<String>,
+    pub request_id: String,
+}
+
+pub async fn buy(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(resource): axum::extract::Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, Denial> {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let rid = request_id();
+    let now = state.now();
+    let query = query.unwrap_or_default();
+
+    let Some(upstream) = &state.upstream else {
+        return Err(Denial::new(ReasonCode::ERR_UPSTREAM_NOT_CONFIGURED, &rid));
+    };
+
+    let resource_path = crate::buy::normalise_resource(&resource);
+    let price = upstream
+        .price_of(&resource_path)
+        .await
+        .map_err(|e| {
+            warn!(request_id = %rid, resource = %resource_path, error = %e, "price lookup failed");
+            upstream_denial(&e, &rid)
+        })?;
+
+    // ---- no claim: quote the price and stop -------------------------------
+    let Some(raw_claim) = headers.get(CLAIM_HEADER).and_then(|v| v.to_str().ok()) else {
+        info!(request_id = %rid, resource = %resource_path, price, "402 quoted");
+        let body = crate::buy::PaymentRequired {
+            scheme: "agentpay-deferred-v1",
+            network: state.network.clone(),
+            resource: resource_path,
+            description: String::new(),
+            price: price.to_string(),
+            next_cumulative: None,
+            next_nonce: None,
+            session_hint: "Open a session with POST /v1/session/open, then retry with the claim header.",
+            claim_header: CLAIM_HEADER,
+            signing: crate::buy::SigningHint::new(),
+        };
+        return Ok((StatusCode::PAYMENT_REQUIRED, Json(body)).into_response());
+    };
+
+    // ---- decode the claim -------------------------------------------------
+    let decoded = base64_decode(raw_claim)
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_MALFORMED_CLAIM, &rid))?;
+    let wire: ClaimWire = serde_json::from_slice(&decoded)
+        .map_err(|_| Denial::new(ReasonCode::ERR_MALFORMED_CLAIM, &rid))?;
+    let Ok((claim, signature)) = wire.decode() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_CLAIM, &rid));
+    };
+
+    if claim.is_expired(now) {
+        return Err(Denial::new(ReasonCode::ERR_CLAIM_EXPIRED, &rid));
+    }
+
+    let record = state
+        .store
+        .get(&claim.session)
+        .await
+        .map_err(|e| store_denial(e, &rid))?;
+
+    // Signature before state checks, so an unauthenticated caller cannot probe
+    // session state by watching which denial comes back.
+    if verify_claim_signature(&record.agent, &claim, &signature) != SignatureVerdict::Valid {
+        warn!(request_id = %rid, session = %claim.session, "buy: bad signature");
+        return Err(Denial::new(ReasonCode::ERR_INVALID_SIGNATURE, &rid));
+    }
+
+    // The claim must pay for THIS resource. Without this an agent could present
+    // a claim worth 0.0005 and take the 0.025 resource.
+    let expected = record
+        .cumulative_accepted
+        .checked_add(price)
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_CLAIM_EXCEEDS_DEPOSIT, &rid))?;
+    if claim.cumulative_amount != expected {
+        warn!(
+            request_id = %rid,
+            session = %claim.session,
+            presented = claim.cumulative_amount,
+            expected,
+            price,
+            "buy: claim does not pay the asking price"
+        );
+        return Err(Denial::new(ReasonCode::ERR_PRICE_MISMATCH, &rid));
+    }
+
+    // ---- enforce; only an accepted claim may proceed -----------------------
+    let outcome = state
+        .store
+        .admit_claim(&claim, &signature, now)
+        .await
+        .map_err(|e| store_denial(e, &rid))?;
+
+    let accepted = match outcome {
+        Ok(accepted) => accepted,
+        Err(rejection) => {
+            let code = match rejection {
+                ClaimRejection::SessionExpired => ReasonCode::ERR_SESSION_EXPIRED,
+                ClaimRejection::SessionSettled => ReasonCode::ERR_SESSION_SETTLED,
+                ClaimRejection::NotMonotonic => ReasonCode::ERR_CLAIM_NOT_MONOTONIC,
+                ClaimRejection::NonceNotMonotonic => ReasonCode::ERR_NONCE_NOT_MONOTONIC,
+                ClaimRejection::ExceedsDeposit => ReasonCode::ERR_CLAIM_EXCEEDS_DEPOSIT,
+            };
+            warn!(
+                request_id = %rid,
+                session = %claim.session,
+                reason_code = code.as_str(),
+                "buy: DENIED — upstream not contacted"
+            );
+            // Return here, before any forward. This early return is the whole
+            // security property of this handler.
+            return Err(Denial::new(code, &rid));
+        }
+    };
+
+    // ---- paid: now, and only now, fetch the goods --------------------------
+    let res = upstream
+        .forward(&resource_path, &query)
+        .await
+        .map_err(|e| {
+            error!(request_id = %rid, error = %e, "upstream forward failed after charging");
+            upstream_denial(&e, &rid)
+        })?;
+
+    let data: serde_json::Value = serde_json::from_str(&res.body).unwrap_or_else(|_| {
+        // Not JSON: hand it back as a string rather than dropping it.
+        serde_json::Value::String(res.body.clone())
+    });
+
+    info!(
+        request_id = %rid,
+        session = %claim.session,
+        resource = %resource_path,
+        delta = accepted.delta,
+        upstream_status = res.status,
+        "buy: served"
+    );
+
+    Ok(Json(BuyResponse {
+        resource: resource_path,
+        price: price.to_string(),
+        cumulative_amount: accepted.cumulative_amount.to_string(),
+        delta: accepted.delta.to_string(),
+        nonce: accepted.nonce.to_string(),
+        data,
+        served_by: res.served_by,
+        request_id: rid,
+    })
+    .into_response())
+}
+
+/// Minimal base64 decode. Avoids a dependency for one call site.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let clean: Vec<u8> = s
+        .bytes()
+        .filter(|c| !c.is_ascii_whitespace() && *c != b'=')
+        .collect();
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    for chunk in clean.chunks(4) {
+        let mut buf = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            let v = T.iter().position(|&t| t == c)? as u32;
+            buf |= v << (18 - 6 * i);
+        }
+        out.push((buf >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((buf >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(buf as u8);
+        }
+    }
+    Some(out)
 }

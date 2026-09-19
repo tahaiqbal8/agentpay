@@ -43,6 +43,7 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 | Path | What |
 |---|---|
 | `programs/agentpay/` | Anchor program — holds the escrow, the only authority over funds |
+| `demo-provider/` | An ordinary API with **no payment code** — what the gateway sells access to |
 | `gateway/` | Rust + Axum — verifies claims, enforces limits, writes evidence, settles |
 | `web/` | Next.js console — monitor, Merkle verifier, settlement, playground |
 | `tests/` | Attack suite + devnet end-to-end |
@@ -94,6 +95,21 @@ npm run demo
 Eight scenarios — two allowed, four denied, a forged signature, then a recovery
 claim proving the high-water mark never moved during the denials.
 
+Or watch an agent **actually buy things**:
+
+```bash
+npm run buy
+```
+
+```
+402 weather   price 0.001000
+200 weather   paid 0.001000  ✓ from provider
+    {"city":"Lahore","temp_c":24,"condition":"Haze"}
+...
+403 analyse   ERR_CLAIM_EXCEEDS_DEPOSIT
+    no data returned — the provider was never contacted
+```
+
 ---
 
 ## Trust model
@@ -125,6 +141,7 @@ Stated up front rather than discovered later:
 - **Single gateway instance** — row locks serialise per session; multi-instance is unproven.
 - **Evidence log is append-only by convention** — `REVOKE UPDATE, DELETE` is a documented deployment step, not a default.
 - **No SDK** — integration is ~50 hand-written lines, and the claim encoding fails silently at settlement if one byte is wrong.
+- **Not x402-compatible** — `/v1/buy` speaks its own `agentpay-deferred-v1` scheme. Interoperating with the x402 spec is separate work.
 
 ---
 

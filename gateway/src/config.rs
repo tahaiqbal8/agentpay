@@ -36,6 +36,10 @@ pub struct Config {
     /// including a deposit that was never escrowed, so claims get authorised
     /// against credit that does not exist. Development only.
     pub trust_open_requests: bool,
+    /// Provider behind /v1/buy. Absent disables the paid path entirely.
+    pub upstream_url: Option<String>,
+    /// Network label echoed in 402 responses.
+    pub network: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +98,20 @@ impl Config {
         let database_url = optional_env("DATABASE_URL");
         let trust_open_requests =
             std::env::var("AGENTPAY_TRUST_OPEN_REQUESTS").is_ok_and(|v| v == "1");
+        let upstream_url = optional_env("AGENTPAY_UPSTREAM_URL");
+        let network = optional_env("AGENTPAY_NETWORK").unwrap_or_else(|| {
+            // Derived from the RPC URL so the 402 cannot claim devnet while
+            // actually talking to something else.
+            if rpc_url.contains("devnet") {
+                "solana:devnet".to_string()
+            } else if rpc_url.contains("testnet") {
+                "solana:testnet".to_string()
+            } else if rpc_url.contains("mainnet") {
+                "solana:mainnet".to_string()
+            } else {
+                "solana:localnet".to_string()
+            }
+        });
 
         Ok(Self {
             bind_addr,
@@ -102,6 +120,8 @@ impl Config {
             provider_keypair_path,
             database_url,
             trust_open_requests,
+            upstream_url,
+            network,
         })
     }
 }

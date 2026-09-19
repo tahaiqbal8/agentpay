@@ -24,6 +24,7 @@ Open **http://localhost:3100** — that is the UI.
 | Service | Host port | Image | Purpose |
 |---|---|---|---|
 | `web` | **3100** | built locally, 431 MB | Operator console |
+| `provider` | 4021 *(loopback)* | built locally | Demo API — **no payment code in it** |
 | `gateway` | 8080 *(loopback)* | built locally, 175 MB | JSON API — **not a web page** |
 | `postgres` | 5434 *(loopback)* | `postgres:16-alpine` | High-water marks + evidence log |
 
@@ -211,6 +212,27 @@ claim proving the high-water mark never moved during the denials.
 > ⚠️ **Turn it back off afterwards.** That flag disables the check that stops a
 > caller asserting a deposit that was never escrowed. The gateway warns about it
 > on every boot.
+
+### An agent that actually buys something
+
+```bash
+npm run buy
+```
+
+Walks the full 402 handshake against the demo provider: ask unpaid → get a price
+→ sign a claim → receive real data. Then it tries to overspend and is refused.
+
+Every successful response is checked for `served_by: demo-provider`, so the data
+is demonstrably the provider's rather than something the gateway invented. And
+the provider counts its own hits:
+
+```bash
+curl -s localhost:4021/health      # "served" rises only on PAID calls
+```
+
+That counter is the proof of the security property: a denied claim never reaches
+the provider, so an agent cannot get free data by sending a claim it knows will
+be refused.
 
 For the real on-chain path with real escrow, use `npm run evidence-devnet` — it
 needs devnet SOL and the Solana toolchain on the host, not in Docker.

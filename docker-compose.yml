@@ -45,6 +45,30 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
+  # Demo provider — an ordinary API with NO payment code.
+  #
+  # The point is what it does not contain: no 402, no signatures, no wallet. A
+  # provider monetises by putting the gateway in front of their API, not by
+  # rewriting it. Only /_catalogue is added, so the gateway knows the prices.
+  # ---------------------------------------------------------------------------
+  provider:
+    build:
+      context: ./demo-provider
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      # Loopback: agents are meant to reach it THROUGH the gateway, so that
+      # payment is enforced. Exposed at all only so a demo can show the
+      # unpaid API answering directly.
+      - "127.0.0.1:${PROVIDER_PORT:-4021}:4021"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4021/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
   # Gateway — verifies claims, enforces limits, writes evidence, settles.
   # ---------------------------------------------------------------------------
   gateway:
@@ -56,6 +80,8 @@ services:
       postgres:
         # Not just "started": sqlx runs migrations at boot and would fail
         # against a database still initialising.
+        condition: service_healthy
+      provider:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-agentpay}:${POSTGRES_PASSWORD:-agentpay}@postgres:5432/${POSTGRES_DB:-agentpay}
@@ -73,6 +99,9 @@ services:
       # assert a deposit that was never escrowed. Required by `npm run demo`
       # because its sessions are synthetic. Never set this in production.
       AGENTPAY_TRUST_OPEN_REQUESTS: ${AGENTPAY_TRUST_OPEN_REQUESTS:-}
+      # The provider behind /v1/buy. Service name, not localhost — resolved
+      # inside the compose network.
+      AGENTPAY_UPSTREAM_URL: ${AGENTPAY_UPSTREAM_URL:-http://provider:4021}
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     volumes:

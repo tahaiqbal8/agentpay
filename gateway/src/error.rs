@@ -48,6 +48,12 @@ pub enum ReasonCode {
     ERR_NOT_A_SESSION_ACCOUNT,
     ERR_CHAIN_UNAVAILABLE,
 
+    // --- paid resource access ---
+    ERR_UPSTREAM_NOT_CONFIGURED,
+    ERR_UPSTREAM_UNAVAILABLE,
+    ERR_UNKNOWN_RESOURCE,
+    ERR_PRICE_MISMATCH,
+
     // --- evidence log ---
     ERR_EVIDENCE_UNAVAILABLE,
     ERR_EVIDENCE_NOT_FOUND,
@@ -79,6 +85,10 @@ impl ReasonCode {
             Self::ERR_SESSION_FIELD_MISMATCH => "ERR_SESSION_FIELD_MISMATCH",
             Self::ERR_NOT_A_SESSION_ACCOUNT => "ERR_NOT_A_SESSION_ACCOUNT",
             Self::ERR_CHAIN_UNAVAILABLE => "ERR_CHAIN_UNAVAILABLE",
+            Self::ERR_UPSTREAM_NOT_CONFIGURED => "ERR_UPSTREAM_NOT_CONFIGURED",
+            Self::ERR_UPSTREAM_UNAVAILABLE => "ERR_UPSTREAM_UNAVAILABLE",
+            Self::ERR_UNKNOWN_RESOURCE => "ERR_UNKNOWN_RESOURCE",
+            Self::ERR_PRICE_MISMATCH => "ERR_PRICE_MISMATCH",
             Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
             Self::ERR_EVIDENCE_NOT_FOUND => "ERR_EVIDENCE_NOT_FOUND",
             Self::ERR_STORE_UNAVAILABLE => "ERR_STORE_UNAVAILABLE",
@@ -132,6 +142,16 @@ impl ReasonCode {
             Self::ERR_CHAIN_UNAVAILABLE => {
                 "The session could not be verified against the chain, so it was refused."
             }
+            Self::ERR_UPSTREAM_NOT_CONFIGURED => {
+                "This gateway has no provider configured, so nothing can be bought."
+            }
+            Self::ERR_UPSTREAM_UNAVAILABLE => {
+                "The provider could not be reached or priced, so the request was refused."
+            }
+            Self::ERR_UNKNOWN_RESOURCE => "The provider does not sell that resource.",
+            Self::ERR_PRICE_MISMATCH => {
+                "The claim does not cover this resource's price exactly."
+            }
             Self::ERR_EVIDENCE_UNAVAILABLE => {
                 "The evidence log could not be read, so no root could be produced."
             }
@@ -169,7 +189,11 @@ impl ReasonCode {
             Self::ERR_SETTLEMENT_UNAVAILABLE
             | Self::ERR_SETTLEMENT_FAILED
             | Self::ERR_EVIDENCE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ERR_EVIDENCE_NOT_FOUND => StatusCode::NOT_FOUND,
+            Self::ERR_EVIDENCE_NOT_FOUND | Self::ERR_UNKNOWN_RESOURCE => StatusCode::NOT_FOUND,
+            Self::ERR_PRICE_MISMATCH => StatusCode::PAYMENT_REQUIRED,
+            Self::ERR_UPSTREAM_NOT_CONFIGURED | Self::ERR_UPSTREAM_UNAVAILABLE => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             // Fail closed: an unreadable store is a denial, and 503 tells the
             // caller it may be worth retrying later.
             Self::ERR_STORE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
@@ -260,6 +284,10 @@ mod tests {
             ReasonCode::ERR_SESSION_FIELD_MISMATCH,
             ReasonCode::ERR_NOT_A_SESSION_ACCOUNT,
             ReasonCode::ERR_CHAIN_UNAVAILABLE,
+            ReasonCode::ERR_UPSTREAM_NOT_CONFIGURED,
+            ReasonCode::ERR_UPSTREAM_UNAVAILABLE,
+            ReasonCode::ERR_UNKNOWN_RESOURCE,
+            ReasonCode::ERR_PRICE_MISMATCH,
             ReasonCode::ERR_EVIDENCE_UNAVAILABLE,
             ReasonCode::ERR_EVIDENCE_NOT_FOUND,
             ReasonCode::ERR_STORE_UNAVAILABLE,

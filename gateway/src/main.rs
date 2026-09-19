@@ -8,6 +8,7 @@
 //! enforcement, never for custody. It holds no keys that can move funds beyond
 //! what the escrow program's on-chain constraints already permit.
 
+mod buy;
 mod chain;
 mod claim;
 mod config;
@@ -46,6 +47,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/session/open", post(routes::open_session))
         .route("/v1/claim/verify", post(routes::verify_claim))
         .route("/v1/session/settle", post(routes::settle_session))
+        .route("/v1/buy/{*resource}", get(routes::buy))
         .route("/v1/sessions", get(routes::list_sessions))
         .route("/v1/decisions/recent", get(routes::recent_decisions))
         .route("/v1/session/{session}/evidence", get(routes::session_evidence))
@@ -158,6 +160,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Arc::new(RpcSessionFetcher::new(Arc::clone(&rpc))))
     };
 
+    let upstream = match &config.upstream_url {
+        Some(url) => {
+            info!(upstream = %url, "paid resource path enabled at /v1/buy");
+            Some(Arc::new(buy::Upstream::new(url.clone())))
+        }
+        None => {
+            warn!("AGENTPAY_UPSTREAM_URL is not set; /v1/buy will return ERR_UPSTREAM_NOT_CONFIGURED");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         store,
         db: db_handle,
@@ -169,6 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rpc: provider_keypair.as_ref().map(|_| Arc::clone(&rpc)),
         provider_keypair,
         session_fetcher,
+        upstream,
+        network: config.network.clone(),
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
