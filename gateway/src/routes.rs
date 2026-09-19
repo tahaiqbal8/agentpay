@@ -209,6 +209,11 @@ pub async fn open_session(
         return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
     };
 
+    // Tracks whether the escrow behind this session was actually verified.
+    // A session admitted without it has no vault, so it can never settle, and
+    // the console must not offer settlement for it.
+    let mut chain_verified = false;
+
     // Reconcile against the chain before believing any of it (D8). Without
     // this the endpoint mints credit: a caller could assert a deposit that was
     // never escrowed and have claims authorised against it.
@@ -243,6 +248,7 @@ pub async fn open_session(
                 on_chain_deposit = account.deposited_total,
                 "session reconciled against chain"
             );
+            chain_verified = true;
         }
         None => {
             warn!(
@@ -253,7 +259,7 @@ pub async fn open_session(
         }
     }
 
-    let record = SessionRecord::new(
+    let mut record = SessionRecord::new(
         session,
         agent,
         provider,
@@ -261,6 +267,7 @@ pub async fn open_session(
         deposited_total,
         expires_at,
     );
+    record.chain_verified = chain_verified;
 
     state
         .store
@@ -794,6 +801,9 @@ pub struct SessionSummaryView {
     pub last_nonce: Option<String>,
     pub expires_at: i64,
     pub is_settled: bool,
+    /// False means the escrow was never verified on chain, so settlement
+    /// cannot succeed no matter what the balances say.
+    pub chain_verified: bool,
     pub evidence_count: i64,
     pub created_at: String,
 }
@@ -836,6 +846,7 @@ pub async fn list_sessions(
                 last_nonce: s.last_nonce.map(|n| n.to_string()),
                 expires_at: s.expires_at,
                 is_settled: s.is_settled,
+                chain_verified: s.chain_verified,
                 evidence_count: s.evidence_count,
                 created_at: s.created_at.to_rfc3339(),
             })

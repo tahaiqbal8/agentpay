@@ -21,12 +21,19 @@ interface SettleResult {
 }
 
 /**
- * `!is_settled` is not enough. `settle_session` refuses once expiry plus
- * clock-skew tolerance has passed, so listing an expired session here would
- * offer an action the program will reject.
+ * Three things must hold before settlement is even possible.
+ *
+ * `!is_settled` alone is not enough:
+ *  - `settle_session` refuses once expiry plus skew has passed, and
+ *  - a session that was never reconciled against the chain has NO escrow
+ *    account behind it, so there is nothing to settle from.
+ *
+ * Listing either kind here would offer an action the program can only reject.
  */
 function settleable(s: SessionSummary): boolean {
-  return sessionStatus(s).status === "active" || sessionStatus(s).status === "expiring";
+  if (!s.chain_verified) return false;
+  const st = sessionStatus(s).status;
+  return st === "active" || st === "expiring";
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -41,6 +48,9 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 export default function SettlePage() {
   const toast = useToast();
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
+  // Kept separately so we can explain WHY they are not offered, rather than
+  // silently hiding them and leaving the operator to wonder.
+  const [unverified, setUnverified] = React.useState<SessionSummary[]>([]);
   const [selected, setSelected] = React.useState<SessionSummary | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<SettleResult | null>(null);
@@ -48,7 +58,13 @@ export default function SettlePage() {
 
   React.useEffect(() => {
     api.sessions().then((res) => {
-      if (res.ok) setSessions(res.data.sessions.filter(settleable));
+      if (!res.ok) return;
+      setSessions(res.data.sessions.filter(settleable));
+      setUnverified(
+        res.data.sessions.filter(
+          (s) => !s.chain_verified && !s.is_settled
+        )
+      );
     });
   }, []);
 
@@ -121,9 +137,28 @@ export default function SettlePage() {
           ))}
           {sessions.length === 0 && (
             <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-              No sessions can be settled right now. Expired sessions are excluded —
-              the program refuses them.
+              No sessions can be settled right now.
             </p>
+          )}
+
+          {unverified.length > 0 && (
+            <div className="mt-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-2.5">
+              <p className="text-[11px] font-semibold text-[var(--color-warn)]">
+                {unverified.length} session{unverified.length === 1 ? "" : "s"} not shown —
+                no on-chain escrow
+              </p>
+              <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
+                These were opened while{" "}
+                <code className="font-mono">AGENTPAY_TRUST_OPEN_REQUESTS=1</code> was set, so
+                the gateway never checked that a vault exists. There is nothing on chain to
+                settle from, and <code className="font-mono">settle_session</code> would fail.
+                They are useful for demonstrating enforcement, not settlement.
+              </p>
+              <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
+                For a settleable session, open one on chain — see{" "}
+                <code className="font-mono">npm run evidence-devnet</code>.
+              </p>
+            </div>
           )}
         </CardContent>
       </Card>

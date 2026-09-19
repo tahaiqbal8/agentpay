@@ -20,6 +20,8 @@ export interface SessionSummary {
   last_nonce: string | null;
   expires_at: number;
   is_settled: boolean;
+  /** False when the escrow was never verified on chain — cannot settle. */
+  chain_verified: boolean;
   evidence_count: number;
   created_at: string;
 }
@@ -183,6 +185,7 @@ export const mock = {
         last_nonce: "4",
         expires_at: now + 3600,
         is_settled: false,
+        chain_verified: true,
         evidence_count: 7,
         created_at: new Date(Date.now() - 600_000).toISOString(),
       },
@@ -197,6 +200,7 @@ export const mock = {
         last_nonce: "11",
         expires_at: now - 120,
         is_settled: true,
+        chain_verified: true,
         evidence_count: 12,
         created_at: new Date(Date.now() - 7_200_000).toISOString(),
       },

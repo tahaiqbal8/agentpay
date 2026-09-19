@@ -94,6 +94,7 @@ pub struct SessionSummary {
     pub last_nonce: Option<u64>,
     pub expires_at: i64,
     pub is_settled: bool,
+    pub chain_verified: bool,
     pub evidence_count: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -145,9 +146,9 @@ impl Database {
             r#"
             INSERT INTO sessions (
                 session_pubkey, agent_pubkey, provider_pubkey, mint_pubkey,
-                deposited_total, expires_at
+                deposited_total, expires_at, chain_verified
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (session_pubkey) DO NOTHING
             "#,
         )
@@ -157,6 +158,7 @@ impl Database {
         .bind(record.mint.to_string())
         .bind(to_i64(record.deposited_total, "deposited_total")?)
         .bind(record.expires_at)
+        .bind(record.chain_verified)
         .execute(&self.pool)
         .await?;
 
@@ -168,7 +170,7 @@ impl Database {
         let row = sqlx::query(
             r#"
             SELECT s.session_pubkey, s.agent_pubkey, s.provider_pubkey, s.mint_pubkey,
-                   s.deposited_total, s.expires_at, s.settled_at,
+                   s.deposited_total, s.expires_at, s.settled_at, s.chain_verified,
                    c.cumulative_amount, c.nonce, c.expires_at AS claim_expires_at, c.signature
             FROM sessions s
             LEFT JOIN claim_tickets c ON c.session_pubkey = s.session_pubkey
@@ -190,7 +192,7 @@ impl Database {
         let rows = sqlx::query(
             r#"
             SELECT s.session_pubkey, s.agent_pubkey, s.provider_pubkey, s.mint_pubkey,
-                   s.deposited_total, s.expires_at, s.settled_at,
+                   s.deposited_total, s.expires_at, s.settled_at, s.chain_verified,
                    c.cumulative_amount, c.nonce, c.expires_at AS claim_expires_at, c.signature
             FROM sessions s
             LEFT JOIN claim_tickets c ON c.session_pubkey = s.session_pubkey
@@ -252,6 +254,7 @@ impl Database {
             r#"
             SELECT s.session_pubkey, s.agent_pubkey, s.provider_pubkey, s.mint_pubkey,
                    s.deposited_total, s.expires_at, s.settled_at, s.created_at,
+                   s.chain_verified,
                    COALESCE(c.cumulative_amount, 0) AS cumulative_accepted,
                    c.nonce AS last_nonce,
                    COALESCE(e.entry_count, 0)       AS evidence_count
@@ -286,6 +289,7 @@ impl Database {
                     last_nonce: last_nonce.map(|n| n.max(0) as u64),
                     expires_at: row.try_get("expires_at")?,
                     is_settled: settled_at.is_some(),
+                    chain_verified: row.try_get("chain_verified").unwrap_or(false),
                     evidence_count: row.try_get("evidence_count")?,
                     created_at: row.try_get("created_at")?,
                 })
@@ -392,7 +396,7 @@ impl Database {
         let Some(session_row) = sqlx::query(
             r#"
             SELECT agent_pubkey, provider_pubkey, mint_pubkey,
-                   deposited_total, expires_at, settled_at
+                   deposited_total, expires_at, settled_at, chain_verified
             FROM sessions
             WHERE session_pubkey = $1
             FOR UPDATE
@@ -438,6 +442,7 @@ impl Database {
             last_nonce,
             highest_claim: None,
             is_settled: settled_at.is_some(),
+            chain_verified: session_row.try_get("chain_verified").unwrap_or(false),
         };
 
         let outcome = evaluate_claim(&record, claim, now);
@@ -645,6 +650,7 @@ fn row_to_record(row: PgRow) -> Result<SessionRecord, DbError> {
         last_nonce,
         highest_claim,
         is_settled: settled_at.is_some(),
+        chain_verified: row.try_get("chain_verified").unwrap_or(false),
     })
 }
 

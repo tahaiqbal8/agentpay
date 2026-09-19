@@ -48,6 +48,11 @@ pub struct SessionRecord {
     /// The highest accepted claim and its signature — what settlement submits.
     pub highest_claim: Option<SignedClaim>,
     pub is_settled: bool,
+    /// True when the session was reconciled against its on-chain escrow at open.
+    ///
+    /// False means it was admitted without that check (development only), so
+    /// there is no vault behind it and settlement cannot succeed.
+    pub chain_verified: bool,
 }
 
 impl SessionRecord {
@@ -70,7 +75,14 @@ impl SessionRecord {
             last_nonce: None,
             highest_claim: None,
             is_settled: false,
+            chain_verified: false,
         }
+    }
+
+    /// Marks this session as backed by a verified on-chain escrow account.
+    pub fn verified_on_chain(mut self) -> Self {
+        self.chain_verified = true;
+        self
     }
 }
 
