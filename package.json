@@ -11,6 +11,7 @@
     "restart-test": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/restart-durability.ts",
     "evidence-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/evidence-devnet.ts",
     "reconcile-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/reconcile-devnet.ts",
+    "stage-settleable": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/stage-settleable.ts",
     "demo": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-agent.ts",
     "buy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-buy.ts"
   },
