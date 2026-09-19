@@ -56,12 +56,13 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 
 | Read this | For |
 |---|---|
+| **[HANDOVER.md](docs/HANDOVER.md)** | Full engineering handover — architecture, backend, frontend, data model, security, gaps |
 | **[DOCKER.md](docs/DOCKER.md)** | Docker Compose on Windows / macOS / Linux |
 | [SERVER_SETUP.md](docs/SERVER_SETUP.md) | Fresh machine → running stack, without Docker |
 | [DEPLOY.md](docs/DEPLOY.md) | Deploying each component; mainnet caveats |
 | [HACKATHON_KT.md](docs/HACKATHON_KT.md) | How it works, end to end |
 | [PITCH_AND_QA.md](docs/PITCH_AND_QA.md) | Pitch + judge Q&A |
-| [decisions.md](docs/decisions.md) | D1–D17: every security decision and its rejected alternative |
+| [decisions.md](docs/decisions.md) | D1–D20: every security decision and its rejected alternative |
 
 ---
 
