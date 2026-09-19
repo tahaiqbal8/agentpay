@@ -691,6 +691,26 @@ impl SessionStore for Database {
         self.mark_session_settled(session).await?;
         Ok(())
     }
+
+    async fn mark_chain_verified(&self, session: &Pubkey) -> Result<(), StoreError> {
+        // Never clears the flag: the column only travels false -> true, so a
+        // transient RPC failure can't un-verify a session that was checked.
+        let done = sqlx::query(
+            "UPDATE sessions SET chain_verified = true WHERE session_pubkey = $1",
+        )
+        .bind(session.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(DbError::from)?;
+
+        // No row means no such session. Reporting success here would tell the
+        // console a session is settleable when the gateway has never heard of
+        // it, so this matches the in-memory store and refuses.
+        if done.rows_affected() == 0 {
+            return Err(StoreError::Unknown);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -820,6 +840,34 @@ mod pg_tests {
         assert_eq!(loaded.last_nonce, None);
         assert!(loaded.highest_claim.is_none());
         assert!(!loaded.is_settled);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn reconciling_persists_and_refuses_unknown_sessions() {
+        let db = connect_db().await;
+        let rec = record(5_000_000);
+        assert!(db.save_session(&rec).await.unwrap());
+        assert!(
+            !db.load_session(&rec.session).await.unwrap().unwrap().chain_verified,
+            "a session starts unverified"
+        );
+
+        db.mark_chain_verified(&rec.session).await.unwrap();
+
+        // Read back through load_session, not the UPDATE's own report: the
+        // first version of this named a column that does not exist, and only
+        // a round trip through the real schema catches that.
+        let loaded = db.load_session(&rec.session).await.unwrap().unwrap();
+        assert!(loaded.chain_verified);
+        assert_eq!(loaded.deposited_total, 5_000_000, "reconciling moved the money");
+        assert_eq!(loaded.cumulative_accepted, 0);
+        assert!(!loaded.is_settled);
+
+        // A session the gateway has never seen must not come back verified;
+        // saying otherwise would offer the console a settlement that cannot exist.
+        let err = db.mark_chain_verified(&random_pubkey()).await.unwrap_err();
+        assert!(matches!(err, StoreError::Unknown));
     }
 
     #[tokio::test]

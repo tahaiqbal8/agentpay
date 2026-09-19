@@ -145,6 +145,23 @@ export const api = {
       delta: string;
       nonce: string;
     }>("/v1/claim/verify", { method: "POST", body: JSON.stringify({ claim }) }),
+  /**
+   * Re-checks a session against its on-chain escrow.
+   *
+   * A session opened while reconciliation was disabled is recorded unverified,
+   * and unverified is not the same as unbacked — the escrow may exist and
+   * nobody looked. This asks the gateway to look.
+   */
+  reconcile: (session: string) =>
+    call<{
+      decision: string;
+      session: string;
+      chain_verified: boolean;
+      on_chain_deposit: string;
+    }>("/v1/session/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }),
   settle: (session: string) =>
     call<{
       decision: string;

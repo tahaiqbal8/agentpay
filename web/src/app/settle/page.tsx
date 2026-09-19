@@ -25,13 +25,29 @@ interface SettleResult {
  *
  * `!is_settled` alone is not enough:
  *  - `settle_session` refuses once expiry plus skew has passed, and
- *  - a session that was never reconciled against the chain has NO escrow
- *    account behind it, so there is nothing to settle from.
+ *  - a session the gateway has not confirmed against the chain may have no
+ *    escrow account behind it, so there may be nothing to settle from.
  *
  * Listing either kind here would offer an action the program can only reject.
  */
 function settleable(s: SessionSummary): boolean {
   if (!s.chain_verified) return false;
+  const st = sessionStatus(s).status;
+  return st === "active" || st === "expiring";
+}
+
+/**
+ * Unverified sessions worth re-checking against the chain.
+ *
+ * `chain_verified` is a snapshot from the moment the session was opened. If
+ * reconciliation was off then, the flag is false because nobody looked — NOT
+ * because the escrow is missing. Treating those as unbacked hides genuinely
+ * settleable sessions, so anything still inside its window gets offered for a
+ * fresh look. Expired ones are excluded: verifying them changes nothing,
+ * since `settle_session` refuses past expiry either way.
+ */
+function recheckable(s: SessionSummary): boolean {
+  if (s.chain_verified || s.is_settled) return false;
   const st = sessionStatus(s).status;
   return st === "active" || st === "expiring";
 }
@@ -53,20 +69,53 @@ export default function SettlePage() {
   const [unverified, setUnverified] = React.useState<SessionSummary[]>([]);
   const [selected, setSelected] = React.useState<SessionSummary | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [checking, setChecking] = React.useState(false);
   const [result, setResult] = React.useState<SettleResult | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    api.sessions().then((res) => {
-      if (!res.ok) return;
-      setSessions(res.data.sessions.filter(settleable));
-      setUnverified(
-        res.data.sessions.filter(
-          (s) => !s.chain_verified && !s.is_settled
-        )
-      );
-    });
+  const load = React.useCallback(async () => {
+    const res = await api.sessions();
+    if (!res.ok) return;
+    setSessions(res.data.sessions.filter(settleable));
+    setUnverified(res.data.sessions.filter((s) => !s.chain_verified && !s.is_settled));
   }, []);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  /**
+   * Asks the gateway to look at the chain for each unverified session.
+   *
+   * The gateway re-verifies the stored record field by field, so a row that was
+   * invented under AGENTPAY_TRUST_OPEN_REQUESTS cannot talk its way to
+   * verified — it is refused exactly as it would have been at open.
+   */
+  const recheck = async () => {
+    const candidates = unverified.filter(recheckable);
+    if (candidates.length === 0) return;
+    setChecking(true);
+    let confirmed = 0;
+    for (const s of candidates) {
+      const res = await api.reconcile(s.session);
+      if (res.ok) confirmed++;
+    }
+    await load();
+    setChecking(false);
+    toast(
+      confirmed > 0
+        ? {
+            kind: "success",
+            title: `${confirmed} of ${candidates.length} confirmed on chain`,
+            body: "Now settleable.",
+          }
+        : {
+            kind: "error",
+            title: "None had an escrow on chain",
+            body: `${candidates.length} checked, ${candidates.length} refused.`,
+          }
+    );
+  };
 
   const settle = async () => {
     if (!selected) return;
@@ -86,11 +135,11 @@ export default function SettlePage() {
       title: "Settled on devnet",
       body: res.data.signature.slice(0, 32) + "…",
     });
-    api.sessions().then((r) => {
-      if (r.ok) setSessions(r.data.sessions.filter(settleable));
-    });
+    void load();
     setSelected(null);
   };
+
+  const recheckCount = unverified.filter(recheckable).length;
 
   // Settlement pays the highest claim; the remainder is refundable to the agent.
   const refundable = selected
@@ -145,19 +194,46 @@ export default function SettlePage() {
             <div className="mt-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-2.5">
               <p className="text-[11px] font-semibold text-[var(--color-warn)]">
                 {unverified.length} session{unverified.length === 1 ? "" : "s"} not shown —
-                no on-chain escrow
+                escrow never confirmed
               </p>
               <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
                 These were opened while{" "}
-                <code className="font-mono">AGENTPAY_TRUST_OPEN_REQUESTS=1</code> was set, so
-                the gateway never checked that a vault exists. There is nothing on chain to
-                settle from, and <code className="font-mono">settle_session</code> would fail.
-                They are useful for demonstrating enforcement, not settlement.
+                <code className="font-mono">AGENTPAY_TRUST_OPEN_REQUESTS=1</code> was set, so the
+                gateway never checked whether a vault exists. That is not the same as saying
+                there is none — nobody looked. Until one does,{" "}
+                <code className="font-mono">settle_session</code> could fail, so they are not
+                offered here.
               </p>
-              <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
-                For a settleable session, open one on chain — see{" "}
-                <code className="font-mono">npm run evidence-devnet</code>.
-              </p>
+              {recheckCount > 0 ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 w-full"
+                    onClick={recheck}
+                    disabled={checking}
+                  >
+                    {checking ? (
+                      <>
+                        <Loader2 className="size-3 animate-spin" /> Reading {recheckCount} account
+                        {recheckCount === 1 ? "" : "s"}…
+                      </>
+                    ) : (
+                      <>Check {recheckCount} against the chain</>
+                    )}
+                  </Button>
+                  <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
+                    Each stored record is re-verified field by field, so an invented session stays
+                    refused. The other {unverified.length - recheckCount} have expired — checking
+                    them changes nothing.
+                  </p>
+                </>
+              ) : (
+                <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
+                  All of them have expired, so verifying would change nothing. For a fresh
+                  settleable session, see <code className="font-mono">npm run evidence-devnet</code>.
+                </p>
+              )}
             </div>
           )}
         </CardContent>

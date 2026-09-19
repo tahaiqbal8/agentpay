@@ -129,6 +129,7 @@ pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
             "POST /v1/session/open",
             "POST /v1/claim/verify",
             "POST /v1/session/settle",
+            "POST /v1/session/reconcile",
             "POST /v1/evidence/proof",
             "GET  /v1/buy/{resource}   (402 without a claim)",
         ],
@@ -402,6 +403,102 @@ pub async fn verify_claim(
         previous_cumulative: accepted.previous_cumulative.to_string(),
         delta: accepted.delta.to_string(),
         nonce: accepted.nonce.to_string(),
+        request_id: rid,
+    }))
+}
+
+// --------------------------------------------------------------------------
+// POST /v1/session/reconcile
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ReconcileSessionRequest {
+    pub session: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReconcileSessionResponse {
+    pub decision: &'static str,
+    pub session: String,
+    pub chain_verified: bool,
+    /// What the chain says the escrow holds, so the caller can see the number
+    /// that was checked rather than trusting the boolean.
+    pub on_chain_deposit: String,
+    pub request_id: String,
+}
+
+/// Re-checks a session against its on-chain escrow, after the fact.
+///
+/// `chain_verified` is set at open time, and a session admitted while
+/// reconciliation was disabled is recorded unverified. Unverified is NOT
+/// unbacked: the escrow may exist and nobody looked. Without this endpoint
+/// such a session is stuck — the console hides it from settlement forever,
+/// including real, funded, settleable ones.
+///
+/// This does not trust the stored record. It verifies the stored fields
+/// against the account, so a row that was invented under
+/// AGENTPAY_TRUST_OPEN_REQUESTS cannot talk its way to verified: the deposit,
+/// agent, provider, mint and expiry all have to match what is on chain.
+pub async fn reconcile_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ReconcileSessionRequest>,
+) -> Result<Json<ReconcileSessionResponse>, Denial> {
+    let rid = request_id();
+
+    let Ok(session) = req.session.parse::<Pubkey>() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    };
+
+    let record = state
+        .store
+        .get(&session)
+        .await
+        .map_err(|e| store_denial(e, &rid))?;
+
+    let Some(fetcher) = state.session_fetcher.as_ref() else {
+        // Fail closed: with reconciliation disabled there is nothing that can
+        // honestly raise the flag.
+        return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
+    };
+
+    let claimed = ClaimedSession {
+        agent: record.agent,
+        provider: record.provider,
+        mint: record.mint,
+        deposited_total: record.deposited_total,
+        expires_at: record.expires_at,
+    };
+
+    let account = verify_on_chain_session(fetcher.as_ref(), &state.program_id, &session, &claimed)
+        .await
+        .map_err(|e| {
+            warn!(
+                request_id = %rid,
+                session = %session,
+                error = %e,
+                "reconciliation refused: the stored record does not match the chain"
+            );
+            Denial::new(reconciliation_code(&e), &rid)
+        })?;
+
+    state
+        .store
+        .mark_chain_verified(&session)
+        .await
+        .map_err(|e| store_denial(e, &rid))?;
+
+    info!(
+        request_id = %rid,
+        session = %session,
+        on_chain_deposit = account.deposited_total,
+        "session reconciled after the fact; settlement is now available"
+    );
+
+    Ok(Json(ReconcileSessionResponse {
+        decision: "VERIFIED",
+        session: session.to_string(),
+        chain_verified: true,
+        on_chain_deposit: account.deposited_total.to_string(),
         request_id: rid,
     }))
 }

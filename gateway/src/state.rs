@@ -133,6 +133,13 @@ pub trait SessionStore: Send + Sync {
         now: i64,
     ) -> Result<Result<ClaimAccepted, ClaimRejection>, StoreError>;
     async fn mark_settled(&self, session: &Pubkey) -> Result<(), StoreError>;
+    /// Records that the session's escrow was confirmed on chain.
+    ///
+    /// Only ever set true, and only after a real account read. A session
+    /// admitted without reconciliation is *unverified*, which is not the same
+    /// as unbacked — the escrow may well exist, nobody looked. This lets a
+    /// later look settle the question.
+    async fn mark_chain_verified(&self, session: &Pubkey) -> Result<(), StoreError>;
 }
 
 /// Pure ordering rules, separated from storage so they can be tested directly
@@ -270,11 +277,56 @@ impl SessionStore for InMemorySessionStore {
         record.is_settled = true;
         Ok(())
     }
+
+    async fn mark_chain_verified(&self, session: &Pubkey) -> Result<(), StoreError> {
+        let mut guard = self.inner.write().map_err(poisoned)?;
+        let record = guard.get_mut(session).ok_or(StoreError::Unknown)?;
+        record.chain_verified = true;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chain_verified_travels_one_way_and_touches_nothing_else() {
+        let store = InMemorySessionStore::new();
+        let mut rec = record();
+        rec.chain_verified = false;
+        store.open(rec).await.unwrap();
+
+        let before = store.get(&session_key()).await.unwrap();
+        assert!(!before.chain_verified);
+
+        store.mark_chain_verified(&session_key()).await.unwrap();
+        let after = store.get(&session_key()).await.unwrap();
+        assert!(after.chain_verified);
+
+        // The flag is the only thing that moved. A reconciliation that also
+        // shifted the high-water mark or the deposit would let a late check
+        // rewrite the money, which is the opposite of what it is for.
+        assert_eq!(after.deposited_total, before.deposited_total);
+        assert_eq!(after.cumulative_accepted, before.cumulative_accepted);
+        assert_eq!(after.last_nonce, before.last_nonce);
+        assert_eq!(after.expires_at, before.expires_at);
+        assert_eq!(after.is_settled, before.is_settled);
+
+        // Idempotent: reconciling twice is not an error and changes nothing.
+        store.mark_chain_verified(&session_key()).await.unwrap();
+        assert!(store.get(&session_key()).await.unwrap().chain_verified);
+    }
+
+    #[tokio::test]
+    async fn marking_an_unknown_session_verified_is_refused() {
+        let store = InMemorySessionStore::new();
+        let err = store
+            .mark_chain_verified(&Pubkey::new_from_array([42u8; 32]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Unknown));
+    }
 
     const NOW: i64 = 1_000_000;
     /// Ordering rules are what these tests exercise; signature validity is

@@ -245,6 +245,34 @@ stored in clamped form. Cost: two absurd claims (`u64::MAX` and `i64::MAX`)
 collapse to one entry. Both are refused as `ExceedsDeposit`, which the decision
 column records, so nothing an auditor needs is lost.
 
+## D18 — Unverified is not unbacked
+
+`chain_verified` records whether a session's escrow was confirmed on chain at
+the moment it was opened. When `AGENTPAY_TRUST_OPEN_REQUESTS` is set the
+gateway skips that check, so the flag stays false.
+
+The settlement console treated false as "there is no escrow" and hid those
+sessions behind that sentence. The sentence was wrong. False means *nobody
+looked*, which is a statement about the gateway, not about the chain.
+
+The cost was not cosmetic. Session
+`9BKdE533eAyG6pK4Mj3DS5EYLhzxZvoRQZ5FxLxAL2Mt` had a real program-owned escrow
+holding 2,000,000 micro-USDC with a 750,000 high-water mark, unsettled and
+inside its window. The console hid it and asserted it had no escrow. Settling
+it by hand moved the 750,000 and the account now reads `is_settled=true`
+(`36oTzpoA9uz…gsxh`). Real money was unreachable through the UI because of a
+claim the UI could not support.
+
+`POST /v1/session/reconcile` fixes the underlying gap: it re-reads the account
+and verifies the **stored** record against it field by field. A row invented
+under the trust flag cannot promote itself — it is refused with the same code
+it would have got at open. The flag only ever travels false → true, so a
+transient RPC failure cannot un-verify a session that was checked.
+
+The console now offers the check instead of making the claim, and only for
+sessions still inside their window, since verifying an expired one changes
+nothing.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
