@@ -334,6 +334,24 @@ export async function fundSol(
 }
 
 /**
+ * Fills in the devnet defaults so the scripts run without a wall of inline env.
+ *
+ * Only fills what is MISSING — an explicitly set value always wins, so a run
+ * against a different cluster or wallet is never silently redirected.
+ */
+export function ensureDevnetEnv(): void {
+  const home = process.env.HOME ?? "";
+  const defaults: Record<string, string> = {
+    ANCHOR_PROVIDER_URL: "https://api.devnet.solana.com",
+    ANCHOR_WALLET: `${home}/.config/solana/id.json`,
+    AGENTPAY_PROVIDER_KEYPAIR: `${home}/.config/solana/agentpay-provider.json`,
+  };
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!process.env[k]?.trim()) process.env[k] = v;
+  }
+}
+
+/**
  * Provider pinned to `confirmed`.
  *
  * AnchorProvider.env() defaults to `processed`, which on a public cluster
@@ -341,6 +359,7 @@ export async function fundSol(
  * attack-test failures and obscure whether a defence actually held.
  */
 export function makeProvider(): anchor.AnchorProvider {
+  ensureDevnetEnv();
   const base = anchor.AnchorProvider.env();
   const connection = new Connection(base.connection.rpcEndpoint, {
     commitment: "confirmed",

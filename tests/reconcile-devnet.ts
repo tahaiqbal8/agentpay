@@ -35,7 +35,10 @@ import {
 } from "./helpers";
 
 const BASE = process.env.GATEWAY ?? "http://127.0.0.1:8080";
-const KEYPAIR_PATH = process.env.AGENTPAY_PROVIDER_KEYPAIR;
+// Defaults to the standard location so the script runs with no env at all.
+const KEYPAIR_PATH =
+  process.env.AGENTPAY_PROVIDER_KEYPAIR?.trim() ||
+  `${process.env.HOME}/.config/solana/agentpay-provider.json`;
 const DEPOSIT = 1_500_000n;
 
 let failures = 0;
@@ -60,8 +63,11 @@ function check(label: string, got: { status: number; body: any }, wantStatus: nu
 }
 
 (async () => {
-  if (!KEYPAIR_PATH) {
-    console.error("AGENTPAY_PROVIDER_KEYPAIR must be set");
+  if (!fs.existsSync(KEYPAIR_PATH)) {
+    console.error(
+      `No provider keypair at ${KEYPAIR_PATH}\n\n` +
+        `  solana-keygen new --no-bip39-passphrase -o ${KEYPAIR_PATH}\n`
+    );
     process.exit(1);
   }
 
