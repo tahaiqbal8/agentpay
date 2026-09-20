@@ -204,6 +204,95 @@ console.log("\n5. a refusal must not advance the counters");
   // The point of the above: if the client advanced its own counter on a
   // refusal, its next claim would be one step ahead of the gateway's
   // high-water mark and would be refused as non-monotonic forever.
+
+  // -------------------------------------------------------------------------
+  // 6. Retry discipline
+  // -------------------------------------------------------------------------
+
+  console.log("\n6. retries happen for outages, never for decisions");
+
+  /** A gateway that quotes fine, then fails `failures` times before serving. */
+  function flaky(failures: number, reason: string, status: number) {
+    let quotes = 0;
+    let attempts = 0;
+    const f = (async () => {
+      // Quote and paid attempt alternate.
+      if (quotes === attempts) {
+        quotes++;
+        return new Response(JSON.stringify({ resource: "/weather", price: "1000" }), {
+          status: 402,
+        });
+      }
+      attempts++;
+      if (attempts <= failures) {
+        return new Response(JSON.stringify({ reason_code: reason, message: "x" }), { status });
+      }
+      return new Response(
+        JSON.stringify({ data: { ok: true }, upstream_status: 200, served_by: "p" }),
+        { status: 200 }
+      );
+    }) as unknown as typeof globalThis.fetch;
+    return { fetch: f, attempts: () => attempts };
+  }
+
+  function clientWith(fetchImpl: typeof globalThis.fetch, retries: number) {
+    return new AgentPayClient({
+      gateway: "http://example.invalid",
+      session: base58Encode(fixedSession),
+      expiresAt: 1_800_000_000,
+      signer: { publicKey: new Uint8Array(32), sign: () => new Uint8Array(64) },
+      fetch: fetchImpl,
+      retry: { retries, backoffMs: 1 },
+    });
+  }
+
+  const outage = flaky(2, "ERR_CHAIN_UNAVAILABLE", 503);
+  const recovered = await clientWith(outage.fetch, 3).buy<{ ok: boolean }>("/weather");
+  check("a transient failure is retried until it works", recovered.ok);
+  eq("it took three attempts", outage.attempts(), 3);
+
+  // The one that matters: a policy refusal must NOT be retried. Retrying a
+  // decision cannot change it, and for anything already charged it costs.
+  const refused = flaky(2, "ERR_POLICY_BUDGET", 403);
+  try {
+    await clientWith(refused.fetch, 3).buy("/weather");
+    check("a decision is not retried", false, "it returned");
+  } catch (e) {
+    check("a decision is not retried", e instanceof AgentPayError);
+  }
+  eq("it gave up after one attempt", refused.attempts(), 1);
+
+  // -------------------------------------------------------------------------
+  // 7. A paid failure is visible, not hidden
+  // -------------------------------------------------------------------------
+
+  console.log("\n7. a charge is per call, not per success");
+
+  let n = 0;
+  const provider404 = (async () => {
+    n++;
+    if (n % 2 === 1) {
+      return new Response(JSON.stringify({ resource: "/weather", price: "1000" }), {
+        status: 402,
+      });
+    }
+    // The gateway's envelope is 200: payment and forwarding both worked.
+    return new Response(
+      JSON.stringify({
+        data: { error: "unknown city" },
+        upstream_status: 404,
+        served_by: "p",
+      }),
+      { status: 200 }
+    );
+  }) as unknown as typeof globalThis.fetch;
+
+  const paid = await clientWith(provider404, 0).buy("/weather?city=Atlantis");
+  check("the purchase does not throw", true, "payment and forwarding worked");
+  eq("but ok is false", paid.ok, false);
+  eq("and the provider's status is reported", paid.upstreamStatus, 404);
+  eq("and the agent was still charged", paid.price, 1000n);
+
   console.log(
     failures === 0
       ? `\nPASS  ${"all SDK checks"}\n`

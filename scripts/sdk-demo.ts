@@ -194,10 +194,26 @@ const usdc = (v: bigint) => (Number(v) / 1e6).toFixed(6);
       (run.stoppedBy ? `  ${C.a}stopped by ${run.stoppedBy.reasonCode}${C.r}` : "")
   );
 
+  // Everything above touched the chain exactly once, at open. This is the
+  // second and last time: one transaction settles every purchase.
+  const state = await pay.sessionState();
   console.log(
-    `\n${C.g}PASS${C.r}  total committed ${usdc(pay.spent)} USDC across ` +
-      `${run.purchases.length + 3} purchases, one session, no chain traffic.\n` +
-      `      ${C.d}session ${session.toBase58()}${C.r}\n`
+    `\n  escrow left ${usdc(state.remaining)} of ${usdc(state.depositedTotal)} ` +
+      `${C.d}· ${state.evidenceCount} decisions recorded${C.r}`
+  );
+
+  const settled = await pay.settle();
+  console.log(
+    `\n  ${C.g}settled${C.r} ${usdc(settled.cumulativeAmount)} USDC in one transaction\n` +
+      `  ${C.d}sig   ${settled.signature}${C.r}\n` +
+      `  ${C.d}root  ${settled.merkleRoot}${C.r}  ` +
+      `${C.d}(${settled.evidenceEntries} decisions, refusals included)${C.r}`
+  );
+
+  console.log(
+    `\n${C.g}PASS${C.r}  ${state.evidenceCount} decisions, ${usdc(pay.spent)} USDC committed,\n` +
+      `      and exactly TWO chain transactions: one to open, one to settle.\n` +
+      `      ${C.d}verify: solana confirm ${settled.signature} -u devnet${C.r}\n`
   );
 })().catch((e) => {
   console.error("\nUNCAUGHT:", e?.message ?? e);

@@ -16,6 +16,9 @@ export type {
   Quote,
   Purchase,
   BuyManyResult,
+  SessionState,
+  Settlement,
+  RetryOptions,
 } from "./client";
 
 export { AgentPayControl } from "./control";

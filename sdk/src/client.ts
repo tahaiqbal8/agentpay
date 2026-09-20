@@ -55,6 +55,8 @@ export interface ClientOptions {
   startingNonce?: bigint;
   /** Optional fetch implementation, for tests or a proxy. */
   fetch?: typeof globalThis.fetch;
+  /** Retry behaviour for transient failures. Off by default. */
+  retry?: RetryOptions;
 }
 
 export interface Quote {
@@ -88,6 +90,46 @@ export interface Purchase<T = unknown> {
   upstreamStatus: number;
   /** True when the provider actually served the request (2xx). */
   ok: boolean;
+}
+
+/** What one session looks like to the agent holding it. */
+export interface SessionState {
+  session: string;
+  depositedTotal: bigint;
+  cumulativeAccepted: bigint;
+  /** Escrow left. The absolute bound — a policy can only narrow it further. */
+  remaining: bigint;
+  expiresAt: number;
+  isSettled: boolean;
+  /** False when the gateway never confirmed the escrow against the chain. */
+  chainVerified: boolean;
+  evidenceCount: number;
+}
+
+/** The result of settling: one transaction for the whole session. */
+export interface Settlement {
+  session: string;
+  /** A real, confirmed devnet/mainnet signature. */
+  signature: string;
+  /** Hex. The evidence root the program stored — allowed AND refused claims. */
+  merkleRoot: string;
+  evidenceEntries: number;
+  cumulativeAmount: bigint;
+  settlementRecord: string;
+}
+
+export interface RetryOptions {
+  /**
+   * How many times to retry a TRANSIENT failure.
+   *
+   * Only transient ones: a policy refusal or a bad claim is a decision, and
+   * retrying a decision is a busy loop that spends nothing and achieves
+   * nothing. Default 0 — retries are opt-in, because a caller who did not ask
+   * for them should not silently wait.
+   */
+  retries?: number;
+  /** First backoff in ms; doubles each attempt. Default 250. */
+  backoffMs?: number;
 }
 
 export interface BuyManyResult<T = unknown> {
@@ -146,6 +188,7 @@ export class AgentPayClient {
   private readonly expiresAt: bigint;
   private readonly signer: Signer;
   private readonly doFetch: typeof globalThis.fetch;
+  private readonly retry: Required<RetryOptions>;
 
   /** The high-water mark this client believes it holds. */
   private cumulative: bigint;
@@ -160,6 +203,10 @@ export class AgentPayClient {
     this.cumulative = opts.startingCumulative ?? 0n;
     this.nonce = opts.startingNonce ?? 0n;
     this.doFetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this.retry = {
+      retries: opts.retry?.retries ?? 0,
+      backoffMs: opts.retry?.backoffMs ?? 250,
+    };
 
     if (this.sessionBytes.length !== 32) {
       throw new Error(`session ${opts.session} does not decode to 32 bytes`);
@@ -233,6 +280,10 @@ export class AgentPayClient {
    * nonce, or the next honest claim is rejected as non-monotonic.
    */
   async buy<T = unknown>(resource: string): Promise<Purchase<T>> {
+    return this.withRetry(() => this.buyOnce<T>(resource));
+  }
+
+  private async buyOnce<T = unknown>(resource: string): Promise<Purchase<T>> {
     const { price } = await this.quote(resource);
     const next = this.cumulative + price;
     const nonce = this.nonce + 1n;
@@ -310,6 +361,155 @@ export class AgentPayClient {
       }
     }
     return { purchases, spent: this.cumulative - before };
+  }
+
+  /**
+   * Reads the session's state from the gateway.
+   *
+   * Use it to check remaining escrow before a large run, or to confirm the
+   * gateway's high-water mark still matches this client's after a network
+   * wobble. `remaining` is the escrow left, which is the absolute bound — an
+   * agent's policy envelope can only narrow it further.
+   */
+  async sessionState(): Promise<SessionState> {
+    const res = await this.doFetch(`${this.gateway}/v1/sessions`);
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw errorFrom(res.status, body);
+
+    const found = (
+      body as {
+        sessions: {
+          session: string;
+          deposited_total: string;
+          cumulative_accepted: string;
+          remaining: string;
+          expires_at: number;
+          is_settled: boolean;
+          chain_verified: boolean;
+          evidence_count: number;
+        }[];
+      }
+    ).sessions.find((x) => x.session === this.sessionB58);
+
+    if (!found) {
+      throw new AgentPayError(
+        "ERR_SESSION_UNKNOWN",
+        `The gateway has no record of session ${this.sessionB58}.`,
+        404
+      );
+    }
+    return {
+      session: found.session,
+      depositedTotal: BigInt(found.deposited_total),
+      cumulativeAccepted: BigInt(found.cumulative_accepted),
+      remaining: BigInt(found.remaining),
+      expiresAt: found.expires_at,
+      isSettled: found.is_settled,
+      chainVerified: found.chain_verified,
+      evidenceCount: found.evidence_count,
+    };
+  }
+
+  /**
+   * Settles the session on chain: one transaction for every purchase made.
+   *
+   * Submits the HIGHEST claim accepted. Because claims are cumulative, that one
+   * claim settles everything — the intermediate ones never reach the chain,
+   * which is the entire point of the deferred scheme.
+   *
+   * The transaction also commits the Merkle root of every decision, refusals
+   * included. That is what makes a denial provable afterwards.
+   *
+   * Settlement is final and one-shot: the program's settlement PDA cannot be
+   * created twice, so a second call is refused by the chain itself, not merely
+   * by the gateway.
+   */
+  async settle(): Promise<Settlement> {
+    const res = await this.doFetch(`${this.gateway}/v1/session/settle`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session: this.sessionB58 }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw errorFrom(res.status, body);
+
+    const b = body as {
+      session: string;
+      signature: string;
+      merkle_root: string;
+      evidence_entries: number;
+      cumulative_amount: string;
+      settlement_record: string;
+    };
+    return {
+      session: b.session,
+      signature: b.signature,
+      merkleRoot: b.merkle_root,
+      evidenceEntries: b.evidence_entries,
+      cumulativeAmount: BigInt(b.cumulative_amount),
+      settlementRecord: b.settlement_record,
+    };
+  }
+
+  /**
+   * Buys, waiting for a human if the agent's mode requires one.
+   *
+   * In human-controlled mode the gateway refuses with `ERR_APPROVAL_REQUIRED`
+   * and raises a proposal; this polls until somebody decides, then retries.
+   *
+   * Separate from `buy` on purpose. `buy` returning only after an unbounded
+   * human delay would be a surprising thing for a method named `buy` to do,
+   * and a caller with a request deadline needs the refusal, not the wait.
+   *
+   * Throws the original refusal once `timeoutMs` passes — a rejection and an
+   * unattended queue are indistinguishable from here, and pretending otherwise
+   * would have the agent wait forever on a spend a human already declined.
+   */
+  async buyWhenApproved<T = unknown>(
+    resource: string,
+    opts: { timeoutMs?: number; pollMs?: number } = {}
+  ): Promise<Purchase<T>> {
+    const timeoutMs = opts.timeoutMs ?? 120_000;
+    const pollMs = opts.pollMs ?? 2_000;
+    const deadline = Date.now() + timeoutMs;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        return await this.buy<T>(resource);
+      } catch (e) {
+        const waiting = e instanceof AgentPayError && e.needsApproval;
+        if (!waiting || Date.now() + pollMs > deadline) throw e;
+        await new Promise((r) => setTimeout(r, pollMs));
+      }
+    }
+  }
+
+  /** Sleeps, for backoff. */
+  private static wait(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /**
+   * Runs an operation, retrying only TRANSIENT failures.
+   *
+   * A policy refusal, a bad claim or an expired session are decisions. Retrying
+   * a decision burns time and, for anything that got as far as being charged,
+   * money. Only the gateway failing to reach something it depends on is worth
+   * another attempt.
+   */
+  private async withRetry<T>(op: () => Promise<T>): Promise<T> {
+    let delay = this.retry.backoffMs;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await op();
+      } catch (e) {
+        const retryable = e instanceof AgentPayError && e.transient;
+        if (!retryable || attempt >= this.retry.retries) throw e;
+        await AgentPayClient.wait(delay);
+        delay *= 2;
+      }
+    }
   }
 
   private url(resource: string): string {

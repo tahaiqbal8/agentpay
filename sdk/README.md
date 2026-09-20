@@ -86,6 +86,55 @@ bought.price;          // charged anyway
 payment and forwarding both worked — and retrying would cost again. `buyMany`
 stops when it sees one, rather than spending the budget on errors.
 
+## Settling
+
+```ts
+const state = await pay.sessionState();
+state.remaining;       // escrow left — the absolute bound
+state.evidenceCount;   // decisions recorded, refusals included
+
+const settled = await pay.settle();
+settled.signature;     // a real, confirmed on-chain transaction
+settled.merkleRoot;    // the evidence root the program stored
+```
+
+One transaction settles every purchase in the session. Because claims are
+cumulative, only the highest ever reaches the chain — the intermediate ones do
+not need to. The transaction also commits the Merkle root of every decision,
+refusals included, which is what makes a denial provable afterwards.
+
+Settlement is one-shot: the program's settlement PDA cannot be created twice,
+so a second attempt is refused by the chain itself, not merely by the gateway.
+
+## Waiting for a human
+
+In human-controlled mode every spend needs a decision, and `buy` refuses with
+`ERR_APPROVAL_REQUIRED` while raising a proposal.
+
+```ts
+const bought = await pay.buyWhenApproved("/analyse", { timeoutMs: 120_000 });
+```
+
+It polls until somebody decides, then retries. Kept separate from `buy` because
+a method named `buy` returning only after an unbounded human delay would be
+surprising, and a caller with a request deadline needs the refusal rather than
+the wait.
+
+After the timeout it throws the original refusal. A rejection and an unattended
+queue look the same from here, and waiting forever on a spend a human already
+declined would be worse than giving up.
+
+## Retries
+
+```ts
+const pay = new AgentPayClient({ ..., retry: { retries: 3, backoffMs: 250 } });
+```
+
+Off by default, and it retries **transient** failures only — the gateway
+failing to reach its database, the chain or the provider. A policy refusal or a
+bad claim is a decision: retrying it cannot change the answer, and for anything
+that got as far as being charged it costs money.
+
 ## Handling refusals
 
 ```ts
