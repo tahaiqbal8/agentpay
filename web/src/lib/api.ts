@@ -74,6 +74,105 @@ export interface EvidenceProof {
   verified_locally: boolean;
 }
 
+
+// ---------------------------------------------------------------------------
+// Control plane — who may spend, on what, and how much.
+//
+// Every amount is a decimal string of micro-USDC, matching the rest of this
+// client. A JSON number above 2^53 rounds, and these are budgets.
+// ---------------------------------------------------------------------------
+
+export type AgentMode = "human" | "autonomous";
+export type AgentStatus = "active" | "suspended";
+
+export interface PolicyView {
+  max_total: string;
+  max_per_call: string;
+  approval_threshold: string | null;
+  allowed_resources: string[] | null;
+  max_calls: number | null;
+}
+
+export interface Agent {
+  agent_id: string;
+  label: string;
+  agent_pubkey: string;
+  owner_pubkey: string | null;
+  mode: AgentMode;
+  status: AgentStatus;
+  created_at: string;
+  /** Null means the agent has never been authorized: only its escrow bounds it. */
+  policy: PolicyView | null;
+  /** Derived from the money path, not a counter kept alongside it. */
+  spent: string;
+  calls: number;
+  remaining: string | null;
+}
+
+export interface Provider {
+  provider_id: string;
+  label: string;
+  base_url: string;
+  provider_pubkey: string | null;
+  enabled: boolean;
+}
+
+export interface CatalogueEntry {
+  provider_id: string;
+  provider_label: string;
+  resource: string;
+  price: string;
+  description: string;
+}
+
+export interface ProviderError {
+  provider_id: string;
+  base_url: string;
+  error: string;
+}
+
+export interface AggregateCatalogue {
+  entries: CatalogueEntry[];
+  /** Providers that did not answer. Listed so "down" is not read as "absent". */
+  unavailable: ProviderError[];
+}
+
+export interface PlanOption {
+  provider_id: string;
+  provider_label: string;
+  resource: string;
+  unit_price: string;
+  affordable_calls: number;
+  total_cost: string;
+  sufficient: boolean;
+  refused_by: string | null;
+  needs_approval: boolean;
+}
+
+export interface Plan {
+  agent_id: string;
+  resource: string;
+  requested_calls: number;
+  options: PlanOption[];
+  recommended: string | null;
+  spent: string;
+  remaining: string | null;
+  unavailable: ProviderError[];
+}
+
+export interface Approval {
+  approval_id: string;
+  agent_id: string;
+  session: string | null;
+  resource: string;
+  price: string;
+  calls: number;
+  state: "pending" | "approved" | "rejected" | "consumed";
+  reason: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
 export interface Health {
   status: string;
   program_id: string;
@@ -127,6 +226,53 @@ async function call<T>(path: string, init?: RequestInit): Promise<Result<T>> {
 }
 
 export const api = {
+  // --- control plane ---
+  agents: () => call<{ agents: Agent[] }>("/v1/agents"),
+  agent: (id: string) => call<Agent>(`/v1/agents/${id}`),
+  createAgent: (body: {
+    label: string;
+    agent_pubkey: string;
+    owner_pubkey?: string;
+    mode?: AgentMode;
+  }) => call<Agent>("/v1/agents", { method: "POST", body: JSON.stringify(body) }),
+  authorizeAgent: (
+    id: string,
+    body: {
+      max_total: string;
+      max_per_call: string;
+      approval_threshold?: string | null;
+      allowed_resources?: string[] | null;
+      max_calls?: number | null;
+      mode?: AgentMode;
+    }
+  ) => call<Agent>(`/v1/agents/${id}/authorize`, { method: "POST", body: JSON.stringify(body) }),
+  setAgentStatus: (id: string, status: AgentStatus) =>
+    call<Agent>(`/v1/agents/${id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  providers: () => call<{ providers: Provider[] }>("/v1/providers"),
+  registerProvider: (body: {
+    provider_id: string;
+    label: string;
+    base_url: string;
+    provider_pubkey?: string;
+    enabled?: boolean;
+  }) => call<{ providers: Provider[] }>("/v1/providers", {
+    method: "POST",
+    body: JSON.stringify(body),
+  }),
+  deleteProvider: (id: string) =>
+    call<{ providers: Provider[] }>(`/v1/providers/${id}`, { method: "DELETE" }),
+  catalogue: () => call<AggregateCatalogue>("/v1/catalogue"),
+  plan: (body: { agent_id: string; resource: string; calls: number }) =>
+    call<Plan>("/v1/agent/plan", { method: "POST", body: JSON.stringify(body) }),
+  approvals: () => call<{ approvals: Approval[] }>("/v1/approvals"),
+  decideApproval: (id: string, approved: boolean, reason?: string) =>
+    call<{ approvals: Approval[] }>(`/v1/approvals/${id}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ approved, reason }),
+    }),
   health: () => call<Health>("/health"),
   sessions: () => call<{ sessions: SessionSummary[] }>("/v1/sessions"),
   recentDecisions: () => call<{ decisions: RecentDecision[] }>("/v1/decisions/recent"),

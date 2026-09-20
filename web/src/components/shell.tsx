@@ -8,6 +8,9 @@ import {
   ShieldCheck,
   Landmark,
   FlaskConical,
+  Bot,
+  Store,
+  UserCheck,
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
@@ -21,6 +24,9 @@ const NAV = [
   { href: "/", label: "Monitor", icon: Activity, hint: "Sessions & live claims" },
   { href: "/verifier", label: "Verifier", icon: ShieldCheck, hint: "Merkle proofs" },
   { href: "/settle", label: "Settlement", icon: Landmark, hint: "On-chain settle" },
+  { href: "/agents", label: "Agents", icon: Bot, hint: "Identity & authorization" },
+  { href: "/registry", label: "Registry", icon: Store, hint: "Providers & catalogue" },
+  { href: "/approvals", label: "Approvals", icon: UserCheck, hint: "Human-controlled spends" },
   { href: "/playground", label: "Playground", icon: FlaskConical, hint: "Claim simulator" },
 ];
 

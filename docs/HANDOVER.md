@@ -46,14 +46,17 @@ happened.
 
 ### What this document covers, and what it does not
 
-AgentPay as built is the **enforcement and settlement half** of an agent
-payments product: the part from the agent's first paid API call through to the
-on-chain settlement. The stages before that — creating an agent, connecting a
-wallet, discovering services in a registry, choosing between them — are either
-primitive or absent. §2 maps the full flow stage by stage with a status for
-each, and §11 lists the missing stages as work.
+AgentPay covers the flow from creating an agent through to on-chain
+settlement. §2 maps it stage by stage with a status for each — most stages are
+built; two remain partial and are named there rather than glossed.
 
-Read that mapping before treating any part of this document as a product
+The division that runs through the whole system: **the chain enforces custody,
+the gateway enforces policy.** An escrow deposit is an absolute ceiling no
+software here can widen. Everything above it — which resources an agent may
+buy, how much per call, how many calls, when a human must decide — is
+off-chain policy that an operator can change without touching the program.
+
+Read §2's table before treating any part of this document as a product
 description.
 
 ---
@@ -117,24 +120,43 @@ Agent Decision → API Calls → Gateway Enforcement → Provider →
 Final Settlement
 ```
 
-**AgentPay as built covers the last five stages.** The earlier stages are
-either partially present in primitive form or not built at all. The table below
-is the honest mapping; read the Status column before planning any work against
-it.
+Every stage is now implemented except the two marked **Partial**, which are
+partial in specific, named ways rather than vaguely. Read the Status column
+before planning work against it.
 
-| # | Stage | Who performs it | Status today | Where it lives |
+| # | Stage | Who performs it | Status | Where it lives |
 | --- | --- | --- | --- | --- |
-| 1 | Agent creation | Human / application | **Not built** | — |
-| 2 | Agent connection | Human / application | **Not built** | — |
-| 3 | Wallet connection | Human | **Partial** — the agent *is* an Ed25519 keypair and the session binds to its pubkey, but there is no wallet adapter, connect flow or key management | `Session.agent`; keypairs are files in the scripts |
-| 4 | Human authorization + funding | Human | **Partial** — `open_session(deposit, expires_at)` is a real, chain-enforced spending envelope, but it expresses only *how much* and *until when* | `open_session`, §3 |
-| 5 | API / AI registry | Platform | **Not built** — a single provider's price list exists (`/_catalogue`), not a registry of many | `demo-provider`, `buy.rs::Upstream` |
-| 6 | API selection | Agent | **Not built** — `AGENTPAY_UPSTREAM_URL` names one upstream; there is nothing to select between | `config.rs` |
-| 7 | Agent decision (how many calls) | Agent | **Not built** as a component — the demo script's loop is hardcoded. The *ceiling* on that decision is enforced. | `scripts/demo-buy.ts` (demo only) |
+| 1 | Agent creation | Human / application | **Built** | `POST /v1/agents`, `control.rs` |
+| 2 | Agent connection | Human / application | **Built** — an application addresses an agent by its `agent_id` | `agents` table, `GET /v1/agents/{id}` |
+| 3 | Wallet connection | Human | **Partial** — an agent binds to a real Ed25519 pubkey, uniquely, and claims are verified against it. What is missing is a *browser wallet adapter*: keys are still files the scripts read. | `agents.agent_pubkey`; §11 |
+| 4 | Human authorization + funding | Human | **Built** — `open_session` on-chain, plus an off-chain envelope: per-resource allowlist, per-call cap, total budget, call count, approval threshold, suspension | `open_session` + `POST /v1/agents/{id}/authorize`, `policy.rs` |
+| 5 | API / AI registry | Platform | **Built** — many providers, catalogues aggregated live | `registry.rs`, `GET /v1/catalogue` |
+| 6 | API selection | Agent | **Built** — offers for a resource, cheapest first, with a recommendation | `POST /v1/agent/plan` |
+| 7 | Agent decision (how many calls) | Agent | **Partial** — the planner returns how many calls the envelope affords, which is the *bound* on the decision. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan`; §11 |
 | 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims | `/v1/buy/{resource}`, §4 |
-| 9 | Gateway enforcement | Gateway | **Built** — signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, §4 |
+| 9 | Gateway enforcement | Gateway | **Built** — policy, signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, `policy.rs`, §4 |
 | 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
 | 11 | Final settlement + anchoring | Gateway → chain | **Built** — one transaction, Merkle root committed | `settle_session`, §3 and §5 |
+
+### The control plane
+
+Stages 1 to 7 live in four modules kept deliberately apart from the money path:
+
+| Module | Holds |
+| --- | --- |
+| `policy.rs` | The permission envelope and its evaluation — pure functions, no I/O |
+| `registry.rs` | Providers and their aggregated catalogues |
+| `control.rs` | Agent, provider, approval and planner handlers |
+| `control_db.rs` | Control-plane persistence, out of `db.rs` |
+
+They hold no custody and cannot affect settlement, which is why they are
+allowed to be mutable and flexible while the program and `routes.rs` are not.
+
+**A policy can only narrow, never widen.** The escrow deposit remains the
+absolute ceiling. This is why the envelope is off-chain: allowlists and call
+counts change often, and a redeploy per policy change would be untenable —
+whereas custody rules must hold even if this process is compromised, so they
+stay in the program.
 
 ### How stages 8–11 chain together
 
@@ -167,28 +189,34 @@ Stages 1–7 sit *above* this pipeline and decide **which** resource is bought
 and **how many times**. Nothing in stages 8–11 depends on how that decision was
 reached, which is why the enforcement layer is already mode-agnostic.
 
-### Two operating modes — proposed
+### Two operating modes
 
-Both modes are **policy-layer designs, not implemented**. They are recorded
-here because the enforcement layer below them already supports either without
-change: the gateway sees a signed claim and applies the same rules regardless
-of whether a human approved it.
+Both are implemented. `agents.mode` selects between them, and the enforcement
+layer below is identical either way: the gateway sees a signed claim and
+applies the same rules regardless of how the decision to send it was reached.
 
-**Human-controlled.** The agent identifies a candidate API and proposes a spend
-(resource, price, expected call count). Execution waits for explicit human
-approval, then the calls run. Requires: an approval queue, a notification path,
-and a hold state between proposal and execution. None of these exist.
+**Human-controlled** (`mode = "human"`). Every spend needs a decision. The
+agent's purchase is refused with `ERR_APPROVAL_REQUIRED` and a proposal appears
+in the approval queue; once a person approves it, the agent's retry succeeds.
 
-**Autonomous.** The human authorizes once — funding plus a permission envelope
-— and the agent thereafter selects services and executes calls on its own,
-bounded by that envelope. Requires: the registry (stage 5), a selection
-policy (stage 6) and a decision layer (stage 7). None of these exist.
+The approval is **single-use and bound to a resource and a price**. One click
+authorises one purchase — a standing permission would turn a moment's
+inattention into an unbounded budget. A retry does not queue a duplicate: one
+pending proposal exists per agent, resource and price.
 
-What **is** already true in both cases: the escrow deposit is a hard ceiling
-the chain enforces, so even a fully autonomous agent with a defective decision
-layer cannot spend beyond what the human escrowed. Autonomy is bounded by
-custody, not by the agent's own correctness. That property is the reason the
-escrow-first design was chosen.
+The agent is *refused*, not held, while it waits. A queued HTTP request would
+occupy a connection until somebody happened to look at the queue.
+
+**Autonomous** (`mode = "autonomous"`). The human authorizes once, and the
+agent thereafter selects providers and executes calls alone, bounded by its
+envelope. A spend at or above `approval_threshold` still asks; with no
+threshold set, it never does.
+
+What holds in both cases: the escrow deposit is a hard ceiling the chain
+enforces, so even a fully autonomous agent with a defective decision layer
+cannot spend beyond what the human escrowed. **Autonomy is bounded by custody,
+not by the agent's own correctness.** That is the reason for the escrow-first
+design.
 
 ### Why the provider implements nothing
 
@@ -335,6 +363,21 @@ modules.
 | GET | `/v1/session/{pubkey}/settlement` | The root the program actually stored |
 | POST | `/v1/evidence/proof` | Merkle inclusion proof for one decision |
 
+Control plane:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET/POST | `/v1/agents` | List agents, or create one bound to a wallet |
+| GET | `/v1/agents/{id}` | One agent with its envelope and derived spend |
+| POST | `/v1/agents/{id}/authorize` | Set the permission envelope and mode |
+| POST | `/v1/agents/{id}/status` | Suspend or reinstate — revocation mid-session |
+| GET/POST | `/v1/providers` | List or register providers |
+| DELETE | `/v1/providers/{id}` | Remove one |
+| GET | `/v1/catalogue` | Every resource every provider offers, cheapest first |
+| POST | `/v1/agent/plan` | Selection and affordability against the envelope |
+| GET | `/v1/approvals` | The human-decision queue |
+| POST | `/v1/approvals/{id}/decide` | Approve or reject one spend |
+
 ### The verification ordering in `/v1/claim/verify`
 
 This order is deliberate and must not be rearranged. Cheap checks run before
@@ -368,8 +411,20 @@ in-memory store holds a write lock for the whole cycle.
 different way: **nothing reaches the provider until the claim is admitted.**
 
 price lookup → 402 if no claim → decode → expiry → session lookup →
-**signature** → price match (`ERR_PRICE_MISMATCH`) → `admit_claim` → *only
-then* forward upstream.
+**signature** → price match (`ERR_PRICE_MISMATCH`) → **agent policy** →
+`admit_claim` → *only then* forward upstream.
+
+The policy step sits where it does for two reasons, and both are load-bearing:
+
+- **After the price**, because the envelope is about amounts and cannot be
+  evaluated without one.
+- **Before `admit_claim`**, because a policy refusal must not advance the
+  high-water mark. Advancing it would consume a nonce and a cumulative step for
+  a purchase that never happened, and the agent's next honest claim would then
+  be refused as non-monotonic — the session would be bricked by its own policy.
+
+`tests/policy-devnet.ts` asserts exactly that: the mark is unchanged across a
+refusal, and the next purchase still succeeds.
 
 The price-match step exists because `admit_claim` checks ordering and the
 deposit ceiling but not *what is being bought*. Without it an agent could
@@ -481,6 +536,18 @@ root.
 **Playground** (`/playground`) — a claim simulator for exploring the rules
 without a wallet: build a claim, see which rule would refuse it and why.
 
+**Agents** (`/agents`) — stages 1 to 4. Create an agent bound to a wallet, set
+its envelope and mode, watch spend against that envelope, suspend or reinstate
+it. States plainly what creating an agent does *not* do: no wallet is created,
+no key held, no money moved.
+
+**Registry** (`/registry`) — stages 5 to 7. Register providers, see the live
+aggregated catalogue, and run the planner against an agent's envelope. An
+unreachable provider is shown as *down*, never silently absent.
+
+**Approvals** (`/approvals`) — the human half of human-controlled mode. Polls
+every five seconds, because an agent is blocked until someone acts.
+
 There is also a session detail page at `/session/{pubkey}`.
 
 ### Frontend rules that are not negotiable
@@ -519,11 +586,10 @@ the HMR websocket is blocked — React never mounts and the page looks broken.
 
 ### Frontend work that is still open
 
-- No wallet adapter. The console is an operator tool, not an agent client — by
-  design, but an agent-facing UI would need one. This is stage 3 of the flow in
-  §2; see §11 for what connecting a wallet properly would involve.
-- No agent onboarding or approval UI. Stages 1–2 and the human-controlled mode
-  in §2 have no frontend at all.
+- No wallet adapter. An agent's pubkey is typed or pasted into the Agents page;
+  keys themselves are still files the scripts read. This is the remaining half
+  of stage 3 — see §11.
+- No pagination on the sessions table, claim feed or approval queue.
 - No pagination on the sessions table or claim feed.
 - No live updates: pages fetch on mount. A websocket or polling layer is
   unbuilt.
@@ -539,6 +605,7 @@ is why the gateway container waits on `service_healthy`, not merely `started`.
 - `0001_init.sql` — `sessions`, `claim_tickets`
 - `0002_evidence.sql` — `evidence_log`
 - `0003_chain_verified.sql` — adds `sessions.chain_verified`
+- `0004_agents_registry.sql` — `agents`, `agent_policies`, `providers`, `approvals`
 
 ### `sessions`
 
@@ -589,6 +656,25 @@ UNIQUE (session_pubkey, sequence_id)
 ```
 
 Both child tables cascade-delete from `sessions`.
+
+### Control-plane tables
+
+`agents` (identity, wallet, mode, status), `agent_policies` (the envelope),
+`providers` (the registry), `approvals` (the human queue). `0004` carries the
+column comments; three points are worth repeating here:
+
+- `agents.agent_pubkey` is **unique**. Two records sharing one key would make
+  the policy applied to a claim ambiguous.
+- Spend is **derived, never stored**. `agent_spend` sums `claim_tickets` and
+  counts `ALLOWED` evidence rows. A second counter would eventually disagree
+  with the numbers actually enforced, and the wrong one would be enforcing the
+  budget.
+- `approvals.state` includes `consumed`, set when an approved spend is made.
+  That is what makes one approval authorise exactly one purchase.
+
+Note on Postgres: `SUM` over `BIGINT` returns `NUMERIC`, so `agent_spend` casts
+explicitly. Without the cast it fails to decode; a silent version of that would
+have mis-stated a budget.
 
 ### A caveat to state plainly
 
@@ -644,6 +730,7 @@ Works unchanged on Windows, macOS and Linux. Ports bind to `127.0.0.1` only.
 | `AGENTPAY_UPSTREAM_URL` | `http://provider:4021` | The provider behind `/v1/buy` |
 | `AGENTPAY_NETWORK` / `AGENTPAY_ALLOW_MAINNET` | — | Mainnet requires an explicit opt-in |
 | `AGENTPAY_TRUST_OPEN_REQUESTS` | unset | **Development only.** Disables on-chain reconciliation. |
+| `AGENTPAY_REQUIRE_AGENT_POLICY` | unset | Refuse any session whose agent has no authorized record. Off by default: the control plane is additive and must not start refusing traffic that used to pass. |
 | `AGENTPAY_LOG` | `info,tower_http=warn` | Tracing filter |
 
 ### Two footguns worth knowing
@@ -689,6 +776,7 @@ logs `settlement enabled provider=…` at boot when the key loads.
 | `npm run evidence-devnet` | Real escrow, 7 claims, settles, proves the root against the chain |
 | `npm run stage-settleable` | The same but **stops before settling**, leaving a session for the Settlement page |
 | `npm run reconcile-devnet` | Opens one real session and tries to register it under 8 lies; all must be refused |
+| `npm run policy-devnet` | The control plane end to end: create, authorize, plan, buy, then be refused five ways |
 
 The devnet scripts default `ANCHOR_PROVIDER_URL`, `ANCHOR_WALLET` and
 `AGENTPAY_PROVIDER_KEYPAIR` to the standard locations — an explicitly set value
@@ -746,6 +834,13 @@ npm run reconcile-devnet    # 8 lies at /v1/session/open, all must be refused
 npm run restart-test        # state survives a gateway restart
 ```
 
+`npm run policy-devnet` is the control-plane equivalent: 22 checks against a
+real devnet escrow covering agent creation, wallet binding, authorization,
+planning, purchases inside the envelope, and refusals by allowlist, price cap,
+call limit, suspension and approval. Its load-bearing assertion is that a
+policy refusal leaves the high-water mark untouched and the next honest
+purchase still succeeds.
+
 `evidence-devnet` is the one to run if you only run one. It recomputes the
 Merkle root in TypeScript with an independent SHA-256 implementation, so a bug
 in the gateway's own Merkle code cannot make it pass.
@@ -789,6 +884,12 @@ that a status-code assertion would miss.
 | Session fields reconciled against the chain at open | gateway `/v1/session/open` | Uncollateralized credit creation |
 | Price of the resource == claim delta | gateway buy path | Paying 0.0005 for a 0.025 resource |
 | Nothing forwarded upstream before admission | gateway buy path | Free data on a refused claim |
+| Policy evaluated before the high-water mark moves | gateway buy path | A refusal bricking the session by consuming a nonce |
+| Suspension outranks every other policy rule | `policy.rs::evaluate` | Revocation being defeated by an approval click |
+| An approval is single-use, per resource and price | `consume_approval` | One human click authorising unbounded spending |
+| Only a *pending* approval can be decided | `decide_approval` | A second click flipping a rejection into permission |
+| An unreadable status reads as suspended, an unreadable mode as human | `policy.rs` | A corrupted column granting autonomy or spending |
+| One agent record per wallet | `agents.agent_pubkey` UNIQUE | Ambiguity about which policy applies to a claim |
 
 ### The three-layer trust boundary
 
@@ -827,20 +928,28 @@ What `open_session` authorizes is precise and chain-enforced:
 That is a genuine, useful authorization envelope, and it is the reason an
 autonomous agent is bounded by custody rather than by its own correctness.
 
-What it does **not** express, and what a fuller permission model would need —
-all of this is **proposed, not built**:
+What the escrow does **not** express, the off-chain envelope now does
+(`agent_policies`, evaluated in `policy.rs`):
 
-- Per-resource or per-category limits ("weather yes, analysis no").
-- Rate limits ("at most 50 calls per hour").
-- Sub-budgets within one session, or budgets spanning several providers.
-- Approval thresholds ("anything above 0.01 USDC needs a human").
-- Revocation before expiry. Today the only ways to stop an agent mid-session
-  are to settle it or to stop the gateway; there is no on-chain pause.
+- **Per-resource limits** — `allowed_resources`, an allowlist. Empty means
+  unrestricted, which is what an unfilled form field submits.
+- **Per-call cap** — `max_per_call`, independent of the remaining budget.
+- **Total budget** — `max_total`, across every session the agent holds, not
+  per session.
+- **Call count** — `max_calls`.
+- **Approval thresholds** — `approval_threshold`, above which a human decides.
+- **Revocation before expiry** — `status = 'suspended'` stops the agent at the
+  gateway immediately, without settling the session or stopping the gateway.
 
-None of these exist in the gateway — a search for allowlist, budget, policy or
-permission concepts in `gateway/src/` returns nothing. Do not describe the
-current system as having fine-grained spending permissions. It has a cap, a
-deadline, and two fixed counterparties.
+Two limits to state plainly:
+
+- Suspension binds only what passes through **this** gateway. It does not claw
+  back the escrow and does not recall a settlement in flight.
+- There is still no rate limit in time ("50 calls per hour"). `max_calls` is a
+  total, not a rate.
+
+Still **proposed, not built**: sub-budgets within a session, budgets spanning
+providers with separate ceilings each, and time-windowed rate limits.
 
 ### Where the chain cannot help you
 
@@ -925,53 +1034,41 @@ is hackathon-grade, not production-grade.**
   escrow sit there until someone calls it manually.
 - **No metrics or tracing export.** Structured logs only.
 
-### Required integration for the full agent flow
+### Remaining work on the agent flow
 
-Stages 1–7 of the pipeline in §2. Listed as work, not as features — none of
-this exists today, and the document should not be read as implying otherwise.
+Stages 1 to 7 are built (§2). What is left, stated as work rather than absence:
 
-**Agent onboarding (stages 1–2).** Creating an agent identity and connecting it
-to a running application. There is no agent record anywhere in the system: the
-gateway knows agents only as Ed25519 public keys that appear inside sessions.
-A minimal version needs an agent registry, a key-generation or key-import path,
-and a way for an application to address an agent it owns.
+**Wallet adapter (the rest of stage 3).** An agent's pubkey is typed into the
+console and its private key is a JSON file the scripts read. Production needs a
+browser wallet adapter and a signing path that never puts the raw key on disk.
+There is also a decision to make that the demos currently dodge: whether the
+human's wallet and the agent's key should be the same key. In the scripts they
+effectively are, which is fine for a demo and wrong for production.
 
-**Wallet connection (stage 3).** Today an agent key is a JSON file read by a
-script. Production needs a wallet adapter in the console, a signing path that
-does not require the raw key on disk, and a decision about whether the human's
-wallet and the agent's key are the same key — they currently are, in the demo
-scripts, which is fine for a demo and wrong for production. The console has no
-wallet adapter at all (§6).
+**Task planning (the rest of stage 7).** `POST /v1/agent/plan` answers "how
+many calls can this agent afford?" — the *bound* on the decision. Deciding how
+many calls a given task actually needs is still the application's job. That is
+arguably where it belongs, but nothing in this repo does it.
 
-**Permission envelope (stage 4).** See §10 for exactly what `open_session` does
-and does not express. Extending it means either new program state or an
-off-chain policy engine in the gateway; the trade-off — on-chain enforcement
-versus flexibility — has not been decided and should be a deliberate design
-discussion, not an implementation detail.
+**Provider trust in the registry.** Anyone who can reach the gateway can
+register a provider. There is no ownership, no verification that a base URL
+belongs to the party claiming it, and no signature over a catalogue. For a
+multi-tenant deployment this is the first thing to fix.
 
-**API / AI registry (stage 5).** The gateway talks to exactly one upstream,
-named by `AGENTPAY_UPSTREAM_URL`. `demo-provider`'s `/_catalogue` is a price
-list for that one provider; the gateway caches it briefly and never invents
-prices. There is no registry of providers, no discovery endpoint, and
-`GET /v1/catalogue` on the gateway returns 404. A registry needs: provider
-registration, per-provider catalogue aggregation, capability metadata beyond
-price and description, and a trust story for who may list.
+**Rate limiting in time.** `max_calls` is a total, not a rate. An agent with
+1,000 calls authorized can spend them in a second.
 
-**Selection and decision layers (stages 6–7).** Choosing a provider from a
-registry, and deciding how many calls a task needs within the authorized
-budget. `scripts/demo-buy.ts` is a hardcoded demonstration loop, not a
-component — do not mistake it for a planner. Note the division of labour that
-already works: the agent decides, the gateway enforces. A decision layer can be
-built, replaced or gotten wrong without weakening any invariant in §10.
+**Notifications.** The approvals page polls every five seconds. Nothing pushes,
+emails or pages a human when a spend is waiting.
 
-**Approval workflow (human-controlled mode).** A proposal queue, a hold state,
-a notification path and an approval UI. None exist.
+**Sub-budgets.** One envelope per agent. Per-session or per-provider ceilings
+inside that envelope do not exist.
 
 **What none of this requires.** No change to the program, the claim format, the
-evidence log or the settlement path. Stages 1–7 sit above the enforcement
-pipeline and hand it the same signed claims either way. That is the useful
-property of the current design and the reason this work can proceed
-independently.
+evidence log or the settlement path. The control plane sits above the
+enforcement pipeline and hands it the same signed claims either way — which is
+why it could be built without touching any on-chain invariant, and why the
+remaining items can be too.
 
 ### Competitive honesty
 
@@ -998,7 +1095,8 @@ Repository: `https://github.com/tahaiqbal8/agentpay`
    the mistakes.
 2. `programs/agentpay/src/lib.rs` — 617 lines, readable in one sitting.
 3. `gateway/src/state.rs` — `evaluate_claim` is the heart of the enforcement
-   logic and is about 40 lines.
+   logic and is about 40 lines. Then `gateway/src/policy.rs::evaluate`, its
+   control-plane counterpart: same shape, same reason for being pure.
 4. `gateway/src/routes.rs` — `verify_claim` and `buy`, for the orderings.
 5. `gateway/src/evidence.rs` — pure functions, easy to reason about.
 6. `tests/attacks.ts` — 24 attacks; the fastest way to learn the threat model.
@@ -1007,13 +1105,17 @@ Repository: `https://github.com/tahaiqbal8/agentpay`
 
 ```
 programs/agentpay/src/lib.rs     the on-chain program
-gateway/src/                     11 modules, 6,677 lines
-web/src/app/                     4 pages + session detail
+gateway/src/                     15 modules; money path + control plane
+gateway/src/policy.rs            the permission envelope, pure
+gateway/src/registry.rs          providers and aggregated catalogues
+gateway/src/control.rs           agents, providers, approvals, planner
+gateway/src/control_db.rs        control-plane persistence
+web/src/app/                     7 pages + session detail
 web/src/lib/                     api client, formatting, status derivation
 demo-provider/server.js          a provider with no payment code
 tests/                           attack suite + devnet end-to-end
 scripts/                         demo and staging scripts
-gateway/migrations/              3 SQL migrations
+gateway/migrations/              4 SQL migrations
 docs/                            decisions, deploy, docker, server setup, pitch
 ```
 
