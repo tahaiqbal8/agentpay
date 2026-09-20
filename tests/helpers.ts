@@ -1,4 +1,5 @@
 import * as anchor from "@anchor-lang/core";
+import * as fs from "fs";
 import { Program } from "@anchor-lang/core";
 import {
   Connection,
@@ -339,7 +340,50 @@ export async function fundSol(
  * Only fills what is MISSING — an explicitly set value always wins, so a run
  * against a different cluster or wallet is never silently redirected.
  */
+/**
+ * Variables that mean the same thing on the host as they do in a container,
+ * and may therefore be read from `.env`.
+ *
+ * The allowlist is the point. `.env` is Docker Compose's file, so its paths are
+ * CONTAINER paths: `AGENTPAY_PROVIDER_KEYPAIR=/secrets/provider.json` does not
+ * exist on the host, and copying it here made every devnet script fail with
+ * "No provider keypair at /secrets/provider.json". Anything filesystem-shaped
+ * stays out.
+ */
+const DOTENV_SAFE_KEYS = [
+  "AGENTPAY_ADMIN_TOKEN",
+  "AGENTPAY_PROGRAM_ID",
+  "AGENTPAY_RPC_URL",
+] as const;
+
+/**
+ * Fills in those variables from `.env`, for anything not already set.
+ *
+ * Without it, running `npm run sdk-demo` after `docker compose up` fails with
+ * ERR_UNAUTHORIZED purely because a shell was missing an `export` — a
+ * confusing failure for a value sitting in a file in the project root.
+ *
+ * The shell always wins: a value set there is never overwritten, so pointing a
+ * script at a different gateway or token stays possible.
+ */
+function loadDotEnv(): void {
+  const path = `${__dirname}/../.env`;
+  if (!fs.existsSync(path)) return;
+  for (const line of fs.readFileSync(path, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!(DOTENV_SAFE_KEYS as readonly string[]).includes(key)) continue;
+    const value = trimmed.slice(eq + 1).trim();
+    if (!value) continue;
+    if (!process.env[key]?.trim()) process.env[key] = value;
+  }
+}
+
 export function ensureDevnetEnv(): void {
+  loadDotEnv();
   const home = process.env.HOME ?? "";
   const defaults: Record<string, string> = {
     ANCHOR_PROVIDER_URL: "https://api.devnet.solana.com",

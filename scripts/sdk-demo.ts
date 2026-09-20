@@ -33,11 +33,14 @@ import {
   chainTime,
   deriveSession,
   deriveVault,
+  ensureDevnetEnv,
   makeProvider,
   randomSessionId,
   throttle,
   withRpcRetry,
 } from "../tests/helpers";
+
+ensureDevnetEnv();
 
 const GATEWAY = process.env.GATEWAY ?? "http://127.0.0.1:8080";
 const ADMIN_TOKEN = process.env.AGENTPAY_ADMIN_TOKEN?.trim();

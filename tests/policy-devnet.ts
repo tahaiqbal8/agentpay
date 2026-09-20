@@ -37,11 +37,14 @@ import {
   chainTime,
   deriveSession,
   deriveVault,
+  ensureDevnetEnv,
   makeProvider,
   randomSessionId,
   throttle,
   withRpcRetry,
 } from "./helpers";
+
+ensureDevnetEnv();
 
 const BASE = process.env.GATEWAY ?? "http://127.0.0.1:8080";
 const KEYPAIR_PATH =
