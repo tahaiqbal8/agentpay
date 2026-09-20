@@ -1313,6 +1313,17 @@ pub struct BuyResponse {
     pub nonce: String,
     /// Straight from the provider, untouched.
     pub data: serde_json::Value,
+    /// The provider's own HTTP status.
+    ///
+    /// Reported because a charge is per CALL, not per success: the claim is
+    /// admitted before the request is forwarded, so a provider that answers
+    /// 404 or 500 has still cost the agent money. Previously that status was
+    /// only logged, and the agent received a bare 200 — it paid for a failure
+    /// and could not tell.
+    ///
+    /// The envelope stays 200 deliberately. Returning the provider's 404 here
+    /// would invite a retry, and a retry costs again.
+    pub upstream_status: u16,
     /// The provider's own header, so a caller can confirm who answered.
     pub served_by: Option<String>,
     pub request_id: String,
@@ -1474,7 +1485,18 @@ pub async fn buy(
         "buy: served"
     );
 
+    if !(200..300).contains(&res.status) {
+        warn!(
+            request_id = %rid,
+            resource = %resource_path,
+            upstream_status = res.status,
+            charged = accepted.delta,
+            "buy: the agent was charged but the provider did not serve"
+        );
+    }
+
     Ok(Json(BuyResponse {
+        upstream_status: res.status,
         resource: resource_path,
         price: price.to_string(),
         cumulative_amount: accepted.cumulative_amount.to_string(),

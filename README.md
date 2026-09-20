@@ -56,6 +56,7 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 
 | Read this | For |
 |---|---|
+| **[sdk/README.md](sdk/README.md)** | Integrating an agent — three lines, not 194 |
 | **[HANDOVER.md](docs/HANDOVER.md)** | Full engineering handover — architecture, backend, frontend, data model, security, gaps |
 | **[DOCKER.md](docs/DOCKER.md)** | Docker Compose on Windows / macOS / Linux |
 | [SERVER_SETUP.md](docs/SERVER_SETUP.md) | Fresh machine → running stack, without Docker |

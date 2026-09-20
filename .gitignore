@@ -14,3 +14,4 @@ test-ledger/
 secrets/*
 !secrets/.gitkeep
 !secrets/README.md
+sdk/dist/

@@ -133,7 +133,7 @@ before planning work against it.
 | 5 | API / AI registry | Platform | **Built** — many providers, catalogues aggregated live | `registry.rs`, `GET /v1/catalogue` |
 | 6 | API selection | Agent | **Built** — offers for a resource, cheapest first, with a recommendation | `POST /v1/agent/plan` |
 | 7 | Agent decision (how many calls) | Agent | **Partial** — the planner returns how many calls the envelope affords, which is the *bound* on the decision. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan`; §11 |
-| 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims | `/v1/buy/{resource}`, §4 |
+| 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims, and `@agentpay/client` so an integrator writes three lines rather than 194 | `/v1/buy/{resource}`, `sdk/`, §4 |
 | 9 | Gateway enforcement | Gateway | **Built** — policy, signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, `policy.rs`, §4 |
 | 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
 | 11 | Final settlement + anchoring | Gateway → chain | **Built** — one transaction, Merkle root committed | `settle_session`, §3 and §5 |
@@ -433,6 +433,26 @@ present a 0.0005 claim and take the 0.025 resource.
 This is verified by a test that counts hits on a throwaway upstream rather than
 checking a status code — a refused request that still reached the provider
 means the agent got free data, and a status code would not reveal it.
+
+### A charge is per call, not per success
+
+`admit_claim` runs **before** the request is forwarded — that ordering is what
+stops a refused claim from ever reaching the provider. The consequence is that
+a provider answering `404` or `500` has still cost the agent money.
+
+The gateway used to log that status and return a bare `200`, so an agent paid
+for a failure and could not tell. `BuyResponse` now carries `upstream_status`,
+and a non-2xx is logged at WARN naming the amount charged.
+
+The envelope stays `200` deliberately: returning the provider's `404` would
+invite a retry, and a retry costs again. `@agentpay/client` exposes it as
+`purchase.ok` / `purchase.upstreamStatus`, and `buyMany` stops on the first one
+rather than spending a budget on errors.
+
+Rolling the charge back was considered and rejected. The high-water mark
+advances atomically before the forward; unwinding it would open the gap the
+ordering exists to close, where a crash between forwarding and recording yields
+free data. A wasted charge is a billing dispute; free data is theft.
 
 ### Fail-closed discipline
 
@@ -778,6 +798,8 @@ logs `settlement enabled provider=…` at boot when the key loads.
 | `npm run stage-settleable` | The same but **stops before settling**, leaving a session for the Settlement page |
 | `npm run reconcile-devnet` | Opens one real session and tries to register it under 8 lies; all must be refused |
 | `npm run policy-devnet` | The control plane end to end: create, authorize, plan, buy, then be refused five ways |
+| `npm run sdk-demo` | The same purchases as `demo-buy`, through the SDK — six lines instead of 194 |
+| `npm run sdk-test` | The SDK suite, including the claim-encoding parity vector |
 
 The devnet scripts default `ANCHOR_PROVIDER_URL`, `ANCHOR_WALLET` and
 `AGENTPAY_PROVIDER_KEYPAIR` to the standard locations — an explicitly set value
@@ -1098,9 +1120,9 @@ is hackathon-grade, not production-grade.**
 
 ### Not built
 
-- **No SDK.** Integration means writing HTTP calls and an Ed25519 signature by
-  hand — roughly 50 lines. A client library is the obvious next deliverable and
-  would be the highest-leverage work for adoption.
+- **The SDK is TypeScript only.** `@agentpay/client` exists (`sdk/`), but a
+  Python or Go agent still hand-rolls the 73-byte encoding. The parity vector
+  in `sdk/test/run.ts` is the thing to port first.
 - **Not x402 wire-compatible.** It uses HTTP 402 with its own header scheme.
   Interop with the emerging x402 ecosystem would need a compatibility layer.
 - **No refund UI.** `refund_session` exists on-chain and is permissionless
@@ -1174,12 +1196,16 @@ Repository: `https://github.com/tahaiqbal8/agentpay`
 4. `gateway/src/routes.rs` — `verify_claim` and `buy`, for the orderings.
 5. `gateway/src/evidence.rs` — pure functions, easy to reason about.
 6. `tests/attacks.ts` — 24 attacks; the fastest way to learn the threat model.
+7. `sdk/README.md` — what integrating actually looks like, and
+   `scripts/sdk-demo.ts` for the same thing running against devnet.
 
 ### File map
 
 ```
 programs/agentpay/src/lib.rs     the on-chain program
 gateway/src/                     15 modules; money path + control plane
+sdk/                             @agentpay/client — the integration surface
+sdk/src/claim.ts                 the encoding, pinned to the Rust vector
 gateway/src/auth.rs              the control-plane token guard
 gateway/src/policy.rs            the permission envelope, pure
 gateway/src/registry.rs          providers and aggregated catalogues

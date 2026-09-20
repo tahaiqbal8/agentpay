@@ -396,6 +396,54 @@ wrong token and a correct *prefix* of the token. The money path still answers
 console works because its server-side proxy attaches the token — confirmed
 absent from the built client bundle and from the served HTML.
 
+## D22 — A charge is per call, not per success
+
+Found while writing the SDK demo. The provider does not know the city
+"Multan" and answers **HTTP 404**. The gateway charged the claim, forwarded,
+received the 404, logged it — and returned **200** to the agent with the error
+body as `data`.
+
+So the agent paid full price for a failure and could not tell. The demo printed
+`undefined°C`, which is how it surfaced.
+
+The charge itself is correct and follows from an ordering that exists for a
+better reason: `admit_claim` runs before the forward, so a refused claim never
+reaches the provider. Rolling the charge back on a bad upstream status would
+mean unwinding a high-water mark that has already advanced atomically, which
+reopens the gap where a crash between forwarding and recording yields free
+data. **A wasted charge is a billing dispute; free data is theft.**
+
+What was wrong was hiding it. `BuyResponse` now carries `upstream_status`, a
+non-2xx is logged at WARN naming the amount charged, and the SDK exposes
+`purchase.ok` / `purchase.upstreamStatus`.
+
+The HTTP envelope stays 200. Returning the provider's 404 would invite a retry,
+and a retry costs again — turning one wasted call into a loop of them.
+
+`buyMany` stops at the first non-2xx rather than continuing, because otherwise
+a provider having a bad minute drains the whole envelope one full price at a
+time.
+
+## D23 — The SDK has two classes, and that is the security boundary
+
+`AgentPayClient` carries a session and a signing key. `AgentPayControl` carries
+the admin token and can widen an envelope, suspend an agent and approve spends.
+
+They are separate classes rather than one client with optional credentials, so
+an agent process that never constructs the second **cannot** do those things —
+not by a config mistake, not by a bug in its own code. The capability is absent
+rather than merely unused.
+
+The encoding lives in `sdk/src/claim.ts` and is pinned against the same hex
+vector `gateway/src/claim.rs` asserts. The vector is copied deliberately rather
+than derived: deriving it would only prove the SDK agrees with itself, whereas
+a copy makes both sides fail together if either changes.
+
+That test matters more than the rest of the package combined. Every other
+mistake here surfaces as an HTTP error an integrator can read; a wrong claim
+encoding produces a signature that verifies nowhere, and the failure lands at
+settlement — after the agent has been told its purchases succeeded.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied
