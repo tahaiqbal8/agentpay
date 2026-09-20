@@ -50,6 +50,15 @@ pub struct AppState {
     pub upstream: Option<crate::buy::SharedUpstream>,
     /// CAIP-2-ish network label echoed in 402 responses.
     pub network: String,
+    /// Providers the gateway knows about. Always present; a single-provider
+    /// deployment simply has one entry, registered from AGENTPAY_UPSTREAM_URL.
+    pub registry: crate::registry::SharedRegistry,
+    /// When set, a session whose agent has no authorized record is refused.
+    ///
+    /// Off by default so adding the control plane changes no existing
+    /// deployment's behaviour. On, it closes the gap where an unregistered
+    /// agent is bounded only by its escrow.
+    pub require_agent_policy: bool,
 }
 
 impl AppState {
@@ -66,7 +75,7 @@ pub fn system_clock() -> i64 {
         .unwrap_or(0)
 }
 
-fn request_id() -> String {
+pub fn request_id() -> String {
     Uuid::new_v4().to_string()
 }
 
@@ -135,6 +144,16 @@ pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
             "POST /v1/session/reconcile",
             "GET  /v1/session/{pubkey}/settlement",
             "POST /v1/evidence/proof",
+            "GET  /v1/agents            (control plane)",
+            "POST /v1/agents",
+            "POST /v1/agents/{id}/authorize",
+            "POST /v1/agents/{id}/status",
+            "GET  /v1/providers",
+            "POST /v1/providers",
+            "GET  /v1/catalogue         (registry, all providers)",
+            "POST /v1/agent/plan        (selection + decision)",
+            "GET  /v1/approvals",
+            "POST /v1/approvals/{id}/decide",
             "GET  /v1/buy/{resource}   (402 without a claim)",
         ],
     })
@@ -498,6 +517,166 @@ pub async fn on_chain_settlement(
         settled_amount: Some(record.settled_amount.to_string()),
         settled_at: Some(record.settled_at),
     }))
+}
+
+
+/// Applies the agent's permission envelope to one purchase.
+///
+/// Returns `Ok(())` when the purchase may proceed. Every other outcome is a
+/// denial, including "a human must decide first" — which is an
+/// `ERR_APPROVAL_REQUIRED` refusal rather than a hold, because the agent is
+/// waiting on an HTTP response and a queued request would occupy a connection
+/// until a person happened to look. The agent retries once the approval lands.
+///
+/// # When there is no agent record
+///
+/// The policy layer does not apply and the escrow is the only bound — which is
+/// exactly the behaviour before agents existed, so adding them refuses no
+/// traffic that used to pass. `AGENTPAY_REQUIRE_AGENT_POLICY=1` flips that to a
+/// refusal for operators who want every session to belong to an authorized
+/// agent.
+async fn enforce_agent_policy(
+    state: &AppState,
+    agent: &Pubkey,
+    resource: &str,
+    price: u64,
+    rid: &str,
+) -> Result<(), Denial> {
+    use crate::policy::{evaluate, PolicyDecision};
+
+    let Some(db) = state.db.as_ref() else {
+        // No database means no control plane at all. Requiring a policy while
+        // being unable to read one would refuse everything, so this is only an
+        // error when the operator asked for it.
+        if state.require_agent_policy {
+            return Err(Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, rid));
+        }
+        return Ok(());
+    };
+
+    let agent_str = agent.to_string();
+    let record = match db.get_agent_by_pubkey(&agent_str).await {
+        Ok(r) => r,
+        // Fail closed: if the control plane cannot be read we do not know
+        // whether this agent is suspended, and guessing "active" would let a
+        // revoked agent spend during a database hiccup.
+        Err(e) => {
+            warn!(request_id = %rid, error = %e, "agent lookup failed");
+            return Err(Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, rid));
+        }
+    };
+
+    let Some(record) = record else {
+        if state.require_agent_policy {
+            warn!(
+                request_id = %rid,
+                agent = %agent_str,
+                "no authorized agent record, and AGENTPAY_REQUIRE_AGENT_POLICY is set"
+            );
+            return Err(Denial::new(ReasonCode::ERR_AGENT_POLICY_REQUIRED, rid));
+        }
+        return Ok(());
+    };
+
+    // Suspension binds even without an envelope: revocation must work on an
+    // agent nobody ever got round to authorizing.
+    if record.status != crate::policy::AgentStatus::Active {
+        warn!(request_id = %rid, agent_id = %record.agent_id, "suspended agent refused");
+        return Err(Denial::new(ReasonCode::ERR_AGENT_SUSPENDED, rid));
+    }
+
+    let Some(policy) = record.policy.as_ref() else {
+        if state.require_agent_policy {
+            return Err(Denial::new(ReasonCode::ERR_AGENT_POLICY_REQUIRED, rid));
+        }
+        return Ok(());
+    };
+
+    let spend = db.agent_spend(&agent_str).await.map_err(|e| {
+        warn!(request_id = %rid, error = %e, "agent spend lookup failed");
+        Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, rid)
+    })?;
+
+    match evaluate(record.status, record.mode, policy, resource, price, spend) {
+        PolicyDecision::Allow => Ok(()),
+
+        PolicyDecision::Refuse(r) => {
+            warn!(
+                request_id = %rid,
+                agent_id = %record.agent_id,
+                resource,
+                price,
+                rule = r.as_str(),
+                "policy refused the purchase"
+            );
+            Err(Denial::new(policy_denial(r), rid))
+        }
+
+        PolicyDecision::NeedsApproval => {
+            // A granted approval is spent here, atomically and once. If one is
+            // waiting, this purchase proceeds; if not, a proposal is raised and
+            // the agent is refused until a person decides.
+            match db.consume_approval(&record.agent_id, resource, price).await {
+                Ok(true) => {
+                    info!(
+                        request_id = %rid,
+                        agent_id = %record.agent_id,
+                        resource,
+                        price,
+                        "approval consumed"
+                    );
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(request_id = %rid, error = %e, "approval lookup failed");
+                    return Err(Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, rid));
+                }
+            }
+
+            // Only raise a proposal when there is not already one for this
+            // exact resource and price, so a retrying agent does not bury the
+            // human in identical requests.
+            match db
+                .has_pending_approval(&record.agent_id, resource, price)
+                .await
+            {
+                Ok(false) => {
+                    let approval_id = format!("apr_{}", Uuid::new_v4().simple());
+                    if let Err(e) = db
+                        .create_approval(&approval_id, &record.agent_id, None, resource, price, 1)
+                        .await
+                    {
+                        warn!(request_id = %rid, error = %e, "could not raise an approval");
+                    } else {
+                        info!(
+                            request_id = %rid,
+                            agent_id = %record.agent_id,
+                            approval_id = %approval_id,
+                            resource,
+                            price,
+                            "approval requested"
+                        );
+                    }
+                }
+                Ok(true) => {}
+                Err(e) => warn!(request_id = %rid, error = %e, "pending approval lookup failed"),
+            }
+
+            Err(Denial::new(ReasonCode::ERR_APPROVAL_REQUIRED, rid))
+        }
+    }
+}
+
+fn policy_denial(r: crate::policy::PolicyRefusal) -> ReasonCode {
+    use crate::policy::PolicyRefusal as P;
+    match r {
+        P::Suspended => ReasonCode::ERR_AGENT_SUSPENDED,
+        P::ResourceNotAllowed => ReasonCode::ERR_POLICY_RESOURCE_NOT_ALLOWED,
+        P::PriceCap => ReasonCode::ERR_POLICY_PRICE_CAP,
+        P::Budget => ReasonCode::ERR_POLICY_BUDGET,
+        P::CallLimit => ReasonCode::ERR_POLICY_CALL_LIMIT,
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1223,6 +1402,22 @@ pub async fn buy(
         );
         return Err(Denial::new(ReasonCode::ERR_PRICE_MISMATCH, &rid));
     }
+
+    // ---- the human's permission envelope -----------------------------------
+    //
+    // Placed HERE, after the price is known and before the high-water mark
+    // moves, and both halves of that matter:
+    //
+    //  - after the price, because the envelope is about amounts and cannot be
+    //    evaluated without one;
+    //  - before `admit_claim`, because a policy refusal must not advance the
+    //    high-water mark. Advancing it would consume a nonce and a cumulative
+    //    step for a purchase that never happened, and the agent's next honest
+    //    claim would then be refused as non-monotonic.
+    //
+    // This is the narrower, off-chain bound. The escrow deposit is still the
+    // absolute one and is enforced independently, below and on-chain.
+    enforce_agent_policy(&state, &record.agent, &resource_path, price, &rid).await?;
 
     // ---- enforce; only an accepted claim may proceed -----------------------
     let outcome = state

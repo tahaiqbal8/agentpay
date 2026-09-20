@@ -12,9 +12,13 @@ mod buy;
 mod chain;
 mod claim;
 mod config;
+mod control;
+mod control_db;
 mod db;
 mod error;
 mod evidence;
+mod policy;
+mod registry;
 mod routes;
 mod settle;
 mod state;
@@ -57,6 +61,32 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(routes::on_chain_settlement),
         )
         .route("/v1/evidence/proof", post(routes::evidence_proof))
+        // --- control plane: who may spend, on what, and how much ---
+        .route(
+            "/v1/agents",
+            get(control::list_agents).post(control::create_agent),
+        )
+        .route("/v1/agents/{agent_id}", get(control::get_agent))
+        .route(
+            "/v1/agents/{agent_id}/authorize",
+            post(control::authorize_agent),
+        )
+        .route("/v1/agents/{agent_id}/status", post(control::set_agent_status))
+        .route(
+            "/v1/providers",
+            get(control::list_providers).post(control::register_provider),
+        )
+        .route(
+            "/v1/providers/{provider_id}",
+            axum::routing::delete(control::delete_provider),
+        )
+        .route("/v1/catalogue", get(control::catalogue))
+        .route("/v1/agent/plan", post(control::plan))
+        .route("/v1/approvals", get(control::list_approvals))
+        .route(
+            "/v1/approvals/{approval_id}/decide",
+            post(control::decide_approval),
+        )
         .layer(TraceLayer::new_for_http())
         // A hung upstream must not pin a connection indefinitely.
         .layer(TimeoutLayer::with_status_code(
@@ -176,6 +206,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // The registry. A single-provider deployment keeps working unchanged
+    // because AGENTPAY_UPSTREAM_URL is entered under the reserved id
+    // `default`, so /v1/buy resolves to exactly the upstream it always did.
+    let registry = Arc::new(registry::Registry::new());
+    if let Some(db) = &db_handle {
+        match db.list_providers().await {
+            Ok(rows) => {
+                for r in rows {
+                    registry.upsert(r).await;
+                }
+                info!(
+                    providers = registry.list().await.len(),
+                    "provider registry loaded"
+                );
+            }
+            // A registry that cannot be read is empty, not fatal: the money
+            // path does not depend on it, and the bootstrap provider below
+            // still lets /v1/buy work.
+            Err(e) => warn!(error = %e, "could not load the provider registry"),
+        }
+    }
+    if let Some(url) = &config.upstream_url {
+        // Registered even when the table already holds `default`, because the
+        // environment is the more authoritative statement of where this
+        // gateway's own upstream lives.
+        registry
+            .upsert(registry::ProviderRecord {
+                provider_id: registry::DEFAULT_PROVIDER_ID.to_string(),
+                label: "Configured upstream".to_string(),
+                base_url: url.clone(),
+                provider_pubkey: provider_keypair.as_ref().map(|k| k.pubkey().to_string()),
+                enabled: true,
+            })
+            .await;
+        if let Some(db) = &db_handle {
+            let _ = db
+                .upsert_provider(&registry::ProviderRecord {
+                    provider_id: registry::DEFAULT_PROVIDER_ID.to_string(),
+                    label: "Configured upstream".to_string(),
+                    base_url: url.clone(),
+                    provider_pubkey: provider_keypair.as_ref().map(|k| k.pubkey().to_string()),
+                    enabled: true,
+                })
+                .await;
+        }
+    }
+
+    if config.require_agent_policy {
+        info!(
+            "AGENTPAY_REQUIRE_AGENT_POLICY=1: sessions whose agent has no authorized \
+             record will be refused at /v1/buy"
+        );
+    } else if db_handle.is_some() {
+        info!(
+            "agent policies are optional; a session whose agent has no record is \
+             bounded by its on-chain escrow alone. Set AGENTPAY_REQUIRE_AGENT_POLICY=1 \
+             to require one."
+        );
+    }
+
     let state = Arc::new(AppState {
         store,
         db: db_handle,
@@ -189,6 +279,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_fetcher,
         upstream,
         network: config.network.clone(),
+        registry,
+        require_agent_policy: config.require_agent_policy,
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;

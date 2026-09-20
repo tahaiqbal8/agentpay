@@ -58,6 +58,19 @@ pub enum ReasonCode {
     ERR_EVIDENCE_UNAVAILABLE,
     ERR_EVIDENCE_NOT_FOUND,
 
+    // --- control plane: agents, policies, providers, approvals ---
+    ERR_AGENT_NOT_FOUND,
+    ERR_AGENT_EXISTS,
+    ERR_AGENT_SUSPENDED,
+    ERR_AGENT_POLICY_REQUIRED,
+    ERR_POLICY_RESOURCE_NOT_ALLOWED,
+    ERR_POLICY_PRICE_CAP,
+    ERR_POLICY_BUDGET,
+    ERR_POLICY_CALL_LIMIT,
+    ERR_APPROVAL_REQUIRED,
+    ERR_PROVIDER_NOT_FOUND,
+    ERR_CONTROL_PLANE_UNAVAILABLE,
+
     // --- infrastructure: always deny, never allow ---
     ERR_STORE_UNAVAILABLE,
 }
@@ -88,6 +101,17 @@ impl ReasonCode {
             Self::ERR_UPSTREAM_NOT_CONFIGURED => "ERR_UPSTREAM_NOT_CONFIGURED",
             Self::ERR_UPSTREAM_UNAVAILABLE => "ERR_UPSTREAM_UNAVAILABLE",
             Self::ERR_UNKNOWN_RESOURCE => "ERR_UNKNOWN_RESOURCE",
+            Self::ERR_AGENT_NOT_FOUND => "ERR_AGENT_NOT_FOUND",
+            Self::ERR_AGENT_EXISTS => "ERR_AGENT_EXISTS",
+            Self::ERR_AGENT_SUSPENDED => "ERR_AGENT_SUSPENDED",
+            Self::ERR_AGENT_POLICY_REQUIRED => "ERR_AGENT_POLICY_REQUIRED",
+            Self::ERR_POLICY_RESOURCE_NOT_ALLOWED => "ERR_POLICY_RESOURCE_NOT_ALLOWED",
+            Self::ERR_POLICY_PRICE_CAP => "ERR_POLICY_PRICE_CAP",
+            Self::ERR_POLICY_BUDGET => "ERR_POLICY_BUDGET",
+            Self::ERR_POLICY_CALL_LIMIT => "ERR_POLICY_CALL_LIMIT",
+            Self::ERR_APPROVAL_REQUIRED => "ERR_APPROVAL_REQUIRED",
+            Self::ERR_PROVIDER_NOT_FOUND => "ERR_PROVIDER_NOT_FOUND",
+            Self::ERR_CONTROL_PLANE_UNAVAILABLE => "ERR_CONTROL_PLANE_UNAVAILABLE",
             Self::ERR_PRICE_MISMATCH => "ERR_PRICE_MISMATCH",
             Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
             Self::ERR_EVIDENCE_NOT_FOUND => "ERR_EVIDENCE_NOT_FOUND",
@@ -161,6 +185,37 @@ impl ReasonCode {
             Self::ERR_STORE_UNAVAILABLE => {
                 "Session state could not be read, so the request was denied."
             }
+            Self::ERR_AGENT_NOT_FOUND => "No agent is registered under that id.",
+            Self::ERR_AGENT_EXISTS => {
+                "An agent already exists with that id or that public key."
+            }
+            Self::ERR_AGENT_SUSPENDED => {
+                "This agent is suspended and may not spend, whatever its escrow allows."
+            }
+            Self::ERR_AGENT_POLICY_REQUIRED => {
+                "This gateway requires every session to belong to an authorized agent, \
+                 and this one does not."
+            }
+            Self::ERR_POLICY_RESOURCE_NOT_ALLOWED => {
+                "The agent's permission envelope does not include this resource."
+            }
+            Self::ERR_POLICY_PRICE_CAP => {
+                "This purchase costs more than the agent is permitted to spend at once."
+            }
+            Self::ERR_POLICY_BUDGET => {
+                "This purchase would take the agent past its authorized total."
+            }
+            Self::ERR_POLICY_CALL_LIMIT => {
+                "The agent has used every call its authorization permits."
+            }
+            Self::ERR_APPROVAL_REQUIRED => {
+                "This spend needs a human decision before it can proceed."
+            }
+            Self::ERR_PROVIDER_NOT_FOUND => "No provider is registered under that id.",
+            Self::ERR_CONTROL_PLANE_UNAVAILABLE => {
+                "Agents, policies and the registry need a database; this gateway \
+                 is running without one."
+            }
         }
     }
 
@@ -194,6 +249,19 @@ impl ReasonCode {
             Self::ERR_UPSTREAM_NOT_CONFIGURED | Self::ERR_UPSTREAM_UNAVAILABLE => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            // Control plane. A policy refusal is a decision about the caller's
+            // authority, so 403 — not 400, which would suggest a malformed
+            // request the agent could fix by retrying differently.
+            Self::ERR_AGENT_NOT_FOUND | Self::ERR_PROVIDER_NOT_FOUND => StatusCode::NOT_FOUND,
+            Self::ERR_AGENT_EXISTS => StatusCode::CONFLICT,
+            Self::ERR_AGENT_SUSPENDED
+            | Self::ERR_AGENT_POLICY_REQUIRED
+            | Self::ERR_POLICY_RESOURCE_NOT_ALLOWED
+            | Self::ERR_POLICY_PRICE_CAP
+            | Self::ERR_POLICY_BUDGET
+            | Self::ERR_POLICY_CALL_LIMIT
+            | Self::ERR_APPROVAL_REQUIRED => StatusCode::FORBIDDEN,
+            Self::ERR_CONTROL_PLANE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
             // Fail closed: an unreadable store is a denial, and 503 tells the
             // caller it may be worth retrying later.
             Self::ERR_STORE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,

@@ -40,6 +40,12 @@ pub struct Config {
     pub upstream_url: Option<String>,
     /// Network label echoed in 402 responses.
     pub network: String,
+    /// Refuse sessions whose agent has no authorized record.
+    ///
+    /// Off by default: the control plane is additive, and an existing
+    /// deployment must not start refusing traffic because the gateway was
+    /// upgraded. On, every session must belong to an agent a human authorized.
+    pub require_agent_policy: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +105,8 @@ impl Config {
         let trust_open_requests =
             std::env::var("AGENTPAY_TRUST_OPEN_REQUESTS").is_ok_and(|v| v == "1");
         let upstream_url = optional_env("AGENTPAY_UPSTREAM_URL");
+        let require_agent_policy =
+            std::env::var("AGENTPAY_REQUIRE_AGENT_POLICY").is_ok_and(|v| v == "1");
         let network = optional_env("AGENTPAY_NETWORK").unwrap_or_else(|| {
             // Derived from the RPC URL so the 402 cannot claim devnet while
             // actually talking to something else.
@@ -118,6 +126,7 @@ impl Config {
             rpc_url,
             program_id,
             provider_keypair_path,
+            require_agent_policy,
             database_url,
             trust_open_requests,
             upstream_url,

@@ -113,7 +113,10 @@ pub struct RecentDecision {
 
 #[derive(Clone)]
 pub struct Database {
-    pool: PgPool,
+    /// Visible to `control_db`, which adds the control-plane tables on the same
+    /// pool. Kept crate-private: nothing outside the gateway may reach past
+    /// these methods to the raw connection.
+    pub(crate) pool: PgPool,
 }
 
 impl Database {
