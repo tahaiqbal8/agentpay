@@ -66,6 +66,15 @@ function check(label: string, ok: boolean, detail = "") {
   if (!ok) failures++;
 }
 
+/**
+ * The control-plane admin token.
+ *
+ * Read from the environment so the token this script uses is the same one the
+ * gateway was started with, rather than a copy that can drift. Without it the
+ * control-plane calls below return 401, which is the point of the guard.
+ */
+const ADMIN_TOKEN = process.env.AGENTPAY_ADMIN_TOKEN?.trim();
+
 async function api(
   method: string,
   path: string,
@@ -74,7 +83,11 @@ async function api(
 ): Promise<{ status: number; body: any }> {
   const r = await fetch(BASE + path, {
     method,
-    headers: { "content-type": "application/json", ...headers },
+    headers: {
+      "content-type": "application/json",
+      ...(ADMIN_TOKEN ? { authorization: `Bearer ${ADMIN_TOKEN}` } : {}),
+      ...headers,
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: r.status, body: (await r.json().catch(() => null)) as any };
@@ -102,8 +115,40 @@ function fail(msg: string): never {
   console.log(`cluster  ${connection.rpcEndpoint}`);
   console.log(`gateway  ${BASE}\n`);
 
+  // ---- the control plane must be guarded -----------------------------------
+  //
+  // Checked FIRST, and deliberately: every assertion after this one runs with
+  // the token attached, so without this check the suite would keep passing if
+  // the guard were removed entirely.
+  console.log("0. the control plane refuses an unauthenticated caller");
+  const naked = await fetch(`${BASE}/v1/agents`, { method: "GET" });
+  if (ADMIN_TOKEN) {
+    check(
+      "no token is refused",
+      naked.status === 401,
+      `HTTP ${naked.status}`
+    );
+    const wrong = await fetch(`${BASE}/v1/agents`, {
+      headers: { authorization: "Bearer not-the-token-but-long-enough" },
+    });
+    check("a wrong token is refused", wrong.status === 401, `HTTP ${wrong.status}`);
+  } else {
+    console.log(
+      `   ${C.amber}SKIP${C.reset}  AGENTPAY_ADMIN_TOKEN is unset, so the gateway is ` +
+        `running unauthenticated on loopback`
+    );
+  }
+
+  // The money path must NOT be behind the token, or every agent breaks.
+  const quote = await fetch(`${BASE}/v1/buy/weather`);
+  check(
+    "the money path is still open to agents",
+    quote.status === 402,
+    `HTTP ${quote.status} — 402 expected, not 401`
+  );
+
   // ---- stages 1-3: create the agent and bind it to a wallet ---------------
-  console.log("1. creating the agent and binding its wallet");
+  console.log("\n1. creating the agent and binding its wallet");
   const agentKp = Keypair.generate();
 
   const created = await api("POST", "/v1/agents", {

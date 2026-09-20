@@ -730,6 +730,7 @@ Works unchanged on Windows, macOS and Linux. Ports bind to `127.0.0.1` only.
 | `AGENTPAY_UPSTREAM_URL` | `http://provider:4021` | The provider behind `/v1/buy` |
 | `AGENTPAY_NETWORK` / `AGENTPAY_ALLOW_MAINNET` | — | Mainnet requires an explicit opt-in |
 | `AGENTPAY_TRUST_OPEN_REQUESTS` | unset | **Development only.** Disables on-chain reconciliation. |
+| `AGENTPAY_ADMIN_TOKEN` | unset | Guards the control plane. Optional **only** on a loopback bind; anything else refuses to start without it. Minimum 16 characters. Generate with `openssl rand -hex 32`. |
 | `AGENTPAY_REQUIRE_AGENT_POLICY` | unset | Refuse any session whose agent has no authorized record. Off by default: the control plane is additive and must not start refusing traffic that used to pass. |
 | `AGENTPAY_LOG` | `info,tower_http=warn` | Tracing filter |
 
@@ -890,6 +891,76 @@ that a status-code assertion would miss.
 | Only a *pending* approval can be decided | `decide_approval` | A second click flipping a rejection into permission |
 | An unreadable status reads as suspended, an unreadable mode as human | `policy.rs` | A corrupted column granting autonomy or spending |
 | One agent record per wallet | `agents.agent_pubkey` UNIQUE | Ambiguity about which policy applies to a claim |
+| The control plane requires an admin token | `auth.rs` | A stranger approving their own spend, or suspending someone else's agent |
+| A non-loopback bind without a token is fatal at boot | `config.rs` | Exposing the control plane unauthenticated by forgetting to set one |
+| The token is compared over SHA-256 digests | `auth.rs::secret_eq` | Recovering it byte by byte from response timing |
+
+### Authentication, and the boundary it draws
+
+The control plane changed the threat model, and the change is worth stating
+plainly because it was introduced by this codebase and had to be closed.
+
+Before the control plane, an unauthenticated caller could do almost nothing.
+Every money-path request needs a valid Ed25519 signature over a claim, and
+every session is reconciled against the chain. The control plane added
+operations that need **no signature at all**: create an agent, set its
+envelope, suspend it, register a provider, decide an approval.
+
+Unguarded, that meant anyone who could reach the port could **approve their own
+pending spend** — defeating human-controlled mode entirely — and **suspend
+somebody else's agent**, a denial of service against a running workload.
+
+`AGENTPAY_ADMIN_TOKEN` closes it. What is behind it and what is not:
+
+| Behind the token | Open, deliberately |
+| --- | --- |
+| `/v1/agents*` — identity, envelope, suspension | `/v1/buy`, `/v1/claim/verify`, `/v1/session/*` |
+| `/v1/providers*` — the registry | `/v1/sessions`, `/v1/decisions/recent` |
+| `/v1/approvals*` — human decisions | `/v1/session/{k}/evidence`, `/settlement`, `/v1/evidence/proof` |
+| `/v1/agent/plan` | `/v1/catalogue`, `/health` |
+
+Two reasons for that split:
+
+- **The money path must not be behind a shared secret.** It is protected by
+  signatures and on-chain reconciliation. Adding a token would break every
+  agent and add nothing an attacker could not already defeat by simply not
+  having a valid signature.
+- **Public verification must stay public.** A third party being able to check a
+  decision against the chain *without the operator's permission* is the
+  product. Putting evidence behind a token would make the audit trail depend on
+  the very party it exists to check.
+
+#### The boot rule
+
+A token is optional **only** while the gateway is bound to a loopback address.
+Bound anywhere else, an absent or short token is fatal at startup:
+
+```
+agentpay-gateway cannot start:
+
+  AGENTPAY_BIND_ADDR is 0.0.0.0:8080, which is reachable from outside this
+  machine, but AGENTPAY_ADMIN_TOKEN is not set. …
+```
+
+The ordering is the point. Failing at boot means an operator is watching a
+deploy; failing at the first request means a stranger found it first. You
+cannot expose this control plane unauthenticated by forgetting something.
+
+A token shorter than 16 characters is also refused, because `admin123` is worse
+than no token: it looks like security.
+
+#### Details that matter
+
+- The comparison digests both sides with SHA-256 before comparing, so it is
+  constant-time over a fixed length. A plain `==` would short-circuit at the
+  first differing byte and let an attacker recover the token character by
+  character.
+- The token is never logged — not even a prefix. A rejected guess in a log file
+  is still a guess somebody can read.
+- The console reads it **server-side**, in the `/api/gw` route handler, and
+  attaches it to the outgoing request. It is never shipped to a browser; the
+  variable deliberately has no `NEXT_PUBLIC_` prefix. Verified by grepping the
+  built client bundle and the served HTML for it.
 
 ### The three-layer trust boundary
 
@@ -1007,8 +1078,11 @@ is hackathon-grade, not production-grade.**
   tested, and nothing prevents a second instance from being started.
 - **The gateway holds the provider's hot key** in a file. No HSM, no KMS, no
   rotation.
-- **No rate limiting and no authentication** on any endpoint. Anyone who can
-  reach the gateway can open sessions and submit claims.
+- **No rate limiting** on any endpoint.
+- **Authentication is a single shared token**, not per-operator credentials.
+  There is no audit trail of *which* human approved a spend, no rotation
+  without a restart, and no way to revoke one operator's access without
+  changing it for everyone. See §10 for what the token does cover.
 - **Append-only by convention.** See the data model caveat.
 
 ### Untested paths
@@ -1106,6 +1180,7 @@ Repository: `https://github.com/tahaiqbal8/agentpay`
 ```
 programs/agentpay/src/lib.rs     the on-chain program
 gateway/src/                     15 modules; money path + control plane
+gateway/src/auth.rs              the control-plane token guard
 gateway/src/policy.rs            the permission envelope, pure
 gateway/src/registry.rs          providers and aggregated catalogues
 gateway/src/control.rs           agents, providers, approvals, planner

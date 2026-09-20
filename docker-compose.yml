@@ -98,6 +98,10 @@ services:
       # DEVELOPMENT ONLY. Disables on-chain reconciliation, so a caller can
       # assert a deposit that was never escrowed. Required by `npm run demo`
       # because its sessions are synthetic. Never set this in production.
+      # Guards the control plane (agents, policies, providers, approvals).
+      # Unset is tolerated ONLY because the gateway binds to loopback below;
+      # binding anywhere else without it is refused at startup.
+      AGENTPAY_ADMIN_TOKEN: ${AGENTPAY_ADMIN_TOKEN:-}
       AGENTPAY_TRUST_OPEN_REQUESTS: ${AGENTPAY_TRUST_OPEN_REQUESTS:-}
       # The provider behind /v1/buy. Service name, not localhost — resolved
       # inside the compose network.
@@ -126,6 +130,9 @@ services:
       # directly. /api/gw/[...path] proxies server-side, so this resolves
       # inside the compose network and the gateway URL never reaches the client.
       AGENTPAY_GATEWAY_URL: http://gateway:8080
+      # Server-side only. The console proxies through a route handler, so this
+      # never reaches a browser and is never inlined into a client bundle.
+      AGENTPAY_ADMIN_TOKEN: ${AGENTPAY_ADMIN_TOKEN:-}
     ports:
       - "${WEB_PORT:-3100}:3100"
 

@@ -40,6 +40,12 @@ pub struct Config {
     pub upstream_url: Option<String>,
     /// Network label echoed in 402 responses.
     pub network: String,
+    /// Shared secret guarding the control plane.
+    ///
+    /// `None` is permitted ONLY on a loopback bind; `from_env` refuses to
+    /// build otherwise. See `auth.rs` for what this protects and why the money
+    /// path is deliberately not behind it.
+    pub admin_token: Option<String>,
     /// Refuse sessions whose agent has no authorized record.
     ///
     /// Off by default: the control plane is additive, and an existing
@@ -59,6 +65,19 @@ pub enum ConfigError {
          set AGENTPAY_ALLOW_MAINNET=1 to override deliberately."
     )]
     MainnetRefused(String),
+    #[error(
+        "AGENTPAY_BIND_ADDR is {0}, which is reachable from outside this machine, \
+         but AGENTPAY_ADMIN_TOKEN is not set. The control plane would then let \
+         anyone who can reach the port approve their own spends and suspend \
+         other people's agents. Set a token, or bind to 127.0.0.1.\n\n  \
+         AGENTPAY_ADMIN_TOKEN=$(openssl rand -hex 32)"
+    )]
+    AdminTokenRequired(SocketAddr),
+    #[error(
+        "AGENTPAY_ADMIN_TOKEN is {0} characters; at least {1} are required. A short \
+         token is worse than none, because it looks like security."
+    )]
+    AdminTokenTooShort(usize, usize),
 }
 
 /// Reads an optional variable, treating empty and whitespace-only as unset.
@@ -107,6 +126,22 @@ impl Config {
         let upstream_url = optional_env("AGENTPAY_UPSTREAM_URL");
         let require_agent_policy =
             std::env::var("AGENTPAY_REQUIRE_AGENT_POLICY").is_ok_and(|v| v == "1");
+
+        // The control-plane guard, and the one rule that makes it hold:
+        // exposing this gateway beyond loopback without a token is refused at
+        // BOOT. Failing here means the operator is watching a deploy; failing
+        // at the first request means a stranger found it first.
+        let admin_token = optional_env("AGENTPAY_ADMIN_TOKEN");
+        if let Some(t) = admin_token.as_deref() {
+            if t.len() < crate::auth::MIN_TOKEN_LEN {
+                return Err(ConfigError::AdminTokenTooShort(
+                    t.len(),
+                    crate::auth::MIN_TOKEN_LEN,
+                ));
+            }
+        } else if !bind_addr.ip().is_loopback() {
+            return Err(ConfigError::AdminTokenRequired(bind_addr));
+        }
         let network = optional_env("AGENTPAY_NETWORK").unwrap_or_else(|| {
             // Derived from the RPC URL so the 402 cannot claim devnet while
             // actually talking to something else.
@@ -126,6 +161,7 @@ impl Config {
             rpc_url,
             program_id,
             provider_keypair_path,
+            admin_token,
             require_agent_policy,
             database_url,
             trust_open_requests,

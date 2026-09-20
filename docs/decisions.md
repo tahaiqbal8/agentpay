@@ -330,6 +330,72 @@ one the browser recomputed. Two negative tests hold: the same bytes under a
 different program owner are refused, and a `Session` account — same owner,
 different discriminator and length — is not mistaken for a settlement record.
 
+## D21 — The control plane needs a token; the money path must not have one
+
+Adding agents, policies, providers and approvals introduced operations that
+require no signature. Every money-path request needs a valid Ed25519 signature
+over a claim and a session reconciled against the chain, so an unauthenticated
+caller could previously achieve almost nothing. The control plane had no such
+protection.
+
+Demonstrated rather than assumed, against the running gateway:
+
+```
+POST /v1/agents/agt_e17ae171.../status  {"status":"suspended"}
+  -> HTTP 200
+```
+
+No credential of any kind. The same held for `/v1/approvals/{id}/decide`, which
+means human-controlled mode was defeated by anyone who could reach the port:
+they approve their own pending spend. That is not a weak control, it is the
+absence of one, while the UI and this document both described it as a control.
+
+`AGENTPAY_ADMIN_TOKEN` guards `/v1/agents*`, `/v1/providers*`, `/v1/approvals*`
+and `/v1/agent/plan`.
+
+### What is deliberately NOT behind it
+
+The money path and the public verification endpoints. Two separate reasons:
+
+- Claims are protected by signatures and on-chain reconciliation. A shared
+  secret in front of `/v1/buy` would break every agent and stop nothing — an
+  attacker without a valid signature is already refused.
+- A third party checking a decision against the chain **without the operator's
+  permission** is the product. Evidence behind a token would make the audit
+  trail depend on the party it exists to check.
+
+### The boot rule, which is the part that actually holds
+
+A token is optional only on a loopback bind. Bound anywhere else, an absent or
+short token is fatal at startup. Failing at boot means an operator is watching
+a deploy; failing at the first request means a stranger found it first. The
+gateway cannot be exposed unauthenticated by forgetting something.
+
+A token under 16 characters is refused too: `admin123` is worse than no token
+because it looks like security.
+
+### Rejected alternatives
+
+- **Leave it open, document the risk.** The documentation already said "no
+  authentication" and that did not stop the control plane from being built on
+  top of it. A gap that is written down is still a gap.
+- **Token required always, no loopback exception.** Breaks `docker compose up`
+  out of the box for no security gain: on loopback the OS boundary is the
+  control.
+- **Ship a default token in `.env.example`.** Worse than none. Default
+  credentials reach production.
+- **Per-operator credentials now.** The right end state, and named as a gap in
+  the handover — but a shared token closes the hole today, and an unfixed hole
+  is not improved by a better fix arriving later.
+
+### Verified
+
+The original attack replayed against the fixed gateway returns 401, as does a
+wrong token and a correct *prefix* of the token. The money path still answers
+402 with a price, evidence and proofs still serve unauthenticated, and the
+console works because its server-side proxy attaches the token — confirmed
+absent from the built client bundle and from the served HTML.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied

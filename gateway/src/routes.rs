@@ -53,6 +53,9 @@ pub struct AppState {
     /// Providers the gateway knows about. Always present; a single-provider
     /// deployment simply has one entry, registered from AGENTPAY_UPSTREAM_URL.
     pub registry: crate::registry::SharedRegistry,
+    /// Guards the control plane. `None` only on a loopback bind — `Config`
+    /// refuses to start otherwise. Never logged.
+    pub admin_token: Option<String>,
     /// When set, a session whose agent has no authorized record is refused.
     ///
     /// Off by default so adding the control plane changes no existing

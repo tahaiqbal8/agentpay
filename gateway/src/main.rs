@@ -8,6 +8,7 @@
 //! enforcement, never for custody. It holds no keys that can move funds beyond
 //! what the escrow program's on-chain constraints already permit.
 
+mod auth;
 mod buy;
 mod chain;
 mod claim;
@@ -44,24 +45,14 @@ use crate::chain::{RpcSessionFetcher, SessionAccountFetcher};
 use crate::db::Database;
 use crate::state::{InMemorySessionStore, SessionStore};
 
-pub fn build_router(state: Arc<AppState>) -> Router {
+/// Routes the control plane: everything that changes who may spend, or decides
+/// a spend on a human's behalf. All of it sits behind the admin token.
+///
+/// `/v1/catalogue` is deliberately NOT here. A price list is meant to be
+/// discoverable, and an agent reading one has learned nothing it could not
+/// learn by asking the provider directly.
+fn control_plane(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/", get(routes::index))
-        .route("/health", get(routes::health))
-        .route("/v1/session/open", post(routes::open_session))
-        .route("/v1/claim/verify", post(routes::verify_claim))
-        .route("/v1/session/settle", post(routes::settle_session))
-        .route("/v1/session/reconcile", post(routes::reconcile_session))
-        .route("/v1/buy/{*resource}", get(routes::buy))
-        .route("/v1/sessions", get(routes::list_sessions))
-        .route("/v1/decisions/recent", get(routes::recent_decisions))
-        .route("/v1/session/{session}/evidence", get(routes::session_evidence))
-        .route(
-            "/v1/session/{session}/settlement",
-            get(routes::on_chain_settlement),
-        )
-        .route("/v1/evidence/proof", post(routes::evidence_proof))
-        // --- control plane: who may spend, on what, and how much ---
         .route(
             "/v1/agents",
             get(control::list_agents).post(control::create_agent),
@@ -80,20 +71,49 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/providers/{provider_id}",
             axum::routing::delete(control::delete_provider),
         )
-        .route("/v1/catalogue", get(control::catalogue))
         .route("/v1/agent/plan", post(control::plan))
         .route("/v1/approvals", get(control::list_approvals))
         .route(
             "/v1/approvals/{approval_id}/decide",
             post(control::decide_approval),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            auth::require_admin,
+        ))
+        .with_state(state)
+}
+
+pub fn build_router(state: Arc<AppState>) -> Router {
+    // The money path and the public verification endpoints. Protected by
+    // signatures and on-chain reconciliation, not by a shared secret — putting
+    // a token here would break every agent and add nothing.
+    let open = Router::new()
+        .route("/", get(routes::index))
+        .route("/health", get(routes::health))
+        .route("/v1/session/open", post(routes::open_session))
+        .route("/v1/claim/verify", post(routes::verify_claim))
+        .route("/v1/session/settle", post(routes::settle_session))
+        .route("/v1/session/reconcile", post(routes::reconcile_session))
+        .route("/v1/buy/{*resource}", get(routes::buy))
+        .route("/v1/sessions", get(routes::list_sessions))
+        .route("/v1/decisions/recent", get(routes::recent_decisions))
+        .route("/v1/session/{session}/evidence", get(routes::session_evidence))
+        .route(
+            "/v1/session/{session}/settlement",
+            get(routes::on_chain_settlement),
+        )
+        .route("/v1/evidence/proof", post(routes::evidence_proof))
+        .route("/v1/catalogue", get(control::catalogue))
+        .with_state(Arc::clone(&state));
+
+    open.merge(control_plane(state))
         .layer(TraceLayer::new_for_http())
         // A hung upstream must not pin a connection indefinitely.
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             Duration::from_secs(15),
         ))
-        .with_state(state)
 }
 
 #[tokio::main]
@@ -106,7 +126,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(true)
         .init();
 
-    let config = Config::from_env()?;
+    // Printed via Display, not Debug. A misconfiguration should tell the
+    // operator what to do about it — `AdminTokenRequired(0.0.0.0:8080)` does
+    // not, and this is the message someone reads at 2am during a deploy.
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\nagentpay-gateway cannot start:\n\n  {e}\n");
+            std::process::exit(1);
+        }
+    };
 
     info!(
         bind = %config.bind_addr,
@@ -253,6 +282,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    match &config.admin_token {
+        Some(_) => info!("control plane requires an admin token"),
+        None => warn!(
+            "AGENTPAY_ADMIN_TOKEN is not set. The control plane is UNAUTHENTICATED: \
+             anyone who can reach {} can approve spends and suspend agents. This is \
+             permitted only because the bind address is loopback — binding anywhere \
+             else without a token is refused at startup.",
+            config.bind_addr
+        ),
+    }
+
     if config.require_agent_policy {
         info!(
             "AGENTPAY_REQUIRE_AGENT_POLICY=1: sessions whose agent has no authorized \
@@ -279,6 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_fetcher,
         upstream,
         network: config.network.clone(),
+        admin_token: config.admin_token.clone(),
         registry,
         require_agent_policy: config.require_agent_policy,
     });

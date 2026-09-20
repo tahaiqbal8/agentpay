@@ -58,6 +58,8 @@ pub enum ReasonCode {
     ERR_EVIDENCE_UNAVAILABLE,
     ERR_EVIDENCE_NOT_FOUND,
 
+    ERR_UNAUTHORIZED,
+
     // --- control plane: agents, policies, providers, approvals ---
     ERR_AGENT_NOT_FOUND,
     ERR_AGENT_EXISTS,
@@ -101,6 +103,7 @@ impl ReasonCode {
             Self::ERR_UPSTREAM_NOT_CONFIGURED => "ERR_UPSTREAM_NOT_CONFIGURED",
             Self::ERR_UPSTREAM_UNAVAILABLE => "ERR_UPSTREAM_UNAVAILABLE",
             Self::ERR_UNKNOWN_RESOURCE => "ERR_UNKNOWN_RESOURCE",
+            Self::ERR_UNAUTHORIZED => "ERR_UNAUTHORIZED",
             Self::ERR_AGENT_NOT_FOUND => "ERR_AGENT_NOT_FOUND",
             Self::ERR_AGENT_EXISTS => "ERR_AGENT_EXISTS",
             Self::ERR_AGENT_SUSPENDED => "ERR_AGENT_SUSPENDED",
@@ -185,6 +188,10 @@ impl ReasonCode {
             Self::ERR_STORE_UNAVAILABLE => {
                 "Session state could not be read, so the request was denied."
             }
+            Self::ERR_UNAUTHORIZED => {
+                "The control plane requires an admin token. Present it as \
+                 `Authorization: Bearer <token>`."
+            }
             Self::ERR_AGENT_NOT_FOUND => "No agent is registered under that id.",
             Self::ERR_AGENT_EXISTS => {
                 "An agent already exists with that id or that public key."
@@ -252,6 +259,7 @@ impl ReasonCode {
             // Control plane. A policy refusal is a decision about the caller's
             // authority, so 403 — not 400, which would suggest a malformed
             // request the agent could fix by retrying differently.
+            Self::ERR_UNAUTHORIZED => StatusCode::UNAUTHORIZED,
             Self::ERR_AGENT_NOT_FOUND | Self::ERR_PROVIDER_NOT_FOUND => StatusCode::NOT_FOUND,
             Self::ERR_AGENT_EXISTS => StatusCode::CONFLICT,
             Self::ERR_AGENT_SUSPENDED
