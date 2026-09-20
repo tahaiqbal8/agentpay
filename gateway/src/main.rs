@@ -19,6 +19,7 @@ mod db;
 mod error;
 mod evidence;
 mod policy;
+mod ratelimit;
 mod registry;
 mod routes;
 mod settle;
@@ -53,6 +54,11 @@ use crate::state::{InMemorySessionStore, SessionStore};
 /// learn by asking the provider directly.
 fn control_plane(state: Arc<AppState>) -> Router {
     Router::new()
+        // Enumerating every session exposes each agent's wallet, deposit and
+        // spend to anyone who asks. Public verifiability needs the per-session
+        // endpoints, not a directory of everybody, so the listings sit here.
+        .route("/v1/sessions", get(routes::list_sessions))
+        .route("/v1/decisions/recent", get(routes::recent_decisions))
         .route(
             "/v1/agents",
             get(control::list_agents).post(control::create_agent),
@@ -91,13 +97,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let open = Router::new()
         .route("/", get(routes::index))
         .route("/health", get(routes::health))
-        .route("/v1/session/open", post(routes::open_session))
+        .route(
+            "/v1/session/open",
+            post(routes::open_session).layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                ratelimit::limit_open,
+            )),
+        )
         .route("/v1/claim/verify", post(routes::verify_claim))
         .route("/v1/session/settle", post(routes::settle_session))
         .route("/v1/session/reconcile", post(routes::reconcile_session))
         .route("/v1/buy/{*resource}", get(routes::buy))
-        .route("/v1/sessions", get(routes::list_sessions))
-        .route("/v1/decisions/recent", get(routes::recent_decisions))
+        // One session, by its own address. An agent needs this to resume and
+        // to read its remaining escrow; knowing the address is not a secret,
+        // and the evidence for it is already public by design.
+        .route("/v1/session/{session}", get(routes::get_session))
         .route("/v1/session/{session}/evidence", get(routes::session_evidence))
         .route(
             "/v1/session/{session}/settlement",
@@ -106,6 +120,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/evidence/proof", post(routes::evidence_proof))
         .route("/v1/catalogue", get(control::catalogue))
         .with_state(Arc::clone(&state));
+
+    let open = open.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&state),
+        ratelimit::limit_general,
+    ));
 
     open.merge(control_plane(state))
         .layer(TraceLayer::new_for_http())
@@ -320,6 +339,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         upstream,
         network: config.network.clone(),
         admin_token: config.admin_token.clone(),
+        // Strict on the path that costs an RPC read per request; loose
+        // elsewhere, where a signature is already the gate.
+        open_limiter: Arc::new(ratelimit::RateLimiter::new(ratelimit::Quota::per_minute(
+            config.open_rate_limit,
+        ))),
+        general_limiter: Arc::new(ratelimit::RateLimiter::new(
+            ratelimit::Quota::per_minute(config.general_rate_limit),
+        )),
         registry,
         require_agent_policy: config.require_agent_policy,
     });
@@ -327,7 +354,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     info!(addr = %listener.local_addr()?, "listening");
 
-    axum::serve(listener, build_router(state))
+    // into_make_service_with_connect_info is what puts the peer address in the
+    // request extensions. Without it every client shares one rate-limit bucket.
+    axum::serve(
+        listener,
+        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 

@@ -53,6 +53,10 @@ pub struct AppState {
     /// Providers the gateway knows about. Always present; a single-provider
     /// deployment simply has one entry, registered from AGENTPAY_UPSTREAM_URL.
     pub registry: crate::registry::SharedRegistry,
+    /// Limits `/v1/session/open`, which performs an unauthenticated chain read.
+    pub open_limiter: Arc<crate::ratelimit::RateLimiter>,
+    /// The loose global limit.
+    pub general_limiter: Arc<crate::ratelimit::RateLimiter>,
     /// Guards the control plane. `None` only on a loopback bind — `Config`
     /// refuses to start otherwise. Never logged.
     pub admin_token: Option<String>,
@@ -138,7 +142,8 @@ pub async fn index(State(state): State<Arc<AppState>>) -> Json<IndexResponse> {
         program_id: state.program_id.to_string(),
         endpoints: vec![
             "GET  /health",
-            "GET  /v1/sessions",
+            "GET  /v1/session/{pubkey}",
+            "GET  /v1/sessions          (operator token)",
             "GET  /v1/decisions/recent",
             "GET  /v1/session/{pubkey}/evidence",
             "POST /v1/session/open",
@@ -1184,6 +1189,60 @@ pub struct SessionSummaryView {
 pub struct SessionListResponse {
     pub sessions: Vec<SessionSummaryView>,
     pub request_id: String,
+}
+
+/// GET /v1/session/{pubkey} — one session, by its own address.
+///
+/// Open, unlike the listing. The difference is enumeration: reading a session
+/// you can already name is how an agent resumes its counters and checks its
+/// remaining escrow, and the evidence for that session is public by design.
+/// Handing out a directory of every agent's wallet, deposit and spend to
+/// anonymous callers is a different thing, and needs the operator token.
+///
+/// Returns 404 for an unknown session rather than an empty object, so a caller
+/// cannot read "no record" as "no balance".
+pub async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Path(session): Path<String>,
+) -> Result<Json<SessionSummaryView>, Denial> {
+    let rid = request_id();
+
+    if session.parse::<Pubkey>().is_err() {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    }
+
+    let Some(db) = &state.db else {
+        return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
+    };
+
+    let rows = db.list_sessions(500).await.map_err(|e| {
+        error!(request_id = %rid, error = %e, "could not read session");
+        Denial::new(ReasonCode::ERR_STORE_UNAVAILABLE, &rid)
+    })?;
+
+    let found = rows
+        .into_iter()
+        .find(|s| s.session.to_string() == session)
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_SESSION_UNKNOWN, &rid))?;
+
+    Ok(Json(SessionSummaryView {
+        session: found.session.to_string(),
+        agent: found.agent.to_string(),
+        provider: found.provider.to_string(),
+        mint: found.mint.to_string(),
+        deposited_total: found.deposited_total.to_string(),
+        cumulative_accepted: found.cumulative_accepted.to_string(),
+        remaining: found
+            .deposited_total
+            .saturating_sub(found.cumulative_accepted)
+            .to_string(),
+        last_nonce: found.last_nonce.map(|n| n.to_string()),
+        expires_at: found.expires_at,
+        is_settled: found.is_settled,
+        chain_verified: found.chain_verified,
+        evidence_count: found.evidence_count,
+        created_at: found.created_at.to_rfc3339(),
+    }))
 }
 
 pub async fn list_sessions(

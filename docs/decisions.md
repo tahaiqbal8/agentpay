@@ -444,6 +444,65 @@ mistake here surfaces as an HTTP error an integrator can read; a wrong claim
 encoding produces a signature that verifies nowhere, and the failure lands at
 settlement — after the agent has been told its purchases succeeded.
 
+## D24 — Reading a session is not enumerating every session
+
+`GET /v1/sessions` was unauthenticated and returned, for every session the
+gateway knew about, the agent's wallet, the deposit, and how much had been
+spent. Anyone who could reach the port had a directory of every agent's
+balance.
+
+Public verifiability never required that. What it requires is that a third
+party can check a *named* session's evidence against the chain — and the
+evidence endpoints are already per-session and already open.
+
+So the listings (`/v1/sessions`, `/v1/decisions/recent`) moved behind the
+operator token, and `GET /v1/session/{pubkey}` was added for the case that
+actually needs to stay open: an agent reading the session it already holds, to
+resume its counters and check its remaining escrow. Knowing an address you were
+given is not enumeration.
+
+The SDK now uses the per-session endpoint, so an agent needs no operator
+credential. The console keeps working because its server-side proxy already
+attaches the token.
+
+## D25 — Rate limiting, and the way rate limiters usually fail
+
+`/v1/session/open` performs a Solana RPC read on every request and needs no
+credential — necessarily, because reconciliation against the chain is what
+makes the endpoint worth trusting. Unlimited, it let anyone burn a metered RPC
+quota and take reconciliation down for every other user. Default 20/min per
+client IP.
+
+Everything else gets 600/min. The money path is gated by signatures and by a
+shape check that runs before any I/O, so an attacker without a valid claim
+never reaches the expensive work. Limiting it tightly would break legitimate
+high-volume agents — the entire point of the product — and stop nothing.
+
+### The two failure modes designed against
+
+**An unbounded map.** A naive per-IP table turns a rate limiter into a memory
+exhaustion bug the moment an attacker rotates source addresses, which is worse
+than having no limiter. Idle buckets are evicted and the map is capped.
+
+**Failing open at the cap.** When the map is full, a new client is REFUSED, not
+admitted. Admitting would mean an attacker who can fill the table gets
+unlimited access — the control inverts at exactly the moment it matters. A
+poisoned lock refuses for the same reason.
+
+### Two smaller choices
+
+Token bucket rather than a fixed window: a window lets a client spend its whole
+allowance in the last instant of one window and again in the first instant of
+the next, which is twice the intended rate at the worst moment.
+
+Keyed on the TCP peer, **not** `X-Forwarded-For`. A caller can put anything in
+that header and get a fresh bucket per request, so trusting it is the same as
+having no limiter. Behind a reverse proxy the proxy must set the peer address —
+only it knows which hop to believe.
+
+Verified live: 25 requests to `/v1/session/open` gave 20 allowed and 5 refused
+with `ERR_RATE_LIMITED` and HTTP 429, while `/v1/buy` and `/health` stayed up.
+
 ## D5 — Clock skew tolerance
 
 Expiry comparisons allow `CLOCK_SKEW_TOLERANCE_SECS = 30`. The tolerance is applied

@@ -132,7 +132,7 @@ before planning work against it.
 | 4 | Human authorization + funding | Human | **Built** — `open_session` on-chain, plus an off-chain envelope: per-resource allowlist, per-call cap, total budget, call count, approval threshold, suspension | `open_session` + `POST /v1/agents/{id}/authorize`, `policy.rs` |
 | 5 | API / AI registry | Platform | **Built** — many providers, catalogues aggregated live | `registry.rs`, `GET /v1/catalogue` |
 | 6 | API selection | Agent | **Built** — offers for a resource, cheapest first, with a recommendation | `POST /v1/agent/plan` |
-| 7 | Agent decision (how many calls) | Agent | **Partial** — the planner returns how many calls the envelope affords, which is the *bound* on the decision. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan`; §11 |
+| 7 | Agent decision (how many calls) | Agent | **Partial** — an agent sizes a run itself with `affordableCalls()`; the operator planner reports what the envelope affords. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan`, SDK `affordableCalls`; §11 |
 | 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims, and `@agentpay/client` so an integrator writes three lines rather than 194 | `/v1/buy/{resource}`, `sdk/`, §4 |
 | 9 | Gateway enforcement | Gateway | **Built** — policy, signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, `policy.rs`, §4 |
 | 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
@@ -357,8 +357,7 @@ modules.
 | POST | `/v1/session/settle` | Build, sign and submit the settlement transaction |
 | POST | `/v1/session/reconcile` | Re-check a session's escrow against the chain |
 | GET | `/v1/buy/{resource}` | Paid resource access; 402 without a valid claim |
-| GET | `/v1/sessions` | All sessions with high-water marks |
-| GET | `/v1/decisions/recent` | The claim feed |
+| GET | `/v1/session/{pubkey}` | One session — what an agent reads to resume |
 | GET | `/v1/session/{pubkey}/evidence` | Full evidence log plus Merkle root |
 | GET | `/v1/session/{pubkey}/settlement` | The root the program actually stored |
 | POST | `/v1/evidence/proof` | Merkle inclusion proof for one decision |
@@ -375,6 +374,8 @@ Control plane:
 | DELETE | `/v1/providers/{id}` | Remove one |
 | GET | `/v1/catalogue` | Every resource every provider offers, cheapest first |
 | POST | `/v1/agent/plan` | Selection and affordability against the envelope |
+| GET | `/v1/sessions` | All sessions — enumeration, so operator-only |
+| GET | `/v1/decisions/recent` | The claim feed |
 | GET | `/v1/approvals` | The human-decision queue |
 | POST | `/v1/approvals/{id}/decide` | Approve or reject one spend |
 
@@ -751,6 +752,8 @@ Works unchanged on Windows, macOS and Linux. Ports bind to `127.0.0.1` only.
 | `AGENTPAY_NETWORK` / `AGENTPAY_ALLOW_MAINNET` | — | Mainnet requires an explicit opt-in |
 | `AGENTPAY_TRUST_OPEN_REQUESTS` | unset | **Development only.** Disables on-chain reconciliation. |
 | `AGENTPAY_ADMIN_TOKEN` | unset | Guards the control plane. Optional **only** on a loopback bind; anything else refuses to start without it. Minimum 16 characters. Generate with `openssl rand -hex 32`. |
+| `AGENTPAY_OPEN_RATE_LIMIT` | 20 | Requests/min per IP on `/v1/session/open`, which costs an RPC read. |
+| `AGENTPAY_RATE_LIMIT` | 600 | Requests/min per IP everywhere else. |
 | `AGENTPAY_REQUIRE_AGENT_POLICY` | unset | Refuse any session whose agent has no authorized record. Off by default: the control plane is additive and must not start refusing traffic that used to pass. |
 | `AGENTPAY_LOG` | `info,tower_http=warn` | Tracing filter |
 
@@ -937,9 +940,17 @@ somebody else's agent**, a denial of service against a running workload.
 | Behind the token | Open, deliberately |
 | --- | --- |
 | `/v1/agents*` — identity, envelope, suspension | `/v1/buy`, `/v1/claim/verify`, `/v1/session/*` |
-| `/v1/providers*` — the registry | `/v1/sessions`, `/v1/decisions/recent` |
+| `/v1/providers*` — the registry | `/v1/session/{pubkey}` — one session, by its own address |
 | `/v1/approvals*` — human decisions | `/v1/session/{k}/evidence`, `/settlement`, `/v1/evidence/proof` |
 | `/v1/agent/plan` | `/v1/catalogue`, `/health` |
+| `/v1/sessions`, `/v1/decisions/recent` — the listings | |
+
+The last row is the distinction worth keeping: **reading a session you can
+already name is not the same as enumerating everybody's.** An agent needs the
+first to resume its counters and check its remaining escrow, and the evidence
+for that session is public by design. A directory of every agent's wallet,
+deposit and spend, handed to anonymous callers, is information disclosure that
+public verifiability never required — so the listings moved behind the token.
 
 Two reasons for that split:
 
@@ -970,6 +981,33 @@ cannot expose this control plane unauthenticated by forgetting something.
 
 A token shorter than 16 characters is also refused, because `admin123` is worse
 than no token: it looks like security.
+
+#### Rate limiting
+
+`/v1/session/open` performs a Solana RPC read on **every** request and needs no
+credential — by design, since reconciliation is what makes the endpoint
+trustworthy. Unlimited, that lets anyone burn the gateway's metered RPC quota
+and take reconciliation down for everyone else. Default **20/min per client IP**
+(`AGENTPAY_OPEN_RATE_LIMIT`).
+
+Everything else gets a loose **600/min** (`AGENTPAY_RATE_LIMIT`). The money path
+is gated by signatures and by a shape check that runs before any I/O, so an
+attacker without a valid claim is refused before the expensive work — a tight
+limit there would break legitimate high-volume agents and stop nothing.
+
+Two implementation points a reviewer will look for:
+
+- **The map is bounded and evicts.** A naive per-IP map turns a rate limiter
+  into a memory exhaustion bug the moment an attacker rotates source addresses.
+  Idle buckets are evicted, the map is capped, and **at the cap new clients are
+  refused rather than admitted** — a limiter that fails open under pressure
+  protects nothing at the moment it matters. A poisoned lock refuses too.
+- **It keys on the TCP peer, not `X-Forwarded-For`.** A caller can forge that
+  header and get a fresh bucket per request. Behind a reverse proxy the proxy
+  must set the peer address; only it knows which hop to believe.
+
+Token bucket rather than a fixed window, because a window lets a client spend a
+full allowance at the end of one window and again at the start of the next.
 
 #### Details that matter
 
@@ -1100,7 +1138,6 @@ is hackathon-grade, not production-grade.**
   tested, and nothing prevents a second instance from being started.
 - **The gateway holds the provider's hot key** in a file. No HSM, no KMS, no
   rotation.
-- **No rate limiting** on any endpoint.
 - **Authentication is a single shared token**, not per-operator credentials.
   There is no audit trail of *which* human approved a spend, no rotation
   without a restart, and no way to revoke one operator's access without
@@ -1151,8 +1188,9 @@ register a provider. There is no ownership, no verification that a base URL
 belongs to the party claiming it, and no signature over a catalogue. For a
 multi-tenant deployment this is the first thing to fix.
 
-**Rate limiting in time.** `max_calls` is a total, not a rate. An agent with
-1,000 calls authorized can spend them in a second.
+**Per-agent rate limiting.** The gateway limits per client IP (§10), but an
+agent's *policy* has no rate: `max_calls` is a total, so an agent authorized
+for 1,000 calls can spend them in a second.
 
 **Notifications.** The approvals page polls every five seconds. Nothing pushes,
 emails or pages a human when a spend is waiting.
@@ -1207,6 +1245,7 @@ gateway/src/                     15 modules; money path + control plane
 sdk/                             @agentpay/client — the integration surface
 sdk/src/claim.ts                 the encoding, pinned to the Rust vector
 gateway/src/auth.rs              the control-plane token guard
+gateway/src/ratelimit.rs         bounded token-bucket limiting
 gateway/src/policy.rs            the permission envelope, pure
 gateway/src/registry.rs          providers and aggregated catalogues
 gateway/src/control.rs           agents, providers, approvals, planner

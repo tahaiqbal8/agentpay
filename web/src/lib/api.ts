@@ -275,6 +275,11 @@ export const api = {
     }),
   health: () => call<Health>("/health"),
   sessions: () => call<{ sessions: SessionSummary[] }>("/v1/sessions"),
+  /**
+   * One session by address. Unlike the listing this needs no operator token,
+   * because reading a session you can already name is not enumeration.
+   */
+  session: (pubkey: string) => call<SessionSummary>(`/v1/session/${pubkey}`),
   recentDecisions: () => call<{ decisions: RecentDecision[] }>("/v1/decisions/recent"),
   evidence: (session: string) =>
     call<SessionEvidence>(`/v1/session/${session}/evidence`),

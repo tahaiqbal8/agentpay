@@ -46,6 +46,18 @@ pub struct Config {
     /// build otherwise. See `auth.rs` for what this protects and why the money
     /// path is deliberately not behind it.
     pub admin_token: Option<String>,
+    /// Requests per minute per client IP on `/v1/session/open`.
+    ///
+    /// Deliberately low: that endpoint performs a Solana RPC read on every
+    /// request and needs no credential, so it is the one an attacker can use
+    /// to burn a metered quota.
+    pub open_rate_limit: u32,
+    /// Requests per minute per client IP everywhere else.
+    ///
+    /// Loose. The money path is gated by signatures and a shape check that
+    /// runs before any I/O, so a tight limit there would break legitimate
+    /// high-volume agents without stopping an attacker.
+    pub general_rate_limit: u32,
     /// Refuse sessions whose agent has no authorized record.
     ///
     /// Off by default: the control plane is additive, and an existing
@@ -131,6 +143,15 @@ impl Config {
         // exposing this gateway beyond loopback without a token is refused at
         // BOOT. Failing here means the operator is watching a deploy; failing
         // at the first request means a stranger found it first.
+        let open_rate_limit = optional_env("AGENTPAY_OPEN_RATE_LIMIT")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(20);
+        let general_rate_limit = optional_env("AGENTPAY_RATE_LIMIT")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(600);
+
         let admin_token = optional_env("AGENTPAY_ADMIN_TOKEN");
         if let Some(t) = admin_token.as_deref() {
             if t.len() < crate::auth::MIN_TOKEN_LEN {
@@ -162,6 +183,8 @@ impl Config {
             program_id,
             provider_keypair_path,
             admin_token,
+            open_rate_limit,
+            general_rate_limit,
             require_agent_policy,
             database_url,
             trust_open_requests,

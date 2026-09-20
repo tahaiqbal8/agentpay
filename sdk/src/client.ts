@@ -222,22 +222,16 @@ export class AgentPayClient {
    */
   static async resume(opts: Omit<ClientOptions, "startingCumulative" | "startingNonce">) {
     const f = opts.fetch ?? globalThis.fetch.bind(globalThis);
-    const res = await f(`${opts.gateway.replace(/\/+$/, "")}/v1/sessions`);
+    // The single-session endpoint, not the listing: an agent reads the session
+    // it already holds, and needs no operator credential to do it.
+    const res = await f(
+      `${opts.gateway.replace(/\/+$/, "")}/v1/session/${opts.session}`
+    );
+    const body = await res.json().catch(() => null);
     if (!res.ok) {
-      throw errorFrom(res.status, await res.json().catch(() => null));
+      throw errorFrom(res.status, body);
     }
-    const body = (await res.json()) as {
-      sessions: { session: string; cumulative_accepted: string; last_nonce: string | null }[];
-    };
-    const found = body.sessions.find((s) => s.session === opts.session);
-    if (!found) {
-      throw new AgentPayError(
-        "ERR_SESSION_UNKNOWN",
-        `The gateway has no record of session ${opts.session}. Register it with ` +
-          `POST /v1/session/open before buying.`,
-        404
-      );
-    }
+    const found = body as { cumulative_accepted: string; last_nonce: string | null };
     return new AgentPayClient({
       ...opts,
       startingCumulative: BigInt(found.cumulative_accepted),
@@ -372,32 +366,20 @@ export class AgentPayClient {
    * agent's policy envelope can only narrow it further.
    */
   async sessionState(): Promise<SessionState> {
-    const res = await this.doFetch(`${this.gateway}/v1/sessions`);
+    const res = await this.doFetch(`${this.gateway}/v1/session/${this.sessionB58}`);
     const body = await res.json().catch(() => null);
     if (!res.ok) throw errorFrom(res.status, body);
 
-    const found = (
-      body as {
-        sessions: {
-          session: string;
-          deposited_total: string;
-          cumulative_accepted: string;
-          remaining: string;
-          expires_at: number;
-          is_settled: boolean;
-          chain_verified: boolean;
-          evidence_count: number;
-        }[];
-      }
-    ).sessions.find((x) => x.session === this.sessionB58);
-
-    if (!found) {
-      throw new AgentPayError(
-        "ERR_SESSION_UNKNOWN",
-        `The gateway has no record of session ${this.sessionB58}.`,
-        404
-      );
-    }
+    const found = body as {
+      session: string;
+      deposited_total: string;
+      cumulative_accepted: string;
+      remaining: string;
+      expires_at: number;
+      is_settled: boolean;
+      chain_verified: boolean;
+      evidence_count: number;
+    };
     return {
       session: found.session,
       depositedTotal: BigInt(found.deposited_total),
@@ -510,6 +492,29 @@ export class AgentPayClient {
         delay *= 2;
       }
     }
+  }
+
+  /**
+   * How many of `resource` the remaining ESCROW can cover.
+   *
+   * This is the bound the chain enforces, and the only one an agent can
+   * compute for itself. The human's policy envelope — allowlists, per-call
+   * caps, call counts — may be narrower, and the agent is not told it: reading
+   * another party's spending rules is an operator's business, not an agent's.
+   *
+   * So treat this as a ceiling, not a permission. The definitive answer comes
+   * from actually buying, and a refusal names the exact rule that stopped it.
+   * `buyMany` already stops there, which is why an agent does not need to
+   * predict in advance.
+   */
+  async affordableCalls(resource: string): Promise<number> {
+    const [{ price }, state] = await Promise.all([
+      this.quote(resource),
+      this.sessionState(),
+    ]);
+    if (price === 0n) return Number.MAX_SAFE_INTEGER;
+    const n = state.remaining / price;
+    return n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
   }
 
   private url(resource: string): string {
