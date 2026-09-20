@@ -44,6 +44,18 @@ So the product claim is not "the agent paid". Anyone can show that. It is:
 That is what an operator needs when an agent overspends and somebody asks what
 happened.
 
+### What this document covers, and what it does not
+
+AgentPay as built is the **enforcement and settlement half** of an agent
+payments product: the part from the agent's first paid API call through to the
+on-chain settlement. The stages before that — creating an agent, connecting a
+wallet, discovering services in a registry, choosing between them — are either
+primitive or absent. §2 maps the full flow stage by stage with a status for
+each, and §11 lists the missing stages as work.
+
+Read that mapping before treating any part of this document as a product
+description.
+
 ---
 
 ## 2. Architecture
@@ -93,6 +105,101 @@ The gateway holds the **provider's** signing key so it can submit settlements.
 It never holds the agent's key. An agent signs its own claims; the gateway only
 verifies them. There is no custody of user keys anywhere in the gateway or the
 frontend — this was a hard design constraint, not an accident.
+
+### The end-to-end agent flow, and where AgentPay sits in it
+
+The full product flow a human experiences runs:
+
+```
+Human → Agent Creation → Agent Connection → Wallet Connection →
+Human Authorization/Funding → API/AI Registry → API Selection →
+Agent Decision → API Calls → Gateway Enforcement → Provider →
+Final Settlement
+```
+
+**AgentPay as built covers the last five stages.** The earlier stages are
+either partially present in primitive form or not built at all. The table below
+is the honest mapping; read the Status column before planning any work against
+it.
+
+| # | Stage | Who performs it | Status today | Where it lives |
+| --- | --- | --- | --- | --- |
+| 1 | Agent creation | Human / application | **Not built** | — |
+| 2 | Agent connection | Human / application | **Not built** | — |
+| 3 | Wallet connection | Human | **Partial** — the agent *is* an Ed25519 keypair and the session binds to its pubkey, but there is no wallet adapter, connect flow or key management | `Session.agent`; keypairs are files in the scripts |
+| 4 | Human authorization + funding | Human | **Partial** — `open_session(deposit, expires_at)` is a real, chain-enforced spending envelope, but it expresses only *how much* and *until when* | `open_session`, §3 |
+| 5 | API / AI registry | Platform | **Not built** — a single provider's price list exists (`/_catalogue`), not a registry of many | `demo-provider`, `buy.rs::Upstream` |
+| 6 | API selection | Agent | **Not built** — `AGENTPAY_UPSTREAM_URL` names one upstream; there is nothing to select between | `config.rs` |
+| 7 | Agent decision (how many calls) | Agent | **Not built** as a component — the demo script's loop is hardcoded. The *ceiling* on that decision is enforced. | `scripts/demo-buy.ts` (demo only) |
+| 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims | `/v1/buy/{resource}`, §4 |
+| 9 | Gateway enforcement | Gateway | **Built** — signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, §4 |
+| 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
+| 11 | Final settlement + anchoring | Gateway → chain | **Built** — one transaction, Merkle root committed | `settle_session`, §3 and §5 |
+
+### How stages 8–11 chain together
+
+This is the part that exists, described as one continuous story so the mapping
+above has something concrete to point at.
+
+1. The human opens an escrow: `open_session` locks `deposited_total` in a vault
+   PDA until `expires_at`. That deposit is the agent's entire spending power —
+   the chain will not release more, whatever the agent or the gateway claims.
+2. The session is registered with the gateway, which **reconciles every field
+   against the chain** before believing it (§10). An asserted deposit that was
+   never escrowed is refused.
+3. The agent requests a resource with no claim and receives **402 Payment
+   Required** carrying the price, `next_cumulative`, `next_nonce`, and the exact
+   73-byte layout to sign.
+4. The agent signs a **cumulative** claim — "the total you owe is now X" — and
+   retries with the `x-agentpay-claim` header.
+5. The gateway verifies the signature against the agent key **taken from stored
+   session state, never from the request**, checks that `X − previous` equals
+   the catalogue price for that exact resource (`ERR_PRICE_MISMATCH`), and
+   advances the high-water mark atomically.
+6. Only then is the request forwarded upstream. A refused claim never reaches
+   the provider.
+7. Steps 3–6 repeat for every purchase, with **no chain traffic at all**.
+8. At the end, one `settle_session` transaction moves the highest claim's
+   amount to the provider and commits the Merkle root of every decision — the
+   refusals included — into the `SettlementRecord` PDA.
+
+Stages 1–7 sit *above* this pipeline and decide **which** resource is bought
+and **how many times**. Nothing in stages 8–11 depends on how that decision was
+reached, which is why the enforcement layer is already mode-agnostic.
+
+### Two operating modes — proposed
+
+Both modes are **policy-layer designs, not implemented**. They are recorded
+here because the enforcement layer below them already supports either without
+change: the gateway sees a signed claim and applies the same rules regardless
+of whether a human approved it.
+
+**Human-controlled.** The agent identifies a candidate API and proposes a spend
+(resource, price, expected call count). Execution waits for explicit human
+approval, then the calls run. Requires: an approval queue, a notification path,
+and a hold state between proposal and execution. None of these exist.
+
+**Autonomous.** The human authorizes once — funding plus a permission envelope
+— and the agent thereafter selects services and executes calls on its own,
+bounded by that envelope. Requires: the registry (stage 5), a selection
+policy (stage 6) and a decision layer (stage 7). None of these exist.
+
+What **is** already true in both cases: the escrow deposit is a hard ceiling
+the chain enforces, so even a fully autonomous agent with a defective decision
+layer cannot spend beyond what the human escrowed. Autonomy is bounded by
+custody, not by the agent's own correctness. That property is the reason the
+escrow-first design was chosen.
+
+### Why the provider implements nothing
+
+Worth restating in the context of this flow, because it is the main adoption
+argument: at no point in stages 8–11 does the provider handle a signature, a
+claim, a balance or a chain interaction. It answers `/_catalogue` with a price
+list and serves ordinary HTTP. The 402 handshake, Ed25519 verification,
+high-water mark, price matching and settlement all happen in the gateway.
+
+`demo-provider/server.js` is the proof: zero dependencies, no Solana import, no
+payment code of any kind.
 
 ---
 
@@ -413,7 +520,10 @@ the HMR websocket is blocked — React never mounts and the page looks broken.
 ### Frontend work that is still open
 
 - No wallet adapter. The console is an operator tool, not an agent client — by
-  design, but an agent-facing UI would need one.
+  design, but an agent-facing UI would need one. This is stage 3 of the flow in
+  §2; see §11 for what connecting a wallet properly would involve.
+- No agent onboarding or approval UI. Stages 1–2 and the human-controlled mode
+  in §2 have no frontend at all.
 - No pagination on the sessions table or claim feed.
 - No live updates: pages fetch on mount. A websocket or polling layer is
   unbuilt.
@@ -680,6 +790,58 @@ that a status-code assertion would miss.
 | Price of the resource == claim delta | gateway buy path | Paying 0.0005 for a 0.025 resource |
 | Nothing forwarded upstream before admission | gateway buy path | Free data on a refused claim |
 
+### The three-layer trust boundary
+
+Human authorization, agent autonomy and gateway enforcement are three separate
+layers, and the separation is what makes an autonomous agent safe to run. Each
+layer can fail without the ones below it failing.
+
+| Layer | Trusted to | **Not** trusted to | Enforced by |
+| --- | --- | --- | --- |
+| **Human** | Decide how much money exists and for how long | — (this is the root of authority) | `open_session`: the deposit and expiry are on-chain facts |
+| **Agent** | Choose what to buy and how often, and sign claims | Exceed the deposit, replay a claim, misprice a resource, or reach the provider unadmitted | Gateway: signature, ordering, high-water mark, price match |
+| **Gateway** | Verify claims, order them, submit settlement | Invent a deposit, settle more than the highest signed claim, or commit a Merkle root its own log does not produce | Chain: reconciliation at open, program-side claim verification, the `SettlementRecord` PDA, the three-way root comparison (§5) |
+
+Read that bottom row carefully: **the gateway is inside the trust boundary, not
+outside it.** It holds the provider's hot key and could in principle misbehave.
+What it cannot do is settle an amount the agent never signed — the program
+verifies the agent's Ed25519 signature independently — or claim an evidence
+root that does not match its own log, because a third party can recompute the
+root in a browser and compare it against the chain.
+
+A compromised agent costs at most the escrowed deposit. A compromised gateway
+cannot exceed the highest claim the agent actually signed. A compromised
+provider gets nothing it was not already going to be paid.
+
+### The authorization model today, and what it does not express
+
+What `open_session` authorizes is precise and chain-enforced:
+
+- **How much** — `deposited_total`, a hard ceiling. No claim above it is
+  admissible at either layer.
+- **Until when** — `expires_at`, after which settlement is refused and refund
+  becomes permissionless.
+- **To whom** — `provider`, the only key permitted to settle this session.
+- **By whom** — `agent`, the only key whose signature is accepted.
+
+That is a genuine, useful authorization envelope, and it is the reason an
+autonomous agent is bounded by custody rather than by its own correctness.
+
+What it does **not** express, and what a fuller permission model would need —
+all of this is **proposed, not built**:
+
+- Per-resource or per-category limits ("weather yes, analysis no").
+- Rate limits ("at most 50 calls per hour").
+- Sub-budgets within one session, or budgets spanning several providers.
+- Approval thresholds ("anything above 0.01 USDC needs a human").
+- Revocation before expiry. Today the only ways to stop an agent mid-session
+  are to settle it or to stop the gateway; there is no on-chain pause.
+
+None of these exist in the gateway — a search for allowlist, budget, policy or
+permission concepts in `gateway/src/` returns nothing. Do not describe the
+current system as having fine-grained spending permissions. It has a cap, a
+deadline, and two fixed counterparties.
+
 ### Where the chain cannot help you
 
 Because claims are cumulative, the chain sees exactly **one** settlement per
@@ -762,6 +924,54 @@ is hackathon-grade, not production-grade.**
   after expiry, but nothing in the console calls it. Expired sessions with real
   escrow sit there until someone calls it manually.
 - **No metrics or tracing export.** Structured logs only.
+
+### Required integration for the full agent flow
+
+Stages 1–7 of the pipeline in §2. Listed as work, not as features — none of
+this exists today, and the document should not be read as implying otherwise.
+
+**Agent onboarding (stages 1–2).** Creating an agent identity and connecting it
+to a running application. There is no agent record anywhere in the system: the
+gateway knows agents only as Ed25519 public keys that appear inside sessions.
+A minimal version needs an agent registry, a key-generation or key-import path,
+and a way for an application to address an agent it owns.
+
+**Wallet connection (stage 3).** Today an agent key is a JSON file read by a
+script. Production needs a wallet adapter in the console, a signing path that
+does not require the raw key on disk, and a decision about whether the human's
+wallet and the agent's key are the same key — they currently are, in the demo
+scripts, which is fine for a demo and wrong for production. The console has no
+wallet adapter at all (§6).
+
+**Permission envelope (stage 4).** See §10 for exactly what `open_session` does
+and does not express. Extending it means either new program state or an
+off-chain policy engine in the gateway; the trade-off — on-chain enforcement
+versus flexibility — has not been decided and should be a deliberate design
+discussion, not an implementation detail.
+
+**API / AI registry (stage 5).** The gateway talks to exactly one upstream,
+named by `AGENTPAY_UPSTREAM_URL`. `demo-provider`'s `/_catalogue` is a price
+list for that one provider; the gateway caches it briefly and never invents
+prices. There is no registry of providers, no discovery endpoint, and
+`GET /v1/catalogue` on the gateway returns 404. A registry needs: provider
+registration, per-provider catalogue aggregation, capability metadata beyond
+price and description, and a trust story for who may list.
+
+**Selection and decision layers (stages 6–7).** Choosing a provider from a
+registry, and deciding how many calls a task needs within the authorized
+budget. `scripts/demo-buy.ts` is a hardcoded demonstration loop, not a
+component — do not mistake it for a planner. Note the division of labour that
+already works: the agent decides, the gateway enforces. A decision layer can be
+built, replaced or gotten wrong without weakening any invariant in §10.
+
+**Approval workflow (human-controlled mode).** A proposal queue, a hold state,
+a notification path and an approval UI. None exist.
+
+**What none of this requires.** No change to the program, the claim format, the
+evidence log or the settlement path. Stages 1–7 sit above the enforcement
+pipeline and hand it the same signed claims either way. That is the useful
+property of the current design and the reason this work can proceed
+independently.
 
 ### Competitive honesty
 
