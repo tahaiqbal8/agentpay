@@ -36,6 +36,7 @@ function stateBadge(state: Approval["state"]) {
     case "consumed":
       return <Badge variant="neutral">spent</Badge>;
     case "rejected":
+      // Amber, not red: a person said no. That is the system working.
       return <Badge variant="denied">rejected</Badge>;
     default:
       return <Badge variant="denied">awaiting a decision</Badge>;
@@ -101,170 +102,199 @@ export default function ApprovalsPage() {
   const pendingCount = approvals.filter((a) => a.state === "pending").length;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
-      <Card>
-        <CardHeader className="flex-wrap gap-2">
-          <div>
-            <CardTitle>Approvals</CardTitle>
-            <CardDescription>Spends waiting on a person</CardDescription>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <Segmented options={FILTERS} value={filter} onChange={setFilter} />
-            <Badge variant={pendingCount > 0 ? "denied" : "neutral"}>{pendingCount}</Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="max-h-[640px] space-y-1.5 overflow-y-auto p-2">
-          {unavailable && (
-            <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-3">
-              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]" />
-              <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
-                <span className="font-semibold text-[var(--color-warn)]">
-                  The control plane is unavailable.
-                </span>{" "}
-                Approvals need a database, and this gateway is running without one.
-              </p>
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">Approvals</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Spends an agent may not make on its own. Each decision authorises exactly one purchase.
+          </p>
+        </div>
+        {pendingCount > 0 ? (
+          <Badge variant="denied">
+            {pendingCount} waiting on you
+          </Badge>
+        ) : (
+          loaded && !unavailable && <Badge variant="allowed">nothing waiting</Badge>
+        )}
+      </header>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <Card className="min-w-0" accent={pendingCount > 0 ? "warn" : undefined}>
+          <CardHeader className="flex-wrap gap-2">
+            <div>
+              <CardTitle>Queue</CardTitle>
+              <CardDescription>Spends waiting on a person</CardDescription>
             </div>
-          )}
-
-          {loaded && !unavailable && shown.length === 0 && (
-            <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-              {filter === "pending"
-                ? "Nothing is waiting on you."
-                : "No spend has ever needed a decision."}
-            </p>
-          )}
-
-          {shown.map((a) => {
-            const agent = agents[a.agent_id];
-            const pending = a.state === "pending";
-            return (
-              <div
-                key={a.approval_id}
-                className={`rounded-md border p-2.5 ${
-                  pending
-                    ? "border-[var(--color-warn-dim)] bg-[#f59e0b1a]"
-                    : "border-[var(--color-border)] bg-[var(--color-surface-2)]"
-                }`}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium text-[var(--color-fg)]">
-                    {agent?.label ?? a.agent_id}
-                  </span>
-                  {stateBadge(a.state)}
-                  <code className="font-mono text-[11px] text-[var(--color-fg-muted)]">
-                    {a.resource}
-                  </code>
-                  <span className="tnum ml-auto font-mono text-xs text-[var(--color-fg)]">
-                    {formatUsdc(a.price)}
-                  </span>
-                </div>
-
-                <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
-                  {ago(a.created_at)}
-                  {a.calls > 1 && ` · ${a.calls} calls`}
-                  {agent?.policy &&
-                    ` · ${formatUsdc(agent.spent)} of ${formatUsdc(agent.policy.max_total)} used`}
-                  {a.reason && ` · ${a.reason}`}
+            <div className="ml-auto flex items-center gap-2">
+              <Segmented options={FILTERS} value={filter} onChange={setFilter} />
+              <Badge variant={pendingCount > 0 ? "denied" : "neutral"}>{pendingCount}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="max-h-[640px] space-y-1.5 overflow-y-auto p-2">
+            {unavailable && (
+              <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-3">
+                <TriangleAlert
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
+                />
+                <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+                  <span className="font-semibold text-[var(--color-warn)]">
+                    The control plane is unavailable.
+                  </span>{" "}
+                  Approvals need a database, and this gateway is running without one.
                 </p>
-
-                {/* The trail. A decided approval that cannot name its decider
-                    is a workflow, not an audit record — so say who, and say
-                    plainly when the record predates per-operator credentials
-                    rather than leaving a blank to be misread. */}
-                {a.decided_at && (
-                  <p className="mt-0.5 text-[10px] text-[var(--color-fg-muted)]">
-                    {a.state === "rejected" ? "Rejected" : "Approved"} by{" "}
-                    <span className="font-medium text-[var(--color-fg)]">
-                      {a.decided_by_label ?? "an unrecorded operator"}
-                    </span>
-                    {!a.decided_by_label &&
-                      " — decided before per-operator credentials existed"}
-                  </p>
-                )}
-
-                {agent && (
-                  <div className="mt-1">
-                    <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
-                  </div>
-                )}
-
-                {pending && (
-                  <div className="mt-2 flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => decide(a.approval_id, true)}
-                      disabled={busy === a.approval_id}
-                    >
-                      {busy === a.approval_id ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <Check className="size-3" />
-                      )}
-                      Approve once
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => decide(a.approval_id, false)}
-                      disabled={busy === a.approval_id}
-                    >
-                      <X className="size-3" />
-                      Reject
-                    </Button>
-                  </div>
-                )}
               </div>
-            );
-          })}
-        </CardContent>
-      </Card>
+            )}
 
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>How this works</CardTitle>
-            <CardDescription>What a click does, and what it does not</CardDescription>
-          </div>
-          <UserCheck className="size-4 text-[var(--color-fg-dim)]" />
-        </CardHeader>
-        <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
-          <p>
-            An agent in <span className="font-mono text-[var(--color-fg)]">human</span> mode needs a
-            decision for every spend. An agent in{" "}
-            <span className="font-mono text-[var(--color-fg)]">autonomous</span> mode needs one only
-            at or above its approval threshold.
-          </p>
-          <p>
-            <span className="font-semibold text-[var(--color-fg)]">Approve once</span> means exactly
-            that. The approval is single-use and bound to this resource at this price: it
-            authorises one purchase, then it is spent. A standing permission would turn a moment&apos;s
-            inattention into an unbounded budget.
-          </p>
-          <p>
-            While a spend waits, the agent is{" "}
-            <span className="font-mono text-[var(--color-warn)]">ERR_APPROVAL_REQUIRED</span> —
-            refused, not held. It retries after you decide. Holding the request open would occupy a
-            connection until somebody happened to look at this page.
-          </p>
-          <p>
-            A retry does not queue a second copy: one pending proposal exists per agent, resource
-            and price.
-          </p>
-          <p>
-            <span className="font-semibold text-[var(--color-fg)]">Who decided is recorded.</span>{" "}
-            Each decision stores the operator id and their name <em>as it was at that moment</em> —
-            a snapshot, not a lookup, so renaming or removing an operator later cannot rewrite who
-            approved what. A decision made with the shared admin token is recorded as exactly
-            that.
-          </p>
-          <p className="border-t border-[var(--color-border)] pt-2.5">
-            <span className="font-semibold text-[var(--color-fg)]">What approving cannot do:</span>{" "}
-            exceed the agent&apos;s envelope or its on-chain escrow. A spend the policy would refuse
-            never reaches you as a request — you are only ever asked about purchases that are
-            already permitted.
-          </p>
-        </CardContent>
-      </Card>
+            {loaded && !unavailable && shown.length === 0 && (
+              <div className="py-12 text-center">
+                <p className="text-xs text-[var(--color-fg-muted)]">
+                  {filter === "pending"
+                    ? "Nothing is waiting on you."
+                    : "No spend has ever needed a decision."}
+                </p>
+                <p className="t-support mx-auto mt-1 max-w-xs">
+                  {filter === "pending"
+                    ? "A request appears here the moment an agent asks for something above its threshold."
+                    : "Every purchase so far was inside an agent's envelope."}
+                </p>
+              </div>
+            )}
+
+            {shown.map((a) => {
+              const agent = agents[a.agent_id];
+              const pending = a.state === "pending";
+              return (
+                <div
+                  key={a.approval_id}
+                  className={`rounded-md border p-2.5 ${
+                    pending
+                      ? "border-[var(--color-warn-dim)] bg-[#f59e0b0d]"
+                      : "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-[var(--color-fg)]">
+                      {agent?.label ?? a.agent_id}
+                    </span>
+                    {stateBadge(a.state)}
+                    <code className="font-mono text-[11px] text-[var(--color-fg-muted)]">
+                      {a.resource}
+                    </code>
+                    <span className="tnum ml-auto font-mono text-xs text-[var(--color-fg)]">
+                      {formatUsdc(a.price)}
+                    </span>
+                  </div>
+
+                  <p className="t-support mt-1">
+                    {ago(a.created_at)}
+                    {a.calls > 1 && ` · ${a.calls} calls`}
+                    {agent?.policy &&
+                      ` · ${formatUsdc(agent.spent)} of ${formatUsdc(agent.policy.max_total)} used`}
+                    {a.reason && ` · ${a.reason}`}
+                  </p>
+
+                  {/* The trail. A decided approval that cannot name its decider
+                      is a workflow, not an audit record — so say who, and say
+                      plainly when the record predates per-operator credentials
+                      rather than leaving a blank to be misread. */}
+                  {a.decided_at && (
+                    <p className="mt-0.5 text-[10px] text-[var(--color-fg-muted)]">
+                      {a.state === "rejected" ? "Rejected" : "Approved"} by{" "}
+                      <span className="font-medium text-[var(--color-fg)]">
+                        {a.decided_by_label ?? "an unrecorded operator"}
+                      </span>
+                      {!a.decided_by_label && " — decided before per-operator credentials existed"}
+                    </p>
+                  )}
+
+                  {agent && (
+                    <div className="mt-1">
+                      <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
+                    </div>
+                  )}
+
+                  {pending && (
+                    <div className="mt-2 flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => decide(a.approval_id, true)}
+                        disabled={busy === a.approval_id}
+                      >
+                        {busy === a.approval_id ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Check className="size-3" />
+                        )}
+                        Approve once
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => decide(a.approval_id, false)}
+                        disabled={busy === a.approval_id}
+                      >
+                        <X className="size-3" />
+                        Reject
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+
+        <Card className="min-w-0">
+          <CardHeader>
+            <div>
+              <CardTitle>How this works</CardTitle>
+              <CardDescription>What a click does, and what it does not</CardDescription>
+            </div>
+            <UserCheck aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
+          </CardHeader>
+          <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+            <p>
+              An agent in <span className="font-mono text-[var(--color-fg)]">human</span> mode needs
+              a decision for every spend. An agent in{" "}
+              <span className="font-mono text-[var(--color-fg)]">autonomous</span> mode needs one
+              only at or above its approval threshold.
+            </p>
+            <p>
+              <span className="font-semibold text-[var(--color-fg)]">Approve once</span> means
+              exactly that. The approval is single-use and bound to this resource at this price: it
+              authorises one purchase, then it is spent. A standing permission would turn a
+              moment&apos;s inattention into an unbounded budget.
+            </p>
+            <p>
+              While a spend waits, the agent is{" "}
+              <span className="font-mono text-[var(--color-warn)]">ERR_APPROVAL_REQUIRED</span> —
+              refused, not held. It retries after you decide. Holding the request open would occupy
+              a connection until somebody happened to look at this page.
+            </p>
+            <p>
+              A retry does not queue a second copy: one pending proposal exists per agent, resource
+              and price.
+            </p>
+            <p>
+              <span className="font-semibold text-[var(--color-fg)]">Who decided is recorded.</span>{" "}
+              Each decision stores the operator id and their name <em>as it was at that moment</em>{" "}
+              — a snapshot, not a lookup, so renaming or removing an operator later cannot rewrite
+              who approved what. A decision made with the shared admin token is recorded as exactly
+              that.
+            </p>
+            <p className="border-t border-[var(--color-border)] pt-2.5">
+              <span className="font-semibold text-[var(--color-fg)]">
+                What approving cannot do:
+              </span>{" "}
+              exceed the agent&apos;s envelope or its on-chain escrow. A spend the policy would
+              refuse never reaches you as a request — you are only ever asked about purchases that
+              are already permitted.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
