@@ -259,18 +259,50 @@ curl -s -X POST http://127.0.0.1:8080/v1/providers \
 
 ### 4.5 Decide how many calls
 
+Two planners, for two different callers.
+
+**As the operator**, planning for any agent:
+
 ```bash
 curl -s -X POST http://127.0.0.1:8080/v1/agent/plan \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d "{\"agent_id\":\"$AGENT_ID\",\"resource\":\"/weather\",\"calls\":50}"
 ```
 
+**As the agent**, planning only for the session it holds — **no admin token**:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/session/plan \
+  -H 'content-type: application/json' \
+  -d '{"session":"<pubkey>","resource":"/weather","calls":50,
+       "claim":{ … signed at the CURRENT cumulative and nonce … }}'
+```
+
+Or, in the SDK, one line:
+
+```ts
+const plan = await pay.plan("/weather", 50);
+```
+
+Identity comes from the signature, not a credential. There is **no `agent_id`
+field** on the session planner — the agent is derived from the session record,
+so there is nothing to enumerate.
+
+The signed claim carries the session's **current** cumulative and nonce, which
+makes it non-spendable: both the gateway and the program admit a claim only
+when its cumulative is strictly greater.
+
+Both planners are **informational only**. They reserve nothing and authorize
+nothing — `/v1/buy` remains the final spending authority, and re-checks the
+signature, the price and the envelope from scratch.
+
 The plan is **bounded by the envelope, not by the request**: ask for 50 and you
 are told how many are actually affordable, and which provider is cheapest. A
 forbidden resource is listed with `refused_by` rather than hidden.
 
-A plan **authorises nothing**. Buying goes through `/v1/buy`, where the
-signature, the price and the same envelope are all checked again.
+A plan **authorises nothing**, and a plan can go stale the moment another
+purchase lands. Buying goes through `/v1/buy`, where the signature, the price
+and the same envelope are all checked again.
 
 ### 4.6 Buy
 
@@ -379,7 +411,7 @@ provable against a root committed on Solana — without trusting the operator.**
 | `cargo test --manifest-path gateway/Cargo.toml` | 129 hermetic | nothing |
 | `npm run sdk-test` | 27 SDK checks incl. claim parity | nothing |
 | `npm test` | 24 attacks against the program | devnet |
-| `npm run policy-devnet` | 30 control-plane checks | devnet |
+| `npm run policy-devnet` | 40 control-plane and session-planner checks | devnet |
 | `npm run evidence-devnet` | evidence + Merkle proof | devnet |
 | `npm run sdk-demo` | the SDK end to end | devnet |
 | `npm run stage-settleable` | leaves a settleable session for the UI | devnet |
@@ -490,3 +522,9 @@ audit trail depend on the party it exists to check.
 
 > Anyone can show that an agent paid. This shows that an agent was **stopped**,
 > and proves it against a public chain.
+
+### The line to hold when somebody asks what AgentPay is
+
+> **AgentPay does not decide what an agent should buy. The agent decides what it
+> needs; AgentPay determines what the agent is permitted to buy, enforces those
+> boundaries, and produces verifiable evidence when a purchase is refused.**

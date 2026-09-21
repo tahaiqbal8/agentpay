@@ -111,13 +111,20 @@ frontend — this was a hard design constraint, not an accident.
 
 ### The end-to-end agent flow, and where AgentPay sits in it
 
-The full product flow a human experiences runs:
-
 ```
-Human → Agent Creation → Agent Connection → Wallet Connection →
-Human Authorization/Funding → API/AI Registry → API Selection →
-Agent Decision → API Calls → Gateway Enforcement → Provider →
-Final Settlement
+Human
+  → Create Agent
+  → Bind Wallet
+  → Fund Escrow
+  → Authorize Policy
+  → Discover API
+  → Agent Plans Calls
+  → Human Approval OR Autonomous Mode
+  → Buy / API Calls
+  → AgentPay Enforcement
+  → Provider
+  → Final Settlement
+  → Evidence / Merkle Verification
 ```
 
 Every stage is now implemented except the two marked **Partial**, which are
@@ -138,6 +145,47 @@ before planning work against it.
 | 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
 | 11 | Final settlement + anchoring | Gateway → chain | **Built** — one transaction, Merkle root committed | `settle_session`, §3 and §5 |
 
+### Planning has two front doors
+
+| Endpoint | For | Authenticated by |
+| --- | --- | --- |
+| `POST /v1/agent/plan` | The **operator**. Takes an `agent_id` and can plan for any agent. | `AGENTPAY_ADMIN_TOKEN` |
+| `POST /v1/session/plan` | The **agent**. Plans only for the session it holds. No `agent_id` field exists. | A signed claim over that session |
+
+Agent identity is established by the signature, not by a credential: the caller
+signs a claim over its session, the gateway verifies it with the same
+`verify_claim_signature` the buy path uses, against `record.agent` taken from
+**stored state**. The agent is then resolved session → `record.agent` →
+`get_agent_by_pubkey`.
+
+Both call the same `plan_options()`, so the two doors cannot drift apart and
+report different numbers for the same question.
+
+**The planner is informational only.** It writes nothing, reserves nothing, and
+advances nothing. A plan can go stale the moment another purchase lands, and
+that is correct: **`/v1/buy` remains the final spending authority**, and
+re-checks the signature, the price and the whole envelope from scratch.
+
+#### The planning claim is deliberately non-spendable
+
+It must carry `cumulative_amount == record.cumulative_accepted` and
+`nonce == record.last_nonce`. A claim carrying a *higher* cumulative is refused
+`ERR_PLAN_CLAIM_MISMATCH`, so the endpoint never handles a spendable claim.
+
+Where such a claim is refused depends on which validation gate receives it
+first:
+
+| Gate | Reason code | Why |
+| --- | --- | --- |
+| `/v1/buy` | `ERR_PRICE_MISMATCH` | The price gate runs **before** `admit_claim` and requires `accepted + price`; a planning claim carries `accepted`. |
+| `/v1/claim/verify` | `ERR_CLAIM_NOT_MONOTONIC` | No price gate, so it reaches `evaluate_claim` — the same rule the on-chain program applies. |
+
+**The invariant is: a planning claim can never be used as a payment claim.** The
+exact rejection reason depends on which gate receives it first. `/v1/buy`'s
+ordering is **not** to be changed to make a code match a test's wording — the
+price gate running first is what stops a cheap claim buying an expensive
+resource.
+
 ### The control plane
 
 Stages 1 to 7 live in four modules kept deliberately apart from the money path:
@@ -151,6 +199,34 @@ Stages 1 to 7 live in four modules kept deliberately apart from the money path:
 
 They hold no custody and cannot affect settlement, which is why they are
 allowed to be mutable and flexible while the program and `routes.rs` are not.
+
+### The task boundary
+
+A distinction to preserve. These are different jobs, and mixing them would cost
+the property that makes the second one trustworthy.
+
+| The agent / application / LLM | AgentPay |
+| --- | --- |
+| Understands the programmer's task | Checks whether those calls are allowed |
+| Discovers suitable APIs | Enforces spending limits |
+| Decides what resources are needed | Enforces allowed resources |
+| Decides an initial number of calls | Enforces approval requirements |
+| | Prevents unauthorized provider access |
+| | Records refusals |
+| | Settles the final cumulative claim |
+| | Provides cryptographic evidence |
+
+**Do not introduce an LLM or task planner into the gateway.** The gateway's
+value is that it is deterministic and testable; a model inside it makes its
+behaviour probabilistic and its test suite a matter of chance. And a defective
+planner is already harmless — the escrow caps it, the envelope caps it, and
+every refusal is recorded and provable. That property exists *because* the
+planner is outside, and it disappears the moment the planner becomes a trusted
+component.
+
+> **AgentPay does not decide what an agent should buy. The agent decides what it
+> needs; AgentPay determines what the agent is permitted to buy, enforces those
+> boundaries, and produces verifiable evidence when a purchase is refused.**
 
 **A policy can only narrow, never widen.** The escrow deposit remains the
 absolute ceiling. This is why the envelope is off-chain: allowlists and call
