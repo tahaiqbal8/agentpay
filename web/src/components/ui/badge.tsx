@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
  * | --- | --- |
  * | teal   | healthy, active, allowed, connected |
  * | cyan   | informational, on-chain, verification |
+ * | cyan+ring | **anchored** — committed to Solana and independently checkable |
  * | purple | agent, policy, autonomy, planning |
  * | amber  | warning, expired, approval required, **policy refusal** |
  * | red    | invalid signature, security failure, genuine fault |
@@ -28,7 +29,7 @@ import { cn } from "@/lib/utils";
  * day it should mean everything.
  */
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider whitespace-nowrap",
+  "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wider whitespace-nowrap",
   {
     variants: {
       variant: {
@@ -40,6 +41,24 @@ const badgeVariants = cva(
           "border-[var(--color-warn-dim)] bg-[#f59e0b1a] text-[var(--color-warn)]",
         /** Informational, on-chain, verification, claims. */
         info: "border-[var(--color-cyan-dim)] bg-[#22d3ee1a] text-[var(--color-cyan)]",
+        /**
+         * The evidence root is committed to Solana and can be checked by
+         * anyone.
+         *
+         * This is the product's whole claim, and until now it had no badge at
+         * all — it lived as a card edge, a green hash and a sentence, which
+         * made the one state nobody else can offer the quietest thing on the
+         * page.
+         *
+         * Cyan, because this is the cryptographic family, not the "we said
+         * yes" family: an ALLOWED is the gateway's opinion, an ANCHORED is a
+         * fact on a public ledger. It is deliberately the loudest badge in the
+         * set — full-strength border and a ring — because it is the only one
+         * that survives the gateway being wrong.
+         */
+        anchored:
+          "border-[var(--color-cyan)] bg-[#22d3ee26] text-[var(--color-cyan)] " +
+          "shadow-[0_0_0_3px_var(--color-cyan-glow)]",
         /** Agent, policy, autonomy, planning. */
         agent:
           "border-[var(--color-agent-dim)] bg-[#a78bfa1a] text-[var(--color-agent)]",
@@ -63,6 +82,9 @@ const GLYPH: Record<string, string | null> = {
   info: "◆",
   agent: "◈",
   danger: "×",
+  // A block. Not a tick: a tick means "we approved it", and the point of this
+  // state is that approval is no longer what you are relying on.
+  anchored: "⬢",
   neutral: null,
 };
 

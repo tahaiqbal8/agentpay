@@ -135,7 +135,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             {!collapsed && (
               <span className="flex min-w-0 flex-col">
                 <span className="truncate font-medium">{item.label}</span>
-                <span className="truncate text-[10px] text-[var(--color-fg-dim)]">{item.hint}</span>
+                <span className="truncate text-[11px] text-[var(--color-fg-dim)]">{item.hint}</span>
               </span>
             )}
             {active && !collapsed && (
@@ -163,7 +163,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           {!collapsed && (
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold tracking-tight">AgentPay</p>
-              <p className="truncate text-[10px] text-[var(--color-fg-dim)]">Enforcement gateway</p>
+              <p className="truncate text-[11px] text-[var(--color-fg-dim)]">Enforcement gateway</p>
             </div>
           )}
         </div>
@@ -220,7 +220,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="ml-auto flex items-center gap-3">
             {health && (
               <span
-                className="hidden font-mono text-[10px] text-[var(--color-fg-dim)] lg:inline"
+                className="hidden font-mono text-[11px] text-[var(--color-fg-dim)] lg:inline"
                 title={health.program_id}
               >
                 {health.program_id.slice(0, 8)}…{health.program_id.slice(-6)}

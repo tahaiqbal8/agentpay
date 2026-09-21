@@ -37,7 +37,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             {t.kind === "info" && <Info className="mt-0.5 size-4 shrink-0 text-[var(--color-cyan)]" />}
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-[var(--color-fg)]">{t.title}</p>
-              {t.body && <p className="mt-0.5 break-all font-mono text-[10px] text-[var(--color-fg-dim)]">{t.body}</p>}
+              {t.body && <p className="mt-0.5 break-all font-mono text-[11px] text-[var(--color-fg-dim)]">{t.body}</p>}
             </div>
             <button
               onClick={() => setToasts((p) => p.filter((x) => x.id !== t.id))}

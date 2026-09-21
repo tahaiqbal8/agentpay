@@ -65,18 +65,28 @@ function HighWaterMark({ s }: { s: SessionSummary }) {
   const tone = pct >= 100 ? "danger" : pct >= 80 ? "warn" : "accent";
   const untouched = s.cumulative_accepted === "0";
 
+  // Two lines, not three. The third used to repeat the bar in words ("0.1%
+  // consumed") next to a number the first line already implies, and it was
+  // the single biggest contributor to a 64px row. What survives is what an
+  // operator actually acts on: what has been claimed, out of what, and how
+  // much is still spendable. The percentage moves into the bar's accessible
+  // label, where it is still announced and still on hover.
   return (
-    <div className="min-w-[8.5rem] space-y-1">
+    <div className="min-w-[9rem] space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
         <span
-          className={`t-mono text-xs ${
+          className={`t-mono text-[13px] ${
             untouched ? "text-[var(--color-fg-dim)]" : "text-[var(--color-fg)]"
           }`}
         >
           {formatUsdcCompact(s.cumulative_accepted)}
+          <span className="text-[var(--color-fg-dim)]">
+            {" / "}
+            {formatUsdcCompact(s.deposited_total)}
+          </span>
         </span>
-        <span className="t-mono text-[var(--color-fg-dim)]">
-          / {formatUsdcCompact(s.deposited_total)}
+        <span className="t-support tnum whitespace-nowrap">
+          {untouched ? "untouched" : `${formatUsdcCompact(s.remaining)} left`}
         </span>
       </div>
       <Progress
@@ -84,10 +94,6 @@ function HighWaterMark({ s }: { s: SessionSummary }) {
         tone={tone}
         label={`${pct.toFixed(1)}% of the escrowed allowance consumed`}
       />
-      <div className="t-support flex justify-between gap-2">
-        <span>{untouched ? "no claims yet" : `${pct.toFixed(1)}% consumed`}</span>
-        <span className="tnum">{formatUsdcCompact(s.remaining)} left</span>
-      </div>
     </div>
   );
 }
@@ -250,6 +256,16 @@ export default function MonitorPage() {
   const denials = decisions.filter((d) => !d.allowed).length;
   const denialRate = decisions.length ? Math.round((denials / decisions.length) * 100) : 0;
 
+  // A refusal and a fault are not the same event, and one KPI covering both
+  // taught the reader that refusals are breakage. A policy refusal is the
+  // product working; a bad signature or an unreachable dependency is not.
+  // `variantForReason` already draws that line for the badges — reuse it here
+  // rather than inventing a second definition that can drift.
+  const faults = decisions.filter(
+    (d) => !d.allowed && variantForReason(d.decision) === "danger"
+  ).length;
+  const policyRefusals = denials - faults;
+
   // Escrow that is live, spendable, AND confirmed to exist on chain.
   //
   // `deposited_total` is what the opener asserted. Without reconciliation
@@ -273,9 +289,19 @@ export default function MonitorPage() {
           entire claim is that its numbers are real. */}
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="t-page">AgentPay Command Center</h1>
-          <p className="t-body mt-1 max-w-2xl">
-            Monitor agent activity, claims, enforcement decisions and settlements in real time.
+          <h1 className="t-page">Agent payments, enforced and provable</h1>
+          {/* What the old line said was "this is a dashboard". It described
+              the console, not the product, so a reader who arrived here cold
+              learned nothing about what AgentPay does in the ten seconds they
+              were willing to give it. These two sentences carry the three
+              facts that make this different from a payments dashboard:
+              agents spend from a funded escrow, each purchase is admitted or
+              refused against a policy, and the record of those decisions ends
+              up on Solana where anyone can check it. */}
+          <p className="t-body mt-1.5 max-w-3xl">
+            AI agents spend inside an escrow a human funded and bounded. AgentPay admits or refuses
+            every purchase against that policy, hash-chains each decision, and anchors the evidence
+            root on Solana — so what an agent spent can be proved without trusting this gateway.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -293,7 +319,14 @@ export default function MonitorPage() {
         <Stat
           label="Active sessions"
           value={String(counts.active)}
-          support={`${counts.expired} expired · ${counts.settled} settled`}
+          // Zero is a real answer, not a broken one. Say which.
+          support={
+            counts.active > 0
+              ? `${counts.expired} expired · ${counts.settled} settled`
+              : counts.all > 0
+              ? `none live right now · ${counts.settled} settled, ${counts.expired} expired`
+              : "no sessions have been opened yet"
+          }
           icon={Layers}
           tone={counts.active > 0 ? "accent" : "neutral"}
         />
@@ -305,7 +338,9 @@ export default function MonitorPage() {
           support={
             unconfirmed > 0
               ? `confirmed on chain · ${unconfirmed} unconfirmed excluded`
-              : "confirmed on chain, still accepting"
+              : escrowedLive > 0n
+              ? "confirmed on chain, still accepting"
+              : "nothing is currently accepting claims"
           }
           icon={Wallet}
           tone={unconfirmed > 0 ? "warn" : "agent"}
@@ -317,12 +352,27 @@ export default function MonitorPage() {
           icon={CircleCheck}
           tone="cyan"
         />
+        {/* Not "denial rate". A refusal is an enforcement decision — a
+            policy cap, or a protocol invariant like a replayed claim — and a
+            metric named like a failure rate trains an operator to read the
+            product working as the product breaking. Faults are counted
+            separately because those really are breakage. Left as "Refused"
+            rather than "Refused by policy" because a replay is refused by the
+            protocol, not by anybody's policy. */}
         <Stat
-          label="Denial rate"
+          label="Refused"
           value={`${denialRate}%`}
-          support={`${denials} of last ${decisions.length} decisions`}
+          support={
+            decisions.length === 0
+              ? "no decisions recorded yet"
+              : faults > 0
+              ? `${policyRefusals} refused of last ${decisions.length} · ${faults} fault${
+                  faults === 1 ? "" : "s"
+                }`
+              : `${policyRefusals} of last ${decisions.length} — enforcement, not errors`
+          }
           icon={Ban}
-          tone={denials > 0 ? "warn" : "neutral"}
+          tone={faults > 0 ? "danger" : denials > 0 ? "warn" : "neutral"}
         />
       </section>
 
@@ -490,7 +540,7 @@ export default function MonitorPage() {
                             {s.evidence_count > 0 ? (
                               <Link
                                 href={`/verifier?session=${s.session}`}
-                                className="tnum inline-flex items-center gap-1 text-[11px] text-[var(--color-cyan)] hover:underline"
+                                className="tnum inline-flex items-center gap-1 text-[var(--color-cyan)] hover:underline"
                                 title={`${s.evidence_count} recorded decisions — open in the verifier`}
                               >
                                 {s.evidence_count}
@@ -670,7 +720,7 @@ export default function MonitorPage() {
                       </Link>
                       <Link
                         href={`/verifier?session=${d.session}`}
-                        className="t-mono text-[9px] text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
+                        className="t-mono text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
                         title={`${d.entry_hash} — open in the verifier`}
                       >
                         {d.entry_hash.slice(0, 10)}…
@@ -715,7 +765,7 @@ export default function MonitorPage() {
                 >
                   <Icon aria-hidden="true" className="mt-0.5 size-3.5 text-[var(--color-fg-dim)]" />
                   <span className="min-w-0">
-                    <span className="block text-[11px] font-medium text-[var(--color-fg)]">
+                    <span className="block text-xs font-medium text-[var(--color-fg)]">
                       {label}
                     </span>
                     <span className="t-support block truncate">{hint}</span>

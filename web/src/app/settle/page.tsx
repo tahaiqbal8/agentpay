@@ -271,7 +271,7 @@ export default function SettlePage() {
 
             {unverified.length > 0 && (
               <div className="mt-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5">
-                <p className="flex items-start gap-1.5 text-[11px] font-semibold text-[var(--color-warn)]">
+                <p className="flex items-start gap-1.5 text-xs font-semibold text-[var(--color-warn)]">
                   <TriangleAlert aria-hidden="true" className="mt-px size-3.5 shrink-0" />
                   {unverified.length} session{unverified.length === 1 ? "" : "s"} not shown — escrow
                   never confirmed
@@ -393,7 +393,7 @@ export default function SettlePage() {
                   </div>
 
                   <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
-                    <p className="flex items-start gap-1.5 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
+                    <p className="flex items-start gap-1.5 text-xs leading-relaxed text-[var(--color-fg-muted)]">
                       <TriangleAlert
                         aria-hidden="true"
                         className="mt-px size-3 shrink-0 text-[var(--color-warn)]"
@@ -425,7 +425,11 @@ export default function SettlePage() {
               {result && (
                 <>
                   <Row label="Status">
-                    <Badge variant="allowed">Confirmed</Badge>
+                    {/* Anchored, not merely "allowed": this transaction
+                        confirmed and the program wrote a SettlementRecord, so
+                        the root below is now a public fact rather than this
+                        gateway's assertion. */}
+                    <Badge variant="anchored">Anchored on Solana</Badge>
                   </Row>
                   <Row label="Settled amount">
                     <span className="tnum font-mono text-xs text-[var(--color-accent)]">
@@ -443,11 +447,15 @@ export default function SettlePage() {
                   </Row>
 
                   <div className="mt-3 space-y-2">
-                    <div className="rounded-md border border-[var(--color-accent-dim)] bg-[#10b9811a] p-2.5">
+                    <div className="rounded-md border border-[var(--color-cyan)] bg-[#22d3ee14] p-2.5 shadow-[0_0_0_3px_var(--color-cyan-glow)]">
                       <p className="t-label">merkle_root committed on-chain</p>
-                      <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-accent)]">
+                      <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-cyan)]">
                         {result.merkle_root}
                       </code>
+                      <p className="t-support mt-1.5">
+                        Every decision in this session&apos;s evidence log can now be proved
+                        against this root by anyone, without asking the gateway.
+                      </p>
                     </div>
                     <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
                       <p className="t-label">transaction signature</p>
@@ -479,7 +487,7 @@ export default function SettlePage() {
               <CardTitle>What this transaction does</CardTitle>
               <ShieldCheck aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
             </CardHeader>
-            <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+            <CardContent className="space-y-3 text-xs leading-relaxed text-[var(--color-fg-muted)]">
               <p>
                 The program re-checks the claim before it moves anything: still inside expiry,
                 higher than what was already settled, no more than the deposit, and carrying a

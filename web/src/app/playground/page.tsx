@@ -207,7 +207,7 @@ export default function PlaygroundPage() {
                     onChange={(e) => setCumulative(BigInt(e.target.value))}
                     className="w-full accent-[var(--color-accent)]"
                   />
-                  <div className="mt-1 flex justify-between text-[10px] text-[var(--color-fg-dim)]">
+                  <div className="mt-1 flex justify-between text-[11px] text-[var(--color-fg-dim)]">
                     <span>0</span>
                     <span className="text-[var(--color-accent)]">
                       mark {formatUsdcCompact(accepted)}
@@ -234,7 +234,7 @@ export default function PlaygroundPage() {
                     onChange={(e) => setNonce(BigInt(e.target.value))}
                     className="w-full accent-[var(--color-cyan)]"
                   />
-                  <div className="mt-1 flex justify-between text-[10px] text-[var(--color-fg-dim)]">
+                  <div className="mt-1 flex justify-between text-[11px] text-[var(--color-fg-dim)]">
                     <span>0</span>
                     <span className="text-[var(--color-cyan)]">
                       last accepted {selected.last_nonce ?? "none"}
@@ -269,7 +269,7 @@ export default function PlaygroundPage() {
                   could take a green ALLOWED here as proof the gateway agreed. */}
               <div className="flex items-start gap-1.5 rounded-md border border-[var(--color-cyan-dim)] bg-[#22d3ee0d] p-2.5">
                 <Info aria-hidden="true" className="mt-px size-3 shrink-0 text-[var(--color-cyan)]" />
-                <p className="text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
+                <p className="text-xs leading-relaxed text-[var(--color-fg-muted)]">
                   <strong className="text-[var(--color-fg)]">Simulated locally.</strong> This is not
                   a gateway round trip. The browser holds no agent private key, so it cannot produce
                   a claim signature the gateway would accept — a real request from here would always
@@ -304,11 +304,11 @@ export default function PlaygroundPage() {
                       label="High-water mark after this claim, against the escrowed deposit"
                     />
                     {verdict.decision === "ALLOWED" ? (
-                      <p className="mt-2 text-[11px] text-[var(--color-accent)]">
+                      <p className="mt-2 text-xs text-[var(--color-accent)]">
                         delta {formatUsdc(verdict.delta)} authorised for this request
                       </p>
                     ) : (
-                      <p className="mt-2 text-[11px] text-[var(--color-warn)]">
+                      <p className="mt-2 text-xs text-[var(--color-warn)]">
                         Mark unchanged — a refused claim never advances it.
                       </p>
                     )}
@@ -344,7 +344,7 @@ export default function PlaygroundPage() {
                   <span className="tnum ml-auto font-mono text-[11px]">
                     {formatUsdc(e.cumulative)}
                   </span>
-                  <span className="tnum font-mono text-[10px] text-[var(--color-fg-dim)]">
+                  <span className="tnum font-mono text-[11px] text-[var(--color-fg-dim)]">
                     n{e.nonce.toString()}
                   </span>
                 </div>

@@ -86,7 +86,10 @@ export function TD({
 }: React.TdHTMLAttributes<HTMLTableCellElement> & { numeric?: boolean }) {
   return (
     <td
-      className={cn("px-3 py-2.5 align-middle text-xs", numeric && "tnum text-right", className)}
+      // 13px, the body size. A table is the densest surface in the console and
+      // the one people actually read down, so it gets the smallest size the
+      // scale allows for reading — not smaller.
+      className={cn("px-3 py-2.5 align-middle text-[13px]", numeric && "tnum text-right", className)}
       {...props}
     />
   );

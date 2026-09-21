@@ -128,7 +128,7 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
 
       {agent.policy ? (
         <div className="mt-2.5">
-          <div className="flex items-baseline justify-between gap-2 text-[11px]">
+          <div className="flex items-baseline justify-between gap-2 text-xs">
             <span className="tnum font-mono text-[var(--color-fg)]">
               {formatUsdc(agent.spent)} / {formatUsdc(agent.policy.max_total)}
             </span>
@@ -157,7 +157,7 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
           </p>
         </div>
       ) : (
-        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-warn)]">
+        <p className="mt-2 text-xs leading-relaxed text-[var(--color-warn)]">
           Not authorized. Only this agent&apos;s on-chain escrow bounds it — there is no
           per-resource or per-call limit until one is set.
         </p>
@@ -345,7 +345,7 @@ export default function AgentsPage() {
                   aria-hidden="true"
                   className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
                 />
-                <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+                <p className="text-xs leading-relaxed text-[var(--color-fg-muted)]">
                   <span className="font-semibold text-[var(--color-warn)]">
                     The control plane is unavailable.
                   </span>{" "}
@@ -425,7 +425,7 @@ export default function AgentsPage() {
             <CardHeader>
               <CardTitle>What creating an agent does not do</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+            <CardContent className="space-y-3 text-xs leading-relaxed text-[var(--color-fg-muted)]">
               <p>
                 It does not create a wallet, hold a private key, or move any money. The
                 agent&apos;s spending power comes entirely from an on-chain escrow opened against

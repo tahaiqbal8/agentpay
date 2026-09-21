@@ -57,7 +57,7 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
             }`}
           >
             <div className="flex items-center gap-2">
-              <span className="tnum grid size-5 shrink-0 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
+              <span className="tnum grid size-5 shrink-0 place-items-center rounded bg-[var(--color-bg)] font-mono text-[11px] text-[var(--color-fg-dim)]">
                 {e.sequence_id}
               </span>
               <span title={DECISION_WHY[e.decision] ?? e.decision}>
@@ -68,7 +68,7 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
               <span className="tnum ml-auto font-mono text-xs text-[var(--color-fg)]">
                 {formatUsdc(e.cumulative_amount)}
               </span>
-              <span className="tnum font-mono text-[10px] text-[var(--color-fg-dim)]">
+              <span className="tnum font-mono text-[11px] text-[var(--color-fg-dim)]">
                 n{e.nonce}
               </span>
             </div>
@@ -86,14 +86,14 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
             </div>
             <div className="mt-1 flex items-center gap-1.5 pl-7">
               <code
-                className="font-mono text-[10px] text-[var(--color-fg-dim)]"
+                className="font-mono text-[11px] text-[var(--color-fg-dim)]"
                 title={e.entry_hash}
               >
                 {truncateHash(e.entry_hash, 8, 8)}
               </code>
               <Link
                 href={`/verifier?session=${ev.session}`}
-                className="text-[10px] text-[var(--color-cyan)] hover:underline"
+                className="text-xs text-[var(--color-cyan)] hover:underline"
               >
                 prove
               </Link>
@@ -257,7 +257,7 @@ export default function SessionDetailPage() {
 
                 {st.status === "expired" && (
                   <div className="mt-3 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5">
-                    <p className="text-[11px] leading-relaxed text-[var(--color-warn)]">
+                    <p className="text-xs leading-relaxed text-[var(--color-warn)]">
                       <strong className="font-semibold">Past settlement.</strong>{" "}
                       <span className="text-[var(--color-fg-muted)]">
                         <code className="font-mono">settle_session</code> refuses once expiry plus

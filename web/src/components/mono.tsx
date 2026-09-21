@@ -40,7 +40,7 @@ export function MonoKey({
 
   return (
     <span className={cn("group inline-flex items-center gap-1.5 whitespace-nowrap", className)}>
-      {label && <span className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">{label}</span>}
+      {label && <span className="text-[11px] uppercase tracking-wider text-[var(--color-fg-dim)]">{label}</span>}
       <span className="font-mono text-xs text-[var(--color-fg-muted)]" title={value}>
         {truncateKey(value, head, tail)}
       </span>

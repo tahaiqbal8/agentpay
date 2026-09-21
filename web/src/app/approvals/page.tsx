@@ -138,7 +138,7 @@ export default function ApprovalsPage() {
                   aria-hidden="true"
                   className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
                 />
-                <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+                <p className="text-xs leading-relaxed text-[var(--color-fg-muted)]">
                   <span className="font-semibold text-[var(--color-warn)]">
                     The control plane is unavailable.
                   </span>{" "}
@@ -200,7 +200,7 @@ export default function ApprovalsPage() {
                       plainly when the record predates per-operator credentials
                       rather than leaving a blank to be misread. */}
                   {a.decided_at && (
-                    <p className="mt-0.5 text-[10px] text-[var(--color-fg-muted)]">
+                    <p className="mt-0.5 text-xs text-[var(--color-fg-muted)]">
                       {a.state === "rejected" ? "Rejected" : "Approved"} by{" "}
                       <span className="font-medium text-[var(--color-fg)]">
                         {a.decided_by_label ?? "an unrecorded operator"}
@@ -254,7 +254,7 @@ export default function ApprovalsPage() {
             </div>
             <UserCheck aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
           </CardHeader>
-          <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+          <CardContent className="space-y-3 text-xs leading-relaxed text-[var(--color-fg-muted)]">
             <p>
               An agent in <span className="font-mono text-[var(--color-fg)]">human</span> mode needs
               a decision for every spend. An agent in{" "}

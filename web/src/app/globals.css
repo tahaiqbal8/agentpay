@@ -19,7 +19,19 @@
 
   --color-fg: #e4e4e7;
   --color-fg-muted: #a1a1aa;
-  --color-fg-dim: #71717a;
+  /* Measured, not chosen by eye.
+   *
+   * This was #71717a, which is 4.12:1 on the page background and 3.83:1 on a
+   * card — below the 4.5:1 that normal-sized text needs. It is also the most
+   * used text colour in the console: every `.t-support` line and every
+   * `.t-label` is set in it, several hundred elements per page. Being one
+   * shade too dark here made most of the secondary writing in the product
+   * technically unreadable.
+   *
+   * #83838e clears 4.5:1 against the WORST background it ever sits on
+   * (--color-surface-2, the lightest surface) and stays clearly dimmer than
+   * --color-fg-muted, so the three-tone hierarchy survives. */
+  --color-fg-dim: #83838e;
 
   /* Confirmed on-chain / allowed */
   --color-accent: #10b981;
@@ -29,6 +41,7 @@
   /* Cryptographic / informational */
   --color-cyan: #22d3ee;
   --color-cyan-dim: #155e75;
+  --color-cyan-glow: #22d3ee33;
 
   /* Denials: the system working, not an error */
   --color-warn: #f59e0b;
@@ -133,10 +146,27 @@ body {
  * Seven roles, and every piece of text on the console picks one. Named for
  * what a thing IS rather than how big it is, so a heading cannot drift into
  * looking like a value because somebody reached for a different size.
+ *
+ * The sizes were re-cut after measuring what the console actually rendered:
+ * 87% of all text sat at 10 or 11px, which is not a hierarchy — a one-pixel
+ * step is invisible, so a label and the sentence explaining it read as the
+ * same layer. Meanwhile the KPI number was LARGER than the page title.
+ *
+ * Every step is now at least 1px apart and each carries a distinct job:
+ *
+ *   11px  label, and compact technical metadata
+ *   12px  supporting text under a value
+ *   13px  body and table content — the smallest size used for reading
+ *   15px  card heading
+ *   24px  the number a reader came for
+ *   28px  page title
+ *
+ * Monospace stays at 11px: a hash is compared character by character, not
+ * read, and keeping it compact is what lets a 64-character root fit a column.
  * ------------------------------------------------------------------------ */
 
 .t-page {          /* one per page, the only place this size appears */
-  font-size: 1.375rem;
+  font-size: 1.75rem;
   line-height: 1.2;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -144,7 +174,7 @@ body {
 }
 
 .t-section {       /* a card's title */
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
   line-height: 1.3;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -152,7 +182,7 @@ body {
 }
 
 .t-kpi {           /* the number a reader came for */
-  font-size: 1.75rem;
+  font-size: 1.5rem;
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: -0.03em;
@@ -167,13 +197,13 @@ body {
 }
 
 .t-support {       /* the line under a value that explains it */
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   line-height: 1.45;
   color: var(--color-fg-dim);
 }
 
 .t-label {         /* column headers, field labels */
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   line-height: 1.2;
   font-weight: 500;
   letter-spacing: 0.06em;

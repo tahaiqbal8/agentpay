@@ -103,6 +103,54 @@ function HashBlock({
   );
 }
 
+/**
+ * One of the three roots, with the comparison already done for the reader.
+ *
+ * `state` is judged against the browser-recomputed root, which is the only
+ * value on the page this page produced itself — everything else is somebody's
+ * report. The full 64 characters stay on screen either way: a marker that
+ * replaced the hash would just be a different thing to trust.
+ */
+function RootRow({
+  label,
+  value,
+  state,
+  absentNote,
+}: {
+  label: string;
+  value: string | null;
+  state: "reference" | "match" | "differs" | "absent";
+  absentNote?: string;
+}) {
+  const marker = {
+    reference: { text: "COMPUTED HERE", cls: "text-[var(--color-fg-muted)]" },
+    match: { text: "✓ MATCH", cls: "text-[var(--color-cyan)]" },
+    differs: { text: "✕ DIFFERS", cls: "text-[var(--color-danger)]" },
+    absent: { text: "NOT ON CHAIN", cls: "text-[var(--color-fg-dim)]" },
+  }[state];
+
+  const hashTone =
+    state === "differs"
+      ? "text-[var(--color-danger)]"
+      : state === "match"
+      ? "text-[var(--color-cyan)]"
+      : "text-[var(--color-fg)]";
+
+  return (
+    <div className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="t-label">{label}</p>
+        <span className={`t-label ${marker.cls}`}>{marker.text}</span>
+      </div>
+      {value !== null ? (
+        <code className={`mt-1 block break-all font-mono text-[11px] ${hashTone}`}>{value}</code>
+      ) : (
+        <span className="mt-1 block text-xs text-[var(--color-fg-muted)]">{absentNote}</span>
+      )}
+    </div>
+  );
+}
+
 /** Ladder view of the evidence log; each leaf links to its predecessor. */
 function ChainLadder({
   evidence,
@@ -132,7 +180,7 @@ function ChainLadder({
             }`}
           >
             <div className="flex items-center gap-2">
-              <span className="tnum grid size-5 shrink-0 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
+              <span className="tnum grid size-5 shrink-0 place-items-center rounded bg-[var(--color-bg)] font-mono text-[11px] text-[var(--color-fg-dim)]">
                 {e.sequence_id}
               </span>
               <span title={DECISION_WHY[e.decision] ?? e.decision}>
@@ -368,7 +416,9 @@ function VerifierInner() {
               </CardDescription>
             </div>
             {proof &&
-              (valid ? (
+              (anchored ? (
+                <Badge variant="anchored">Anchored</Badge>
+              ) : valid ? (
                 <Badge variant="allowed">Cryptographically validated</Badge>
               ) : (
                 <Badge variant="danger">Does not verify</Badge>
@@ -422,23 +472,23 @@ function VerifierInner() {
                     className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5"
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="grid size-5 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
+                      <span className="grid size-5 place-items-center rounded bg-[var(--color-bg)] font-mono text-[11px] text-[var(--color-fg-dim)]">
                         {s.index + 1}
                       </span>
                       <Badge variant="info">sibling {s.side}</Badge>
-                      <span className="ml-auto font-mono text-[10px] text-[var(--color-fg-dim)]">
+                      <span className="ml-auto font-mono text-[11px] text-[var(--color-fg-dim)]">
                         sha256({s.side === "left" ? "sibling ‖ running" : "running ‖ sibling"})
                       </span>
                     </div>
                     <div className="mt-2 grid gap-1 pl-7">
                       <div className="flex items-center gap-2">
-                        <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                        <span className="w-14 shrink-0 text-[11px] text-[var(--color-fg-dim)]">
                           running
                         </span>
                         <HashChip value={s.running} />
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                        <span className="w-14 shrink-0 text-[11px] text-[var(--color-fg-dim)]">
                           sibling
                         </span>
                         <HashChip value={s.sibling} tone="cyan" />
@@ -451,60 +501,87 @@ function VerifierInner() {
                   </div>
                 ))}
                 {steps.length === 0 && (
-                  <p className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 text-[11px] text-[var(--color-fg-muted)]">
+                  <p className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 text-xs text-[var(--color-fg-muted)]">
                     Single-leaf tree: the leaf is already the root, so the proof is empty.
                   </p>
                 )}
               </div>
 
-              {/* comparison */}
+              {/* ---- the payoff ----------------------------------------
+                  Three 64-character hashes stacked in a column asks the
+                  reader to diff them by eye. The marker on each row does that
+                  comparison for them, and the hashes stay in full underneath
+                  because the entire point of this page is that you do not have
+                  to take its word for anything. */}
               <div
                 className={`rounded-md border p-3 ${
-                  valid
-                    ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
-                    : "border-[var(--color-danger-dim)] bg-[#ef44441a]"
+                  !valid || chainDisagrees
+                    ? "border-[var(--color-danger-dim)] bg-[#ef44441a]"
+                    : anchored
+                    ? "border-[var(--color-cyan)] bg-[#22d3ee14]"
+                    : "border-[var(--color-accent-dim)] bg-[#10b9811a]"
                 }`}
               >
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  {anchored ? (
+                    <Badge variant="anchored">Anchored on Solana</Badge>
+                  ) : chainDisagrees ? (
+                    <Badge variant="danger">Chain disagrees</Badge>
+                  ) : valid ? (
+                    <Badge variant="allowed">Proof holds</Badge>
+                  ) : (
+                    <Badge variant="danger">Does not verify</Badge>
+                  )}
+                  <span className="t-support">
+                    {anchored
+                      ? "all three roots are identical"
+                      : chainDisagrees
+                      ? "the committed root is not the one this log produces"
+                      : valid
+                      ? "browser and gateway agree — nothing committed yet"
+                      : "recomputation does not reproduce the reported root"}
+                  </span>
+                </div>
+
                 <div className="grid gap-2">
-                  <HashBlock
+                  {/* The reference: the only value on this page that this page
+                      produced itself. Everything else is judged against it. */}
+                  <RootRow
                     label="recomputed in browser"
                     value={recomputed}
-                    tone="fg"
-                    className=""
+                    state="reference"
                   />
-                  <HashBlock
+                  <RootRow
                     label="root reported by gateway"
                     value={proof.merkle_root}
-                    tone="fg"
-                    className=""
+                    state={proof.merkle_root === recomputed ? "match" : "differs"}
                   />
                   {/* The third value is the only one neither this page nor the
                       gateway controls. It decides the audit. */}
-                  <div>
-                    <p className="t-label">root committed on chain</p>
-                    {chainRoot !== undefined ? (
-                      <code
-                        className={`mt-1 block break-all font-mono text-[11px] ${
-                          anchored ? "text-[var(--color-accent)]" : "text-[var(--color-danger)]"
-                        }`}
-                      >
-                        {chainRoot}
-                      </code>
-                    ) : (
-                      <span className="mt-1 block text-[11px] text-[var(--color-fg-muted)]">
-                        {onChain === null
-                          ? "reading the chain…"
-                          : "not settled yet — nothing is committed on chain for this session"}
-                      </span>
-                    )}
-                  </div>
+                  <RootRow
+                    label="root committed on chain"
+                    value={chainRoot ?? null}
+                    state={
+                      chainRoot === undefined
+                        ? "absent"
+                        : chainRoot === recomputed
+                        ? "match"
+                        : "differs"
+                    }
+                    absentNote={
+                      onChain === null
+                        ? "reading the chain…"
+                        : "not settled yet — nothing is committed on chain for this session"
+                    }
+                  />
                 </div>
+
                 <p
-                  className={`mt-2 text-xs font-semibold ${
+                  className={`mt-3 text-xs font-semibold ${
                     !valid || chainDisagrees
                       ? "text-[var(--color-danger)]"
                       : anchored
-                      ? "text-[var(--color-accent)]"
+                      ? "text-[var(--color-cyan)]"
                       : "text-[var(--color-warn)]"
                   }`}
                 >
@@ -516,13 +593,11 @@ function VerifierInner() {
                     ? "Anchored — this decision is provably covered by a root committed on Solana."
                     : "Proof holds, but nothing is anchored on chain until this session settles."}
                 </p>
+
                 {anchored && (
-                  <p className="t-support mt-1 flex flex-wrap items-center gap-1">
-                    <ShieldCheck
-                      aria-hidden="true"
-                      className="size-3 text-[var(--color-accent)]"
-                    />
-                    Check it yourself:{" "}
+                  <p className="t-support mt-2 flex flex-wrap items-center gap-1 border-t border-[var(--color-cyan-dim)] pt-2">
+                    <ShieldCheck aria-hidden="true" className="size-3 text-[var(--color-cyan)]" />
+                    Do not take this page&apos;s word for it:{" "}
                     <code className="font-mono text-[var(--color-fg-muted)]">
                       solana account {onChain?.settlement_record} -u devnet
                     </code>

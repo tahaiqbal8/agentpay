@@ -36,7 +36,7 @@ export function Segmented<T extends string>({
             aria-selected={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              "flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors",
+              "flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors",
               active
                 ? "bg-[var(--color-surface-2)] text-[var(--color-fg)]"
                 : "text-[var(--color-fg-dim)] hover:text-[var(--color-fg-muted)]"
@@ -46,7 +46,7 @@ export function Segmented<T extends string>({
             {o.count !== undefined && (
               <span
                 className={cn(
-                  "tnum rounded px-1 text-[10px]",
+                  "tnum rounded px-1 text-[11px]",
                   active
                     ? "bg-[var(--color-bg)] text-[var(--color-fg-muted)]"
                     : "text-[var(--color-fg-dim)]"

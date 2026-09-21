@@ -184,7 +184,7 @@ export default function RegistryPage() {
                     <Badge variant={p.enabled ? "allowed" : "denied"}>
                       {p.enabled ? "enabled" : "disabled"}
                     </Badge>
-                    <code className="font-mono text-[10px] text-[var(--color-fg-dim)]">
+                    <code className="font-mono text-[11px] text-[var(--color-fg-dim)]">
                       {p.provider_id}
                     </code>
                     {/* Two steps, because removing a registration is not
@@ -216,7 +216,7 @@ export default function RegistryPage() {
                       unaffected — the escrow is on chain, not here.
                     </p>
                   )}
-                  <p className="mt-1 break-all font-mono text-[10px] text-[var(--color-fg-dim)]">
+                  <p className="mt-1 break-all font-mono text-[11px] text-[var(--color-fg-dim)]">
                     {p.base_url}
                   </p>
                   {p.provider_pubkey && (
@@ -328,10 +328,10 @@ export default function RegistryPage() {
                 key={u.provider_id}
                 className="rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5"
               >
-                <p className="text-[11px] font-semibold text-[var(--color-warn)]">
+                <p className="text-xs font-semibold text-[var(--color-warn)]">
                   {u.provider_id} did not answer
                 </p>
-                <p className="mt-0.5 break-all text-[10px] text-[var(--color-fg-muted)]">
+                <p className="mt-0.5 break-all text-xs text-[var(--color-fg-muted)]">
                   {u.error}
                 </p>
                 <p className="t-support mt-1">
