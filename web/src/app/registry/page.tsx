@@ -5,7 +5,7 @@ import { Loader2, Plus, Store, Trash2, TriangleAlert, Wand2 } from "lucide-react
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { MonoKey } from "@/components/mono";
 import { useToast } from "@/components/toast";
 import {
@@ -30,18 +30,6 @@ import { formatUsdc } from "@/lib/format";
  *    every rule is applied again for real.
  */
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-        {label}
-      </span>
-      {children}
-      {hint && <span className="mt-0.5 block text-[10px] text-[var(--color-fg-dim)]">{hint}</span>}
-    </label>
-  );
-}
-
 export default function RegistryPage() {
   const toast = useToast();
   const [providers, setProviders] = React.useState<Provider[]>([]);
@@ -49,6 +37,9 @@ export default function RegistryPage() {
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [unavailable, setUnavailable] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // Which provider's remove button is armed. A single click on a bin icon
+  // should not delete a registration: the second click is the decision.
+  const [confirming, setConfirming] = React.useState<string | null>(null);
 
   const [pid, setPid] = React.useState("");
   const [label, setLabel] = React.useState("");
@@ -100,6 +91,7 @@ export default function RegistryPage() {
   };
 
   const remove = async (id: string) => {
+    setConfirming(null);
     const res = await api.deleteProvider(id);
     if (!res.ok) {
       toast({ kind: "error", title: "Not removed", body: res.error.reason_code });
@@ -125,11 +117,34 @@ export default function RegistryPage() {
     setPlan(res.data);
   };
 
+  const down = catalogue?.unavailable.length ?? 0;
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">Registry</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Who sells what, and at what price. The gateway records where to ask — every price on
+            this page came from the provider&apos;s own catalogue, moments ago.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {down > 0 && (
+            <Badge variant="denied">
+              {down} provider{down === 1 ? "" : "s"} not answering
+            </Badge>
+          )}
+          <Badge variant="neutral">{providers.length} registered</Badge>
+        </div>
+      </header>
+
       {unavailable && (
-        <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] px-3 py-2">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]" />
+        <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] px-3 py-2">
+          <TriangleAlert
+            aria-hidden="true"
+            className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
+          />
           <p className="text-xs text-[var(--color-fg-muted)]">
             <span className="font-semibold text-[var(--color-warn)]">
               The control plane is unavailable.
@@ -139,8 +154,8 @@ export default function RegistryPage() {
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="min-w-0">
           <CardHeader>
             <div>
               <CardTitle>Providers</CardTitle>
@@ -149,67 +164,118 @@ export default function RegistryPage() {
             <Badge variant="neutral">{providers.length}</Badge>
           </CardHeader>
           <CardContent className="space-y-1.5 p-2">
-            {providers.map((p) => (
-              <div
-                key={p.provider_id}
-                className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Store className="size-3.5 shrink-0 text-[var(--color-fg-dim)]" />
-                  <span className="text-xs font-medium text-[var(--color-fg)]">{p.label}</span>
-                  <Badge variant={p.enabled ? "allowed" : "denied"}>
-                    {p.enabled ? "enabled" : "disabled"}
-                  </Badge>
-                  <code className="font-mono text-[10px] text-[var(--color-fg-dim)]">
-                    {p.provider_id}
-                  </code>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="ml-auto"
-                    onClick={() => remove(p.provider_id)}
-                    aria-label={`Remove ${p.provider_id}`}
-                  >
-                    <Trash2 className="size-3" />
-                  </Button>
-                </div>
-                <p className="mt-1 break-all font-mono text-[10px] text-[var(--color-fg-dim)]">
-                  {p.base_url}
-                </p>
-                {p.provider_pubkey && (
-                  <div className="mt-1">
-                    <MonoKey value={p.provider_pubkey} head={6} tail={6} />
+            {providers.map((p) => {
+              const armed = confirming === p.provider_id;
+              return (
+                <div
+                  key={p.provider_id}
+                  className={`rounded-md border p-2.5 ${
+                    armed
+                      ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
+                      : "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Store
+                      aria-hidden="true"
+                      className="size-3.5 shrink-0 text-[var(--color-fg-dim)]"
+                    />
+                    <span className="text-xs font-medium text-[var(--color-fg)]">{p.label}</span>
+                    <Badge variant={p.enabled ? "allowed" : "denied"}>
+                      {p.enabled ? "enabled" : "disabled"}
+                    </Badge>
+                    <code className="font-mono text-[10px] text-[var(--color-fg-dim)]">
+                      {p.provider_id}
+                    </code>
+                    {/* Two steps, because removing a registration is not
+                        something to do by brushing an icon. */}
+                    {armed ? (
+                      <span className="ml-auto flex items-center gap-1.5">
+                        <Button size="sm" variant="danger" onClick={() => remove(p.provider_id)}>
+                          Remove
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+                          Cancel
+                        </Button>
+                      </span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="ml-auto"
+                        onClick={() => setConfirming(p.provider_id)}
+                        aria-label={`Remove ${p.provider_id}`}
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                  {armed && (
+                    <p className="t-support mt-1.5 text-[var(--color-warn)]">
+                      Its resources disappear from the catalogue. Sessions already open are
+                      unaffected — the escrow is on chain, not here.
+                    </p>
+                  )}
+                  <p className="mt-1 break-all font-mono text-[10px] text-[var(--color-fg-dim)]">
+                    {p.base_url}
+                  </p>
+                  {p.provider_pubkey && (
+                    <div className="mt-1">
+                      <MonoKey value={p.provider_pubkey} head={6} tail={6} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             {providers.length === 0 && (
-              <p className="py-8 text-center text-xs text-[var(--color-fg-dim)]">
+              <p className="py-8 text-center text-xs text-[var(--color-fg-muted)]">
                 No providers registered.
               </p>
             )}
 
             <div className="mt-2 space-y-2.5 rounded-md border border-[var(--color-border)] p-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-dim)]">
-                Register a provider
-              </p>
+              <p className="t-label">Register a provider</p>
               <div className="grid gap-2.5 sm:grid-cols-2">
-                <Field label="provider_id">
-                  <Input value={pid} onChange={(e) => setPid(e.target.value)} placeholder="weather-co" />
+                <Field label="provider_id" htmlFor="provider-id">
+                  <Input
+                    id="provider-id"
+                    value={pid}
+                    onChange={(e) => setPid(e.target.value)}
+                    placeholder="weather-co"
+                  />
                 </Field>
-                <Field label="label">
-                  <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Weather Co" />
+                <Field label="label" htmlFor="provider-label">
+                  <Input
+                    id="provider-label"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="Weather Co"
+                  />
                 </Field>
               </div>
-              <Field label="base_url" hint="Must serve /_catalogue. http:// or https:// only.">
+              <Field
+                label="base_url"
+                hint="Must serve /_catalogue. http:// or https:// only."
+                htmlFor="provider-url"
+              >
                 <Input
+                  id="provider-url"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="http://provider:4021"
                 />
               </Field>
-              <Field label="provider_pubkey" hint="Optional for browsing; settlement needs it.">
-                <Input value={pkey} onChange={(e) => setPkey(e.target.value)} placeholder="Base58, optional" />
+              <Field
+                label="provider_pubkey"
+                hint="Optional for browsing; settlement needs it."
+                htmlFor="provider-pubkey"
+              >
+                <Input
+                  id="provider-pubkey"
+                  value={pkey}
+                  onChange={(e) => setPkey(e.target.value)}
+                  placeholder="Base58, optional"
+                />
               </Field>
               <Button
                 size="sm"
@@ -224,7 +290,7 @@ export default function RegistryPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <div>
               <CardTitle>Catalogue</CardTitle>
@@ -240,7 +306,7 @@ export default function RegistryPage() {
               >
                 <div className="min-w-0 flex-1">
                   <code className="font-mono text-xs text-[var(--color-fg)]">{e.resource}</code>
-                  <p className="truncate text-[10px] text-[var(--color-fg-dim)]">
+                  <p className="t-support truncate">
                     {e.provider_label} · {e.description || "no description"}
                   </p>
                 </div>
@@ -250,14 +316,17 @@ export default function RegistryPage() {
               </div>
             ))}
             {catalogue?.entries.length === 0 && (
-              <p className="py-8 text-center text-xs text-[var(--color-fg-dim)]">
+              <p className="py-8 text-center text-xs text-[var(--color-fg-muted)]">
                 Nothing on offer.
               </p>
             )}
+            {/* A provider that did not answer is not a provider with no prices.
+                Saying which one is down, and why, is the difference between a
+                gap the operator can fix and one they cannot see. */}
             {catalogue?.unavailable.map((u) => (
               <div
                 key={u.provider_id}
-                className="rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-2.5"
+                className="rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5"
               >
                 <p className="text-[11px] font-semibold text-[var(--color-warn)]">
                   {u.provider_id} did not answer
@@ -265,7 +334,7 @@ export default function RegistryPage() {
                 <p className="mt-0.5 break-all text-[10px] text-[var(--color-fg-muted)]">
                   {u.error}
                 </p>
-                <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
+                <p className="t-support mt-1">
                   Its resources are not purchasable while it is down — pricing one means reading its
                   catalogue.
                 </p>
@@ -275,7 +344,7 @@ export default function RegistryPage() {
         </Card>
       </div>
 
-      <Card>
+      <Card accent="agent">
         <CardHeader>
           <div>
             <CardTitle>Planner</CardTitle>
@@ -283,15 +352,15 @@ export default function RegistryPage() {
               What could this agent afford? Evaluates the envelope — authorises nothing
             </CardDescription>
           </div>
-          <Wand2 className="size-4 text-[var(--color-fg-dim)]" />
+          <Wand2 aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-2.5 sm:grid-cols-3">
-            <Field label="agent">
-              <select
+            <Field label="agent" htmlFor="plan-agent">
+              <Select
+                id="plan-agent"
                 value={planAgent}
                 onChange={(e) => setPlanAgent(e.target.value)}
-                className="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2.5 py-1.5 font-mono text-xs text-[var(--color-fg)]"
               >
                 {agents.length === 0 && <option value="">no agents</option>}
                 {agents.map((a) => (
@@ -299,38 +368,40 @@ export default function RegistryPage() {
                     {a.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </Field>
-            <Field label="resource">
+            <Field label="resource" htmlFor="plan-resource">
               <Input
+                id="plan-resource"
                 value={planResource}
                 onChange={(e) => setPlanResource(e.target.value)}
                 placeholder="/weather"
               />
             </Field>
-            <Field label="calls needed">
-              <Input value={planCalls} onChange={(e) => setPlanCalls(e.target.value)} />
+            <Field label="calls needed" htmlFor="plan-calls">
+              <Input
+                id="plan-calls"
+                value={planCalls}
+                onChange={(e) => setPlanCalls(e.target.value)}
+                inputMode="numeric"
+              />
             </Field>
           </div>
-          <Button
-            size="sm"
-            onClick={runPlan}
-            disabled={busy || !planAgent || !planResource.trim()}
-          >
+          <Button size="sm" onClick={runPlan} disabled={busy || !planAgent || !planResource.trim()}>
             {busy ? <Loader2 className="size-3 animate-spin" /> : <Wand2 className="size-3" />}
             Plan
           </Button>
 
           {plan && (
             <div className="space-y-1.5">
-              <p className="text-[10px] text-[var(--color-fg-dim)]">
+              <p className="t-support">
                 Spent {formatUsdc(plan.spent)}
                 {plan.remaining != null && ` · ${formatUsdc(plan.remaining)} of the envelope left`}
                 {" · "}asked for {plan.requested_calls} call
                 {plan.requested_calls === 1 ? "" : "s"}
               </p>
               {plan.options.length === 0 && (
-                <p className="py-6 text-center text-xs text-[var(--color-fg-dim)]">
+                <p className="py-6 text-center text-xs text-[var(--color-fg-muted)]">
                   Nobody registered sells that.
                 </p>
               )}
@@ -345,7 +416,7 @@ export default function RegistryPage() {
                         ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
                         : usable
                         ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
-                        : "border-[var(--color-warn-dim)] bg-[#f59e0b1a]"
+                        : "border-[var(--color-warn-dim)] bg-[#f59e0b0d]"
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
@@ -358,7 +429,7 @@ export default function RegistryPage() {
                         {formatUsdc(o.unit_price)} each
                       </span>
                     </div>
-                    <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
+                    <p className="t-support mt-1">
                       {o.refused_by ? (
                         <>
                           Refused by{" "}
@@ -375,7 +446,7 @@ export default function RegistryPage() {
                   </div>
                 );
               })}
-              <p className="pt-1 text-[10px] leading-relaxed text-[var(--color-fg-dim)]">
+              <p className="t-support pt-1 leading-relaxed">
                 A plan is advice. Nothing is reserved or authorised here — buying goes through{" "}
                 <code className="font-mono">/v1/buy</code>, where the signature, the price and this
                 same envelope are all checked again.
