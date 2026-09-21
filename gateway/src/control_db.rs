@@ -448,6 +448,30 @@ impl Database {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Replaces an operator's token hash.
+    ///
+    /// The old hash is overwritten, so the previous token stops authenticating
+    /// on the very next request. No grace period: two live credentials for one
+    /// identity would mean a stolen token keeps working for as long as the
+    /// window lasts, which is the opposite of what rotation is for.
+    ///
+    /// Returns false when the operator does not exist, so a caller is never
+    /// told a credential was replaced when nothing was.
+    pub async fn rotate_operator_token(
+        &self,
+        operator_id: &str,
+        new_token_hash: &str,
+    ) -> Result<bool, DbError> {
+        let done = sqlx::query(
+            "UPDATE operators SET token_hash = $2 WHERE operator_id = $1 AND enabled = true",
+        )
+        .bind(operator_id)
+        .bind(new_token_hash)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// Records that a credential was used. Best effort by design: a failure
     /// here must never refuse a legitimate request.
     pub async fn touch_operator(&self, operator_id: &str) -> Result<(), DbError> {
@@ -831,6 +855,79 @@ mod pg_tests {
         // An operator that does not exist cannot be revoked, and saying it was
         // would tell somebody they had removed access they had not.
         assert!(!db.set_operator_enabled("op_nope", false).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn rotation_replaces_the_credential_and_kills_the_old_one() {
+        let db = connect().await;
+        let id = random_id("op");
+        let old = format!("tok_{}", uuid::Uuid::new_v4().simple());
+        let new = format!("tok_{}", uuid::Uuid::new_v4().simple());
+
+        db.create_operator(&id, "Zara", &crate::auth::token_hash(&old))
+            .await
+            .unwrap();
+        assert!(db
+            .operator_by_token_hash(&crate::auth::token_hash(&old))
+            .await
+            .unwrap()
+            .is_some());
+
+        assert!(db
+            .rotate_operator_token(&id, &crate::auth::token_hash(&new))
+            .await
+            .unwrap());
+
+        // The point of rotating: the old one must stop working immediately.
+        // Any grace period would mean a stolen token keeps working for the
+        // length of the window, which is the opposite of the intent.
+        assert!(
+            db.operator_by_token_hash(&crate::auth::token_hash(&old))
+                .await
+                .unwrap()
+                .is_none(),
+            "the previous token must stop authenticating at once"
+        );
+
+        let found = db
+            .operator_by_token_hash(&crate::auth::token_hash(&new))
+            .await
+            .unwrap()
+            .expect("the new token authenticates");
+        assert_eq!(found.operator_id, id);
+        // Identity survives rotation: the trail still attributes to the same
+        // operator, which is what makes rotation safe for an audit record.
+        assert_eq!(found.label, "Zara");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn a_disabled_or_unknown_operator_cannot_be_rotated() {
+        let db = connect().await;
+
+        // Nothing there: reporting success would tell somebody their
+        // credential had been replaced when it had not.
+        assert!(!db
+            .rotate_operator_token("op_nope", &crate::auth::token_hash("x"))
+            .await
+            .unwrap());
+
+        // Revoked stays revoked. Rotating a disabled credential back into
+        // service would defeat the revocation.
+        let id = random_id("op");
+        let tok = format!("tok_{}", uuid::Uuid::new_v4().simple());
+        db.create_operator(&id, "Revoked", &crate::auth::token_hash(&tok))
+            .await
+            .unwrap();
+        db.set_operator_enabled(&id, false).await.unwrap();
+
+        assert!(
+            !db.rotate_operator_token(&id, &crate::auth::token_hash("new"))
+                .await
+                .unwrap(),
+            "a disabled operator must not be able to rotate back into service"
+        );
     }
 
     #[tokio::test]

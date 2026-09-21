@@ -447,7 +447,20 @@ TEST_DATABASE_URL=postgres://agentpay:agentpay@127.0.0.1:5434/agentpay_test \
    ```
 
    The token comes back **once** — only its hash is stored, so it cannot be
-   shown again, only replaced. Revoke one without touching anybody else:
+   shown again, only replaced. An operator replaces their own:
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8080/v1/operators/me/rotate \
+     -H "Authorization: Bearer $MY_TOKEN"
+   ```
+
+   The old token stops working on the very next request, and the operator id
+   and name survive — so the audit trail still attributes past decisions
+   correctly. **There is no path to rotate somebody else's token**: whoever
+   rotated it would receive the new one and could then act under that person's
+   name. For a lost credential, disable it and mint a new operator instead.
+
+   Revoke one without touching anybody else:
 
    ```bash
    curl -s -X POST http://127.0.0.1:8080/v1/operators/$OP_ID/status \
@@ -497,8 +510,8 @@ audit trail depend on the party it exists to check.
   leader election.
 - The gateway holds the provider's hot key in a file. No HSM, no KMS, no
   rotation.
-- **No token rotation flow.** A lost credential is replaced by minting a new
-  one and disabling the old.
+- **No notification path.** The approvals page polls; nothing pages a human
+  when a spend is waiting.
 - Anyone with the token can register a provider. No ownership, no verification
   that a base URL belongs to the party claiming it.
 - Token-2022 compiles but has never executed.

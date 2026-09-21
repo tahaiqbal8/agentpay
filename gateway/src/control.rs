@@ -849,6 +849,69 @@ pub async fn list_operators(
     }))
 }
 
+/// POST /v1/operators/me/rotate — replace your own token.
+///
+/// # Why only your own
+///
+/// An operator rotating somebody else's credential would receive the new token
+/// themselves, and every decision they then made would be recorded under the
+/// other person's name. That breaks the one thing the trail is for: that
+/// `decided_by` means *that person acted*.
+///
+/// So there is no admin path to rotate another operator. The honest recovery
+/// for a lost credential is to **disable it and mint a new operator** — a new
+/// id, so history stays truthful about who held what.
+///
+/// # No grace period
+///
+/// The old token stops working on the very next request. Two live credentials
+/// for one identity would mean a stolen token keeps working for the length of
+/// the window, which is the opposite of what rotation is for.
+pub async fn rotate_own_token(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
+) -> Result<Json<CreatedOperatorView>, Denial> {
+    let rid = request_id();
+    let db = db(&state, &rid)?;
+
+    // The shared token lives in the environment, not in `operators`. There is
+    // no row to rotate, and silently doing nothing would tell the caller their
+    // credential had been replaced when it had not.
+    if operator.operator_id == crate::auth::SHARED_TOKEN_OPERATOR {
+        warn!(
+            request_id = %rid,
+            "rotation attempted for the shared admin token"
+        );
+        return Err(Denial::new(ReasonCode::ERR_SHARED_TOKEN_NOT_ROTATABLE, &rid));
+    }
+
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let hash = crate::auth::token_hash(&token);
+
+    let rotated = db
+        .rotate_operator_token(&operator.operator_id, &hash)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+    if !rotated {
+        return Err(Denial::new(ReasonCode::ERR_OPERATOR_NOT_FOUND, &rid));
+    }
+
+    // The id is logged; neither the old token nor the new one ever is.
+    warn!(
+        request_id = %rid,
+        operator_id = %operator.operator_id,
+        "operator token rotated; the previous one no longer authenticates"
+    );
+
+    Ok(Json(CreatedOperatorView {
+        operator_id: operator.operator_id,
+        label: operator.label,
+        token,
+        note: "Store this now. The previous token stopped working immediately, \
+               and only a hash of this one is kept.",
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OperatorStatusRequest {
     pub enabled: bool,

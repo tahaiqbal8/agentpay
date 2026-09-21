@@ -75,6 +75,7 @@ pub enum ReasonCode {
     ERR_PROVIDER_NOT_FOUND,
     ERR_OPERATOR_EXISTS,
     ERR_OPERATOR_NOT_FOUND,
+    ERR_SHARED_TOKEN_NOT_ROTATABLE,
     ERR_CONTROL_PLANE_UNAVAILABLE,
 
     // --- infrastructure: always deny, never allow ---
@@ -122,6 +123,7 @@ impl ReasonCode {
             Self::ERR_PROVIDER_NOT_FOUND => "ERR_PROVIDER_NOT_FOUND",
             Self::ERR_OPERATOR_EXISTS => "ERR_OPERATOR_EXISTS",
             Self::ERR_OPERATOR_NOT_FOUND => "ERR_OPERATOR_NOT_FOUND",
+            Self::ERR_SHARED_TOKEN_NOT_ROTATABLE => "ERR_SHARED_TOKEN_NOT_ROTATABLE",
             Self::ERR_CONTROL_PLANE_UNAVAILABLE => "ERR_CONTROL_PLANE_UNAVAILABLE",
             Self::ERR_PRICE_MISMATCH => "ERR_PRICE_MISMATCH",
             Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
@@ -238,6 +240,11 @@ impl ReasonCode {
             Self::ERR_PROVIDER_NOT_FOUND => "No provider is registered under that id.",
             Self::ERR_OPERATOR_EXISTS => "An operator already exists with that id or token.",
             Self::ERR_OPERATOR_NOT_FOUND => "No operator is registered under that id.",
+            Self::ERR_SHARED_TOKEN_NOT_ROTATABLE => {
+                "The shared admin token lives in AGENTPAY_ADMIN_TOKEN, not in the \
+                 operator store. Change it there and restart. Rotation applies to \
+                 per-operator credentials."
+            }
             Self::ERR_CONTROL_PLANE_UNAVAILABLE => {
                 "Agents, policies and the registry need a database; this gateway \
                  is running without one."
@@ -286,6 +293,7 @@ impl ReasonCode {
             | Self::ERR_PROVIDER_NOT_FOUND
             | Self::ERR_OPERATOR_NOT_FOUND => StatusCode::NOT_FOUND,
             Self::ERR_AGENT_EXISTS | Self::ERR_OPERATOR_EXISTS => StatusCode::CONFLICT,
+            Self::ERR_SHARED_TOKEN_NOT_ROTATABLE => StatusCode::BAD_REQUEST,
             Self::ERR_AGENT_SUSPENDED
             | Self::ERR_AGENT_POLICY_REQUIRED
             | Self::ERR_POLICY_RESOURCE_NOT_ALLOWED

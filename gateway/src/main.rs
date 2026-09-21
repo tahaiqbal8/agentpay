@@ -86,6 +86,9 @@ fn control_plane(state: Arc<AppState>) -> Router {
             "/v1/operators/{operator_id}/status",
             post(control::set_operator_status),
         )
+        // Self-service only, deliberately: see `rotate_own_token` for why
+        // there is no path to rotate somebody else's credential.
+        .route("/v1/operators/me/rotate", post(control::rotate_own_token))
         .route("/v1/approvals", get(control::list_approvals))
         .route(
             "/v1/approvals/{approval_id}/decide",

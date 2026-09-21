@@ -1122,6 +1122,7 @@ Alongside it, `operators` holds one credential per person.
 | `POST /v1/operators` | Mints a token. **Shown once** — only its SHA-256 hash is stored |
 | `GET /v1/operators` | Lists them. Never returns a token or a hash |
 | `POST /v1/operators/{id}/status` | Revokes one credential, leaving everybody else working |
+| `POST /v1/operators/me/rotate` | Replaces **your own** token. The old one stops working on the next request |
 
 `auth::require_admin` resolves whichever token was presented to an `Operator`
 and puts it in the request extensions. `decide_approval` reads it, so every
@@ -1139,6 +1140,22 @@ Three details that are load-bearing:
   for ids, and a caller-supplied one is refused. That is what makes a plain
   SHA-256 digest correct here rather than bcrypt: there is no low entropy to
   defend, because nobody gets to choose a weak token.
+
+**Rotation is self-service only, and that is a security property rather than a
+missing feature.** An operator rotating somebody else's credential would
+receive the new token themselves, and every decision they then made would be
+recorded under the other person's name — breaking the one thing the trail is
+for. The honest recovery for a lost credential is to **disable it and mint a
+new operator**: a new id, so history stays truthful about who held what.
+
+There is no grace period. Two live credentials for one identity would mean a
+stolen token keeps working for the length of the window, which is the opposite
+of what rotation is for. A revoked operator cannot rotate back into service
+either.
+
+The shared token cannot be rotated through the API — it lives in
+`AGENTPAY_ADMIN_TOKEN`, not in `operators`, and the attempt is refused
+`ERR_SHARED_TOKEN_NOT_ROTATABLE` rather than silently doing nothing.
 
 A decision made with the shared token is recorded as `op_shared_token`, which
 is truthful — "whoever held the shared token" — and makes deployments that have
@@ -1301,9 +1318,8 @@ is hackathon-grade, not production-grade.**
   tested, and nothing prevents a second instance from being started.
 - **The gateway holds the provider's hot key** in a file. No HSM, no KMS, no
   rotation.
-- **No password reset or token rotation flow.** A lost operator credential is
-  replaced by minting a new one and disabling the old; there is no self-service
-  path.
+- **No notification path.** The approvals page polls; nothing pages a human
+  when a spend is waiting.
 - **Append-only by convention.** See the data model caveat.
 
 ### Untested paths
