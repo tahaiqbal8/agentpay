@@ -207,11 +207,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
           >
             <Menu className="size-5 text-[var(--color-fg-muted)]" />
           </button>
+          {/* Deliberately not an `h1`. Every page carries its own heading, and
+              a second one here would make each document claim two top-level
+              titles — a screen reader would announce the chrome as the page.
+              This is a location label, so it is styled like one. */}
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">
+            <p className="truncate text-sm font-semibold">
               {NAV.find((n) => n.href === pathname)?.label ??
                 (pathname?.startsWith("/session/") ? "Session" : "AgentPay")}
-            </h1>
+            </p>
           </div>
           <div className="ml-auto flex items-center gap-3">
             {health && (
@@ -227,7 +231,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </header>
 
         {live === false && (
-          <div className="border-b border-[#7f1d1d] bg-[#ef44441a] px-4 py-2 text-xs text-[var(--color-danger)]">
+          <div className="border-b border-[var(--color-danger-dim)] bg-[#ef44441a] px-4 py-2 text-xs text-[var(--color-danger)]">
             <strong className="font-semibold">Gateway unreachable.</strong> Everything below is
             seeded placeholder data, not on-chain state. Start the gateway on
             <code className="mx-1 font-mono">:8080</code> to see live sessions.

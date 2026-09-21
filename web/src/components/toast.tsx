@@ -28,7 +28,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             className={cn(
               "animate-in-row pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-[var(--color-surface)] p-3 shadow-xl",
               t.kind === "success" && "border-[var(--color-accent-dim)]",
-              t.kind === "error" && "border-[#7f1d1d]",
+              t.kind === "error" && "border-[var(--color-danger-dim)]",
               t.kind === "info" && "border-[var(--color-border-bright)]"
             )}
           >
