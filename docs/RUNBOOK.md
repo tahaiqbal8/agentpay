@@ -1,0 +1,492 @@
+# AgentPay Runbook
+
+Zero to a working system, then the whole flow demonstrated end to end.
+
+Follow this top to bottom and you will have AgentPay running, an agent
+authorized and spending, a refusal recorded, and a settlement anchored on
+Solana that a stranger can verify without trusting you.
+
+**This is the operational guide.** For *why* anything is built the way it is,
+read [HANDOVER.md](HANDOVER.md); for the decisions and their rejected
+alternatives, [decisions.md](decisions.md).
+
+Every command below is copy-pasteable. Expected output is shown so you can tell
+success from failure without guessing.
+
+---
+
+## Part 0 — What you are about to run
+
+Four processes, and one sentence each:
+
+| Component | Does |
+| --- | --- |
+| **Anchor program** (Solana devnet) | Holds the escrow. The only thing with custody. |
+| **Gateway** (Rust, :8080) | Verifies every claim, enforces policy, settles on chain. |
+| **Console** (Next.js, :3100) | The operator UI. |
+| **Demo provider** (Node, :4021) | Sells data. Contains no payment code at all. |
+
+Postgres sits behind the gateway on :5434.
+
+The idea in one line: **an agent escrows once, buys many times off-chain, and
+one transaction settles everything — while every decision, including every
+refusal, is committed to the chain as a Merkle root.**
+
+---
+
+## Part 1 — Prerequisites
+
+To **run** it: Docker and Docker Compose. That is all.
+
+To **build the program** or run the devnet scripts, additionally:
+
+```bash
+rustc --version    # 1.98.1
+solana --version   # 4.1.2
+anchor --version   # 1.2.0
+node --version     # 25.x
+```
+
+You also need a devnet wallet with SOL, and a provider keypair:
+
+```bash
+solana-keygen new --no-bip39-passphrase -o ~/.config/solana/id.json
+solana-keygen new --no-bip39-passphrase -o ~/.config/solana/agentpay-provider.json
+solana airdrop 2 -u devnet
+solana balance -u devnet
+```
+
+> If the airdrop is rate-limited, use <https://faucet.solana.com>. You need
+> roughly 0.5 SOL; each devnet script spends a few thousandths.
+
+---
+
+## Part 2 — Start the system
+
+```bash
+git clone https://github.com/tahaiqbal8/agentpay
+cd agentpay
+cp .env.example .env
+```
+
+### Set the admin token — do this before starting
+
+The control plane (agents, policies, providers, approvals) is guarded by a
+shared token. **Without it, anyone who can reach the port can approve their own
+spends and suspend other people's agents.**
+
+```bash
+echo "AGENTPAY_ADMIN_TOKEN=$(openssl rand -hex 32)" >> .env
+```
+
+The gateway will refuse to start if it is bound anywhere other than loopback
+without one. That refusal is deliberate — see Part 7.
+
+### Optional: enable settlement
+
+Without a provider key the gateway verifies claims but cannot settle.
+
+```bash
+mkdir -p secrets
+cp ~/.config/solana/agentpay-provider.json secrets/provider.json
+chmod 600 secrets/provider.json
+echo "AGENTPAY_PROVIDER_KEYPAIR=/secrets/provider.json" >> .env
+```
+
+`secrets/` is gitignored.
+
+### Bring it up
+
+```bash
+docker compose up -d --build
+```
+
+Four services start in health order. Check:
+
+```bash
+curl -s http://127.0.0.1:8080/health
+```
+
+```json
+{"status":"ok","program_id":"3aKGM6Cb…","ephemeral_state":false,"state_backend":"POSTGRES"}
+```
+
+```bash
+docker logs agentpay-gateway-1 2>&1 | grep -E "settlement|admin token|reconciliation"
+```
+
+You want to see:
+
+```
+settlement enabled provider=BjA8GXW7…
+control plane requires an admin token
+on-chain session reconciliation enabled
+```
+
+If any line is missing, stop and fix it now — each one is a capability you will
+need later.
+
+> **Footgun.** Containers keep their creation-time environment. After editing
+> `.env`, `docker compose up -d` alone will **not** update a running container.
+> Use `docker compose up -d --force-recreate gateway`.
+
+Open <http://localhost:3100>. Six pages: Monitor, Verifier, Settlement, Agents,
+Registry, Approvals.
+
+---
+
+## Part 3 — The whole flow, in one command
+
+```bash
+npm install
+npm run sdk-demo
+```
+
+This opens a real devnet escrow, authorizes an agent, buys, gets refused, and
+settles. Expected:
+
+```
+escrow 2.000000 USDC · envelope 0.005000 · allowlist /weather,/quote
+
+  200 Lahore    paid 0.001000  24°C Haze · via demo-provider
+  200 Karachi   paid 0.001000  31°C Clear · via demo-provider
+  404 Multan    paid 0.001000  charged, but the provider did not serve
+  403 analyse   ERR_POLICY_RESOURCE_NOT_ALLOWED  retrying will not help
+
+  buyMany: 1 of 20 succeeded, spent 0.001000  stopped by ERR_UPSTREAM_UNAVAILABLE
+
+  settled 0.004000 USDC in one transaction
+  sig   3aooufGe…
+  root  ce4b1397…  (4 decisions, refusals included)
+
+PASS  4 decisions, 0.004000 USDC committed,
+      and exactly TWO chain transactions: one to open, one to settle.
+```
+
+Four lines worth reading twice:
+
+- **`404 Multan … charged`** — a charge is per *call*, not per *success*. The
+  claim is admitted before the request is forwarded, which is what stops a
+  refused claim from reaching the provider; the price of that ordering is that
+  a provider error still costs. The SDK reports it rather than hiding it.
+- **`403 analyse`** — the human's envelope refused it, naming the rule.
+- **`stopped by ERR_UPSTREAM_UNAVAILABLE`** — `buyMany` stops on a provider
+  failure instead of spending the whole budget on errors.
+- **TWO chain transactions** for the entire session.
+
+Verify the settlement yourself, against the chain rather than the script:
+
+```bash
+solana confirm -v <the sig from above> -u devnet
+```
+
+---
+
+## Part 4 — The flow, stage by stage, by hand
+
+This is the part to walk somebody through. Set the token once:
+
+```bash
+export TOKEN=$(grep '^AGENTPAY_ADMIN_TOKEN=' .env | cut -d= -f2)
+```
+
+### 4.1 Create an agent, and bind its wallet
+
+```bash
+# Write the key to a file — the agent has to SIGN with it later. Generating it
+# with --no-outfile prints a pubkey and throws the private key away, which
+# produces an agent record bound to a key nobody holds.
+solana-keygen new --no-bip39-passphrase -o ~/.config/solana/demo-agent.json
+AGENT_KEY=$(solana-keygen pubkey ~/.config/solana/demo-agent.json)
+
+AGENT_ID=$(curl -s -X POST http://127.0.0.1:8080/v1/agents \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d "{\"label\":\"Research bot\",\"agent_pubkey\":\"$AGENT_KEY\",\"mode\":\"autonomous\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["agent_id"])')
+
+echo "$AGENT_ID"
+```
+
+You get back an `agent_id` and `"policy": null` — an agent starts with **no**
+envelope. A second agent on the same wallet is refused with `409
+ERR_AGENT_EXISTS`, because two records for one key would make the policy
+applied to a claim ambiguous.
+
+### 4.2 Fund it — this is the only step with custody
+
+The escrow is opened **on chain**, by the agent's key. Nothing in the gateway
+can create or increase it. Use `npm run stage-settleable` to do this for a test
+agent, or `open_session` directly.
+
+**This deposit is the agent's absolute ceiling.** No policy, no bug and no
+compromised gateway can exceed it.
+
+### 4.3 Authorize — the narrower, off-chain bound
+
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/agents/$AGENT_ID/authorize" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"max_total":"5000","max_per_call":"1000",
+       "allowed_resources":["/weather","/quote"],
+       "max_calls":5,"mode":"autonomous"}'
+```
+
+Amounts are micro-USDC **decimal strings**, never numbers — above 2^53 a JSON
+number rounds, and these are budgets.
+
+This can only **narrow** the escrow, never widen it. Set `mode` to `"human"` and
+every spend waits for a person; leave it `"autonomous"` and only spends at or
+above `approval_threshold` do.
+
+### 4.4 Find an API
+
+```bash
+curl -s http://127.0.0.1:8080/v1/catalogue
+```
+
+Prices come from each provider's own `/_catalogue`, read live. The gateway never
+invents a price — registering a provider records *where to ask*, not *what to
+charge*. A provider that is down appears under `unavailable` rather than
+vanishing, so "down" is not read as "does not exist".
+
+Add another provider:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/providers \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"provider_id":"weather-eu","label":"Weather EU","base_url":"http://provider:4021"}'
+```
+
+### 4.5 Decide how many calls
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/agent/plan \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d "{\"agent_id\":\"$AGENT_ID\",\"resource\":\"/weather\",\"calls\":50}"
+```
+
+The plan is **bounded by the envelope, not by the request**: ask for 50 and you
+are told how many are actually affordable, and which provider is cheapest. A
+forbidden resource is listed with `refused_by` rather than hidden.
+
+A plan **authorises nothing**. Buying goes through `/v1/buy`, where the
+signature, the price and the same envelope are all checked again.
+
+### 4.6 Buy
+
+In code, three lines:
+
+```ts
+const pay = new AgentPayClient({ gateway, session, expiresAt, signer });
+const weather = await pay.buy("/weather?city=Lahore");
+```
+
+By hand, the 402 handshake:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/buy/weather
+```
+
+The 402 body tells you the price, the next cumulative total, the next nonce,
+**and the exact 73 bytes to sign**. That last part is in the response on purpose
+— it is what integrations get wrong, and getting it wrong fails silently at
+settlement rather than here.
+
+### 4.7 Human approval
+
+With `mode: "human"`, a purchase returns `403 ERR_APPROVAL_REQUIRED` and a
+proposal appears at <http://localhost:3100/approvals>.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/approvals
+curl -s -X POST "http://127.0.0.1:8080/v1/approvals/$APPROVAL_ID/decide" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"approved":true}'
+```
+
+The agent is **refused, not held** — it retries once you decide. A queued HTTP
+request would occupy a connection until someone happened to look.
+
+One approval authorises **one** purchase and is bound to that resource at that
+price. A standing permission would turn a moment's inattention into an unbounded
+budget.
+
+### 4.8 Revoke
+
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/agents/$AGENT_ID/status" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"status":"suspended"}'
+```
+
+Immediate, and it does not need the session to expire. Two limits: it binds only
+what passes through **this** gateway, and it does **not** claw back the escrow or
+recall a settlement in flight.
+
+### 4.9 Settle
+
+One transaction for the whole session, committing the Merkle root of every
+decision — refusals included.
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/session/settle \
+  -H 'content-type: application/json' -d "{\"session\":\"$SESSION\"}"
+```
+
+Or press **Settle on-chain** on <http://localhost:3100/settle>.
+
+---
+
+## Part 5 — Prove a refusal, in a browser
+
+This is the demo that lands. Everything above shows an agent paying; anyone can
+show that.
+
+1. Open <http://localhost:3100/verifier>
+2. Paste a settled session address
+3. Pick an entry whose decision is a **refusal** — `CLAIM_EXCEEDS_DEPOSIT`,
+   `POLICY_BUDGET`, anything red
+4. Watch the Merkle path recompute hop by hop **in your browser**, with
+   WebCrypto
+
+You end at three roots:
+
+| Value | Who controls it |
+| --- | --- |
+| recomputed in browser | the reader |
+| root reported by gateway | the gateway |
+| **root committed on chain** | **nobody — it is a public fact** |
+
+Only the third decides the audit. Before it existed the page compared two
+numbers that both came from the gateway, and a gateway that committed a
+different root than its log produces would have passed unnoticed.
+
+Check it yourself:
+
+```bash
+solana account <settlement_record from the page> -u devnet
+```
+
+The claim: **the agent asked for 50 USDC, was stopped, and that refusal is
+provable against a root committed on Solana — without trusting the operator.**
+
+---
+
+## Part 6 — Testing
+
+| Command | Covers | Needs |
+| --- | --- | --- |
+| `cargo test --manifest-path gateway/Cargo.toml` | 129 hermetic | nothing |
+| `npm run sdk-test` | 27 SDK checks incl. claim parity | nothing |
+| `npm test` | 24 attacks against the program | devnet |
+| `npm run policy-devnet` | 30 control-plane checks | devnet |
+| `npm run evidence-devnet` | evidence + Merkle proof | devnet |
+| `npm run sdk-demo` | the SDK end to end | devnet |
+| `npm run stage-settleable` | leaves a settleable session for the UI | devnet |
+
+Database-backed tests need a **separate, disposable** database:
+
+```bash
+docker exec agentpay-postgres-1 createdb -U agentpay agentpay_test
+TEST_DATABASE_URL=postgres://agentpay:agentpay@127.0.0.1:5434/agentpay_test \
+  cargo test --manifest-path gateway/Cargo.toml -- --include-ignored
+```
+
+> **Never point this at the gateway's own database.** The suite writes and does
+> not roll back. It used to be documented against `DATABASE_URL`, and 70 test
+> rows accumulated there which the console rendered as 263 USDC of escrow that
+> never existed. The suite now refuses a database whose name lacks `test` — try
+> it and see the refusal.
+
+---
+
+## Part 7 — Production
+
+### Before exposing this to a network
+
+1. **Set `AGENTPAY_ADMIN_TOKEN`.** Not optional. The gateway refuses to start
+   bound to anything but loopback without one, and refuses a token under 16
+   characters. Generate with `openssl rand -hex 32`.
+2. **Set `AGENTPAY_REQUIRE_AGENT_POLICY=1`.** Otherwise a session whose agent
+   has no record is bounded only by its escrow, and anyone can open a session
+   to bypass the policy layer.
+3. **Never set `AGENTPAY_TRUST_OPEN_REQUESTS`.** It disables on-chain
+   reconciliation, so a caller can assert a deposit that was never escrowed and
+   have claims authorised against credit that does not exist.
+4. **Put TLS in front.** The admin token crosses the wire.
+5. **Behind a reverse proxy, set the peer address at the proxy.** The rate
+   limiter keys on the TCP peer and deliberately ignores `X-Forwarded-For`,
+   which a caller can forge to get a fresh bucket per request.
+
+### Rate limits
+
+| Variable | Default | Why |
+| --- | --- | --- |
+| `AGENTPAY_OPEN_RATE_LIMIT` | 20/min/IP | `/v1/session/open` does an RPC read per request and needs no credential — the path an attacker uses to burn a metered quota. |
+| `AGENTPAY_RATE_LIMIT` | 600/min/IP | Loose. The money path is gated by signatures and a shape check before any I/O, so a tight limit breaks real agents and stops nothing. |
+
+### What is behind the token, and what is not
+
+Behind: `/v1/agents*`, `/v1/providers*`, `/v1/approvals*`, `/v1/agent/plan`,
+and the listings `/v1/sessions` and `/v1/decisions/recent`.
+
+Open, deliberately: the money path, and the public verification endpoints —
+evidence, proofs, `/v1/session/{pubkey}`, `/v1/catalogue`, `/health`.
+
+Two reasons for that split. A shared secret in front of the money path would
+break every agent and stop nothing, since an attacker without a valid signature
+is already refused. And a third party checking a decision **without the
+operator's permission** is the product — evidence behind a token would make the
+audit trail depend on the party it exists to check.
+
+### Known gaps — state these, do not discover them
+
+- No external audit.
+- Single gateway instance. The high-water mark is per-instance state with no
+  leader election.
+- The gateway holds the provider's hot key in a file. No HSM, no KMS, no
+  rotation.
+- **One shared admin token**, not per-operator credentials — so there is no
+  record of *which* human approved a spend.
+- Anyone with the token can register a provider. No ownership, no verification
+  that a base URL belongs to the party claiming it.
+- Token-2022 compiles but has never executed.
+- Append-only by convention and by the hash chain, **not** by a database grant.
+  Tamper-evident, not tamper-proof. Do not call it immutable.
+
+---
+
+## Part 8 — Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `401 ERR_UNAUTHORIZED` on a control endpoint | Token missing or wrong | `export TOKEN=$(grep '^AGENTPAY_ADMIN_TOKEN=' .env \| cut -d= -f2)` |
+| `429 ERR_RATE_LIMITED` | Hit the limit | Wait; `/v1/session/open` refills at 20/min |
+| `ERR_SETTLEMENT_UNAVAILABLE` | No provider keypair | Mount it (Part 2) and `--force-recreate gateway` |
+| Settlement page empty | Sessions have no confirmed escrow | Press **Check against the chain**, or `npm run stage-settleable` |
+| `ERR_SESSION_ACCOUNT_NOT_FOUND` at open | No escrow on chain for that address | Open one first |
+| `ERR_CLAIM_NOT_MONOTONIC` | Client restarted its counters at zero | Use `AgentPayClient.resume()` |
+| Gateway won't start, mentions the admin token | Non-loopback bind without one | Set it. This is the guard working. |
+| `UNCAUGHT` in a devnet script | Usually a devnet 429 | Re-run; set `PUBLIC_RPC_THROTTLE_MS=900` |
+| Console pages blank in an embedded browser | Next dev-mode HMR websocket blocked | `npm run build && npm start` |
+| Stale config after editing `.env` | Container keeps creation-time env | `docker compose up -d --force-recreate` |
+
+---
+
+## Part 9 — Explaining this to someone in two minutes
+
+1. **The problem.** An agent buying data makes hundreds of tiny purchases.
+   On-chain each one costs more in fees than the purchase.
+2. **The mechanism.** Escrow once. Every purchase after that is an off-chain
+   signed claim saying *"the total you owe is now X"* — cumulative, so only the
+   highest ever needs to reach the chain.
+3. **The control.** A human sets what the agent may buy, how much per call, how
+   many calls, and when a person must approve. The escrow is the hard ceiling
+   the chain enforces; the policy can only narrow it.
+4. **The part nobody else shows.** Every decision — allow *and* refuse — is
+   hash-chained, and the Merkle root goes on chain with the settlement.
+5. **The demo.** Open the Verifier, pick a **refusal**, watch the browser
+   recompute the proof and match it against the root stored by the program.
+
+> Anyone can show that an agent paid. This shows that an agent was **stopped**,
+> and proves it against a public chain.

@@ -56,6 +56,7 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 
 | Read this | For |
 |---|---|
+| **[RUNBOOK.md](docs/RUNBOOK.md)** | Zero to running, then the whole flow step by step — start here |
 | **[sdk/README.md](sdk/README.md)** | Integrating an agent — three lines, not 194 |
 | **[HANDOVER.md](docs/HANDOVER.md)** | Full engineering handover — architecture, backend, frontend, data model, security, gaps |
 | **[DOCKER.md](docs/DOCKER.md)** | Docker Compose on Windows / macOS / Linux |

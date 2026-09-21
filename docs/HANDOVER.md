@@ -435,6 +435,56 @@ This is verified by a test that counts hits on a throwaway upstream rather than
 checking a status code — a refused request that still reached the provider
 means the agent got free data, and a status code would not reveal it.
 
+### The SDK — what an integrator actually writes
+
+`sdk/`, published as `@agentpay/client`. No runtime dependencies.
+
+```ts
+const pay = new AgentPayClient({ gateway, session, expiresAt, signer });
+const weather = await pay.buy("/weather?city=Lahore");
+```
+
+The client quotes the resource, signs a cumulative claim for the new total,
+retries with it attached, and advances its counters **only on success** — the
+same discipline the gateway keeps, for the same reason: a refusal that moved
+the client's counter would put it one step ahead of the high-water mark and
+every later claim would be refused as non-monotonic.
+
+| Method | Purpose |
+| --- | --- |
+| `quote(resource)` | The 402 handshake, without paying |
+| `buy(resource)` | One purchase |
+| `buyMany(resource, n, query?)` | A run, stopping at the first refusal |
+| `buyWhenApproved(resource)` | Polls through `ERR_APPROVAL_REQUIRED` in human mode |
+| `affordableCalls(resource)` | How many the remaining escrow covers |
+| `sessionState()` | Deposit, spend, remaining, evidence count |
+| `settle()` | One transaction for the whole session |
+| `AgentPayClient.resume()` | Rebuilds counters from the gateway after a restart |
+
+**Two classes, and the split is the security boundary.** `AgentPayClient`
+carries a session and a signing key. `AgentPayControl` carries the admin token
+and can widen an envelope, suspend an agent, approve spends. An agent process
+that never constructs the second cannot do those things — the capability is
+absent, not merely unused.
+
+Errors are classified by what the caller should *do*, because a bare 403 cannot
+distinguish a budget from a waiting human: `needsApproval` (wait and retry),
+`outOfAuthority` (retrying will not help), `transient` (back off). `retry` is
+off by default and retries transient failures only — retrying a decision is a
+busy loop, and anything already charged costs again.
+
+`sdk/src/claim.ts` is pinned against the same hex vector `gateway/src/claim.rs`
+asserts, **copied rather than derived**: deriving it would only prove the SDK
+agrees with itself. That test matters more than the rest of the package
+together — every other mistake surfaces as a readable HTTP error, but a wrong
+claim encoding produces a signature that verifies nowhere and fails at
+settlement, after the agent was told its purchases succeeded.
+
+`affordableCalls()` reports the **escrow** ceiling, not permission. The policy
+envelope may be narrower and the agent is not told it: reading another party's
+spending rules is an operator's business. The definitive answer comes from
+buying, and a refusal names the exact rule.
+
 ### A charge is per call, not per success
 
 `admit_claim` runs **before** the request is forwarded — that ordering is what
@@ -1224,7 +1274,8 @@ Repository: `https://github.com/tahaiqbal8/agentpay`
 
 ### A reading order that works
 
-1. `docs/decisions.md` — **start here.** 20 numbered decisions, each stating
+0. `docs/RUNBOOK.md` — if you want it **running** before you read about it.
+1. `docs/decisions.md` — **start here** for the reasoning. 20 numbered decisions, each stating
    what was chosen and what it closes. It is the design rationale, including
    the mistakes.
 2. `programs/agentpay/src/lib.rs` — 617 lines, readable in one sitting.
@@ -1263,7 +1314,8 @@ docs/                            decisions, deploy, docker, server setup, pitch
 
 | File | Contents |
 | --- | --- |
-| `docs/decisions.md` | D1–D20, the design rationale |
+| `docs/RUNBOOK.md` | Zero to running, then the flow step by step — the operational half of this document |
+| `docs/decisions.md` | D1–D25, the design rationale |
 | `docs/DEPLOY.md` | Deploying the program and gateway |
 | `docs/DOCKER.md` | Compose on Windows, macOS, Linux |
 | `docs/SERVER_SETUP.md` | Bare-metal server setup |
