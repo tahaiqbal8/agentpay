@@ -73,6 +73,8 @@ pub enum ReasonCode {
     ERR_POLICY_CALL_LIMIT,
     ERR_APPROVAL_REQUIRED,
     ERR_PROVIDER_NOT_FOUND,
+    ERR_OPERATOR_EXISTS,
+    ERR_OPERATOR_NOT_FOUND,
     ERR_CONTROL_PLANE_UNAVAILABLE,
 
     // --- infrastructure: always deny, never allow ---
@@ -118,6 +120,8 @@ impl ReasonCode {
             Self::ERR_POLICY_CALL_LIMIT => "ERR_POLICY_CALL_LIMIT",
             Self::ERR_APPROVAL_REQUIRED => "ERR_APPROVAL_REQUIRED",
             Self::ERR_PROVIDER_NOT_FOUND => "ERR_PROVIDER_NOT_FOUND",
+            Self::ERR_OPERATOR_EXISTS => "ERR_OPERATOR_EXISTS",
+            Self::ERR_OPERATOR_NOT_FOUND => "ERR_OPERATOR_NOT_FOUND",
             Self::ERR_CONTROL_PLANE_UNAVAILABLE => "ERR_CONTROL_PLANE_UNAVAILABLE",
             Self::ERR_PRICE_MISMATCH => "ERR_PRICE_MISMATCH",
             Self::ERR_EVIDENCE_UNAVAILABLE => "ERR_EVIDENCE_UNAVAILABLE",
@@ -232,6 +236,8 @@ impl ReasonCode {
                 "This spend needs a human decision before it can proceed."
             }
             Self::ERR_PROVIDER_NOT_FOUND => "No provider is registered under that id.",
+            Self::ERR_OPERATOR_EXISTS => "An operator already exists with that id or token.",
+            Self::ERR_OPERATOR_NOT_FOUND => "No operator is registered under that id.",
             Self::ERR_CONTROL_PLANE_UNAVAILABLE => {
                 "Agents, policies and the registry need a database; this gateway \
                  is running without one."
@@ -276,8 +282,10 @@ impl ReasonCode {
             Self::ERR_RATE_LIMITED => StatusCode::TOO_MANY_REQUESTS,
             // A client error: the caller signed the wrong thing and can fix it.
             Self::ERR_PLAN_CLAIM_MISMATCH => StatusCode::BAD_REQUEST,
-            Self::ERR_AGENT_NOT_FOUND | Self::ERR_PROVIDER_NOT_FOUND => StatusCode::NOT_FOUND,
-            Self::ERR_AGENT_EXISTS => StatusCode::CONFLICT,
+            Self::ERR_AGENT_NOT_FOUND
+            | Self::ERR_PROVIDER_NOT_FOUND
+            | Self::ERR_OPERATOR_NOT_FOUND => StatusCode::NOT_FOUND,
+            Self::ERR_AGENT_EXISTS | Self::ERR_OPERATOR_EXISTS => StatusCode::CONFLICT,
             Self::ERR_AGENT_SUSPENDED
             | Self::ERR_AGENT_POLICY_REQUIRED
             | Self::ERR_POLICY_RESOURCE_NOT_ALLOWED

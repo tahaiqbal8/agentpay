@@ -418,7 +418,62 @@ function fail(msg: string): never {
   ).length;
   check("a retry does not duplicate the proposal", pendingCount === 1, `${pendingCount} pending`);
 
-  await api("POST", `/v1/approvals/${pending.approval_id}/decide`, { approved: true });
+  // Decide as a NAMED operator rather than with the shared token, so the
+  // trail can say who. This is the whole point of per-operator credentials:
+  // an approval queue that cannot name the approver is a workflow, not an
+  // audit trail.
+  const madeOperator = await api("POST", "/v1/operators", { label: "Reviewer Zara" });
+  check(
+    "an operator credential can be minted",
+    madeOperator.status === 200 && typeof madeOperator.body?.token === "string",
+    madeOperator.body?.operator_id ?? String(madeOperator.status)
+  );
+  const opToken: string = madeOperator.body.token;
+  const opId: string = madeOperator.body.operator_id;
+
+  const decidedByOperator = await fetch(
+    `${BASE}/v1/approvals/${pending.approval_id}/decide`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${opToken}`,
+      },
+      body: JSON.stringify({ approved: true, reason: "reviewed" }),
+    }
+  );
+  const decidedBody = (await decidedByOperator.json().catch(() => null)) as any;
+  check(
+    "the operator's own token authenticates the decision",
+    decidedByOperator.status === 200,
+    `HTTP ${decidedByOperator.status}`
+  );
+
+  const trail = decidedBody?.approvals?.find(
+    (a: any) => a.approval_id === pending.approval_id
+  );
+  check(
+    "the approval records WHO decided it",
+    trail?.decided_by === opId && trail?.decided_by_label === "Reviewer Zara",
+    `${trail?.decided_by_label ?? "none"} (${trail?.decided_by ?? "-"})`
+  );
+
+  // Revoking one credential must not affect anybody else's.
+  await api("POST", `/v1/operators/${opId}/status`, { enabled: false });
+  const afterRevoke = await fetch(`${BASE}/v1/approvals`, {
+    headers: { authorization: `Bearer ${opToken}` },
+  });
+  check(
+    "a revoked credential stops working",
+    afterRevoke.status === 401,
+    `HTTP ${afterRevoke.status}`
+  );
+  check(
+    "and everybody else keeps working",
+    (await api("GET", "/v1/approvals")).status === 200,
+    "the shared token is unaffected"
+  );
+
   const afterApproval = await buy("weather?city=Quetta", 1000n);
   check(
     "the approved purchase goes through",

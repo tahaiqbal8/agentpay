@@ -122,6 +122,9 @@ pub struct ApprovalView {
     pub reason: Option<String>,
     pub created_at: String,
     pub decided_at: Option<String>,
+    /// Who decided, as recorded at the moment of the decision.
+    pub decided_by: Option<String>,
+    pub decided_by_label: Option<String>,
 }
 
 impl From<&ApprovalRecord> for ApprovalView {
@@ -137,6 +140,8 @@ impl From<&ApprovalRecord> for ApprovalView {
             reason: a.reason.clone(),
             created_at: a.created_at.to_rfc3339(),
             decided_at: a.decided_at.map(|d| d.to_rfc3339()),
+            decided_by: a.decided_by.clone(),
+            decided_by_label: a.decided_by_label.clone(),
         }
     }
 }
@@ -738,6 +743,148 @@ pub async fn plan(
 }
 
 // ---------------------------------------------------------------------------
+// Operators — who holds a control-plane credential
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct OperatorView {
+    pub operator_id: String,
+    pub label: String,
+    pub role: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOperatorRequest {
+    pub label: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreatedOperatorView {
+    pub operator_id: String,
+    pub label: String,
+    /// **Shown once.** Only its SHA-256 hash is stored, so this cannot be
+    /// recovered later — a lost token is replaced, never retrieved.
+    pub token: String,
+    pub note: &'static str,
+}
+
+/// POST /v1/operators — mint a credential for one person.
+///
+/// The token is generated HERE, from 32 bytes of randomness, and a
+/// caller-supplied one is not accepted. That is what lets the store hold a
+/// plain SHA-256 digest rather than a slow password hash: there is no low
+/// entropy to defend, because nobody gets to choose a weak token.
+pub async fn create_operator(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateOperatorRequest>,
+) -> Result<Json<CreatedOperatorView>, Denial> {
+    let rid = request_id();
+    let db = db(&state, &rid)?;
+
+    if req.label.trim().is_empty() {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    }
+
+    // Two UUIDs of entropy, hex-encoded: 256 bits from the same CSPRNG the
+    // rest of the codebase uses for ids.
+    let token = format!(
+        "{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    let operator_id = format!("op_{}", Uuid::new_v4().simple());
+    let hash = crate::auth::token_hash(&token);
+
+    let created = db
+        .create_operator(&operator_id, req.label.trim(), &hash)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+    if !created {
+        return Err(Denial::new(ReasonCode::ERR_OPERATOR_EXISTS, &rid));
+    }
+
+    // The id is logged; the token never is.
+    info!(request_id = %rid, operator_id = %operator_id, "operator created");
+
+    Ok(Json(CreatedOperatorView {
+        operator_id,
+        label: req.label.trim().to_string(),
+        token,
+        note: "Store this now. Only its hash is kept, so it cannot be shown again.",
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct OperatorsResponse {
+    pub operators: Vec<OperatorView>,
+}
+
+/// GET /v1/operators — never returns a token or a hash.
+pub async fn list_operators(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<OperatorsResponse>, Denial> {
+    let rid = request_id();
+    let db = db(&state, &rid)?;
+
+    let rows = db
+        .list_operators()
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+
+    Ok(Json(OperatorsResponse {
+        operators: rows
+            .into_iter()
+            .map(|o| OperatorView {
+                operator_id: o.operator_id,
+                label: o.label,
+                role: o.role,
+                enabled: o.enabled,
+                created_at: o.created_at.to_rfc3339(),
+                last_used_at: o.last_used_at.map(|t| t.to_rfc3339()),
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OperatorStatusRequest {
+    pub enabled: bool,
+}
+
+/// POST /v1/operators/{id}/status — revoke one credential.
+///
+/// The thing a shared secret cannot do: remove one person's access without
+/// changing it for everybody, which is why in practice nobody ever did.
+pub async fn set_operator_status(
+    State(state): State<Arc<AppState>>,
+    Path(operator_id): Path<String>,
+    Json(req): Json<OperatorStatusRequest>,
+) -> Result<Json<OperatorsResponse>, Denial> {
+    let rid = request_id();
+    let db = db(&state, &rid)?;
+
+    let done = db
+        .set_operator_enabled(&operator_id, req.enabled)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+    if !done {
+        return Err(Denial::new(ReasonCode::ERR_OPERATOR_NOT_FOUND, &rid));
+    }
+
+    warn!(
+        request_id = %rid,
+        operator_id = %operator_id,
+        enabled = req.enabled,
+        "operator credential status changed"
+    );
+
+    list_operators(State(state)).await
+}
+
+// ---------------------------------------------------------------------------
 // Session-scoped planning — the agent's own front door
 // ---------------------------------------------------------------------------
 
@@ -961,13 +1108,23 @@ pub struct DecideRequest {
 pub async fn decide_approval(
     State(state): State<Arc<AppState>>,
     Path(approval_id): Path<String>,
+    // Inserted by `auth::require_admin`, which resolved the token to whoever
+    // presented it. A decision that cannot name its decider is a workflow, not
+    // an audit trail.
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Json(req): Json<DecideRequest>,
 ) -> Result<Json<ApprovalsResponse>, Denial> {
     let rid = request_id();
     let db = db(&state, &rid)?;
 
     let decided = db
-        .decide_approval(&approval_id, req.approved, req.reason.as_deref())
+        .decide_approval(
+            &approval_id,
+            req.approved,
+            req.reason.as_deref(),
+            &operator.operator_id,
+            &operator.label,
+        )
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
 
@@ -981,6 +1138,7 @@ pub async fn decide_approval(
         request_id = %rid,
         approval_id = %approval_id,
         approved = req.approved,
+        operator_id = %operator.operator_id,
         "approval decided"
     );
 

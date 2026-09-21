@@ -411,7 +411,7 @@ provable against a root committed on Solana — without trusting the operator.**
 | `cargo test --manifest-path gateway/Cargo.toml` | 129 hermetic | nothing |
 | `npm run sdk-test` | 27 SDK checks incl. claim parity | nothing |
 | `npm test` | 24 attacks against the program | devnet |
-| `npm run policy-devnet` | 40 control-plane and session-planner checks | devnet |
+| `npm run policy-devnet` | 45 control-plane, planner and operator checks | devnet |
 | `npm run evidence-devnet` | evidence + Merkle proof | devnet |
 | `npm run sdk-demo` | the SDK end to end | devnet |
 | `npm run stage-settleable` | leaves a settleable session for the UI | devnet |
@@ -435,6 +435,25 @@ TEST_DATABASE_URL=postgres://agentpay:agentpay@127.0.0.1:5434/agentpay_test \
 ## Part 7 — Production
 
 ### Before exposing this to a network
+
+0. **Mint per-operator credentials.** The shared token is the bootstrap path,
+   not the end state: a decision made with it records only `op_shared_token`,
+   never a person.
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8080/v1/operators \
+     -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d '{"label":"Zara"}'
+   ```
+
+   The token comes back **once** — only its hash is stored, so it cannot be
+   shown again, only replaced. Revoke one without touching anybody else:
+
+   ```bash
+   curl -s -X POST http://127.0.0.1:8080/v1/operators/$OP_ID/status \
+     -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d '{"enabled":false}'
+   ```
 
 1. **Set `AGENTPAY_ADMIN_TOKEN`.** Not optional. The gateway refuses to start
    bound to anything but loopback without one, and refuses a token under 16
@@ -478,8 +497,8 @@ audit trail depend on the party it exists to check.
   leader election.
 - The gateway holds the provider's hot key in a file. No HSM, no KMS, no
   rotation.
-- **One shared admin token**, not per-operator credentials — so there is no
-  record of *which* human approved a spend.
+- **No token rotation flow.** A lost credential is replaced by minting a new
+  one and disabling the old.
 - Anyone with the token can register a provider. No ownership, no verification
   that a base URL belongs to the party claiming it.
 - Token-2022 compiles but has never executed.

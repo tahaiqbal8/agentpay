@@ -76,44 +76,128 @@ fn bearer(raw: &str) -> Option<&str> {
     }
 }
 
-/// Guards the control-plane routes.
+/// SHA-256 hex of a token, as stored in `operators.token_hash`.
+pub fn token_hash(token: &str) -> String {
+    Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Who is making a control-plane request.
 ///
-/// Fails closed in every direction: no token configured and a non-loopback
-/// bind is refused at boot, so by the time a request arrives the only two
-/// states are "no token required, loopback only" and "token required".
+/// Flows into handlers through request extensions so an approval can record
+/// its approver. Carries no secret.
+#[derive(Debug, Clone)]
+pub struct Operator {
+    pub operator_id: String,
+    pub label: String,
+}
+
+/// The id used when the shared `AGENTPAY_ADMIN_TOKEN` authenticated a request.
+///
+/// A real id rather than `None`, because the trail should say *something*
+/// truthful: "whoever held the shared token". Recording that is more useful
+/// than a blank, and it makes deployments that have not yet moved to
+/// per-operator credentials visible in the audit rather than silent.
+pub const SHARED_TOKEN_OPERATOR: &str = "op_shared_token";
+
+/// Guards the control-plane routes and resolves the caller to an `Operator`.
+///
+/// Two credentials are accepted, in this order:
+///
+/// 1. `AGENTPAY_ADMIN_TOKEN`, the shared secret. Kept working so no existing
+///    deployment breaks, and so there is a way to bootstrap the first
+///    per-operator credential. Resolves to `SHARED_TOKEN_OPERATOR`.
+/// 2. A per-operator token, looked up by SHA-256 hash in `operators`.
+///
+/// The shared token is checked FIRST and needs no database. That ordering
+/// matters during an incident: if Postgres is unreachable, an operator holding
+/// the shared token can still act, while an unknown token is refused rather
+/// than admitted. Fails closed in every direction.
 pub async fn require_admin(
     State(state): State<Arc<AppState>>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, Denial> {
-    let Some(expected) = state.admin_token.as_deref() else {
-        // Reachable only on a loopback bind; `Config` refuses to start
-        // otherwise. The warning was already emitted once at boot rather than
-        // per request, which would drown the log.
-        return Ok(next.run(req).await);
-    };
-
     let headers = req.headers();
     let presented = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(bearer)
-        .or_else(|| headers.get(ADMIN_HEADER).and_then(|v| v.to_str().ok()));
+        .or_else(|| headers.get(ADMIN_HEADER).and_then(|v| v.to_str().ok()))
+        .map(str::to_string);
 
-    match presented {
-        Some(token) if secret_eq(token, expected) => Ok(next.run(req).await),
-        _ => {
-            let rid = request_id();
-            // The path is logged, the token never is — not even a prefix.
-            // A rejected guess in a log file is still a guess someone can read.
-            tracing::warn!(
-                request_id = %rid,
-                path = %req.uri().path(),
-                "control-plane request rejected: missing or invalid admin token"
-            );
-            Err(Denial::new(ReasonCode::ERR_UNAUTHORIZED, &rid))
+    // No token configured at all: reachable only on a loopback bind, because
+    // `Config` refuses to start otherwise. The warning was emitted once at
+    // boot rather than per request, which would drown the log.
+    if state.admin_token.is_none() {
+        req.extensions_mut().insert(Operator {
+            operator_id: SHARED_TOKEN_OPERATOR.to_string(),
+            label: "Unauthenticated (loopback)".to_string(),
+        });
+        return Ok(next.run(req).await);
+    }
+
+    let rid = request_id();
+    let Some(token) = presented else {
+        return Err(reject(&rid, req.uri().path(), "no token presented"));
+    };
+
+    // 1. The shared token. No database needed, so it keeps working when
+    //    Postgres does not.
+    if let Some(expected) = state.admin_token.as_deref() {
+        if secret_eq(&token, expected) {
+            req.extensions_mut().insert(Operator {
+                operator_id: SHARED_TOKEN_OPERATOR.to_string(),
+                label: "Shared admin token".to_string(),
+            });
+            return Ok(next.run(req).await);
         }
     }
+
+    // 2. A per-operator token. An unreadable database refuses rather than
+    //    guessing — the same rule the money path applies.
+    let Some(db) = state.db.as_ref() else {
+        return Err(reject(&rid, req.uri().path(), "no per-operator store"));
+    };
+
+    match db.operator_by_token_hash(&token_hash(&token)).await {
+        Ok(Some(op)) => {
+            // Best effort: a failed timestamp update must not refuse a
+            // legitimate request. It is informational, not a control.
+            let _ = db.touch_operator(&op.operator_id).await;
+            tracing::info!(
+                request_id = %rid,
+                operator_id = %op.operator_id,
+                path = %req.uri().path(),
+                "control-plane request authenticated"
+            );
+            req.extensions_mut().insert(Operator {
+                operator_id: op.operator_id,
+                label: op.label,
+            });
+            Ok(next.run(req).await)
+        }
+        Ok(None) => Err(reject(&rid, req.uri().path(), "unknown or disabled token")),
+        Err(e) => {
+            tracing::warn!(request_id = %rid, error = %e, "operator lookup failed");
+            Err(reject(&rid, req.uri().path(), "operator lookup failed"))
+        }
+    }
+}
+
+/// One rejection path, so every refusal logs the same way and none of them
+/// ever logs the token — not even a prefix. A rejected guess in a log file is
+/// still a guess somebody can read.
+fn reject(rid: &str, path: &str, why: &str) -> Denial {
+    tracing::warn!(
+        request_id = %rid,
+        %path,
+        reason = %why,
+        "control-plane request rejected"
+    );
+    Denial::new(ReasonCode::ERR_UNAUTHORIZED, rid)
 }
 
 #[cfg(test)]

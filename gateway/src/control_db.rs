@@ -45,6 +45,20 @@ pub struct ApprovalRecord {
     pub reason: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who decided, and what they were called at that moment.
+    pub decided_by: Option<String>,
+    pub decided_by_label: Option<String>,
+}
+
+/// An operator credential, minus the credential.
+#[derive(Debug, Clone)]
+pub struct OperatorRecord {
+    pub operator_id: String,
+    pub label: String,
+    pub role: String,
+    pub enabled: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Rejects a value that cannot be stored as a Postgres BIGINT.
@@ -349,6 +363,102 @@ impl Database {
     }
 
     // ---------------------------------------------------------------------
+    // Operators
+    // ---------------------------------------------------------------------
+
+    /// Creates an operator. The caller supplies the hash, never the token.
+    ///
+    /// Returns false when the id or the hash is already taken. A duplicate
+    /// hash means the same token was registered twice, which would make two
+    /// operators indistinguishable in the audit trail.
+    pub async fn create_operator(
+        &self,
+        operator_id: &str,
+        label: &str,
+        token_hash: &str,
+    ) -> Result<bool, DbError> {
+        let done = sqlx::query(
+            "INSERT INTO operators (operator_id, label, token_hash)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(operator_id)
+        .bind(label)
+        .bind(token_hash)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Resolves a token hash to an ENABLED operator.
+    ///
+    /// The `enabled` filter is in the query rather than applied afterwards, so
+    /// a disabled credential cannot authenticate even if a later caller
+    /// forgets to check the flag.
+    pub async fn operator_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<OperatorRecord>, DbError> {
+        let row = sqlx::query(
+            "SELECT operator_id, label, role, enabled, created_at, last_used_at
+             FROM operators WHERE token_hash = $1 AND enabled = true",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(Self::operator_from_row).transpose()
+    }
+
+    fn operator_from_row(r: &sqlx::postgres::PgRow) -> Result<OperatorRecord, DbError> {
+        Ok(OperatorRecord {
+            operator_id: r.try_get("operator_id")?,
+            label: r.try_get("label")?,
+            role: r.try_get("role")?,
+            enabled: r.try_get("enabled")?,
+            created_at: r.try_get("created_at")?,
+            last_used_at: r.try_get("last_used_at")?,
+        })
+    }
+
+    /// Never returns a token or a hash. There is nothing here worth stealing.
+    pub async fn list_operators(&self) -> Result<Vec<OperatorRecord>, DbError> {
+        let rows = sqlx::query(
+            "SELECT operator_id, label, role, enabled, created_at, last_used_at
+             FROM operators ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::operator_from_row).collect()
+    }
+
+    /// Enables or disables one operator, leaving everybody else working.
+    ///
+    /// This is the revocation a shared secret cannot express: with one token,
+    /// removing one person's access means changing it for everyone, so in
+    /// practice nobody does it.
+    pub async fn set_operator_enabled(
+        &self,
+        operator_id: &str,
+        enabled: bool,
+    ) -> Result<bool, DbError> {
+        let done = sqlx::query("UPDATE operators SET enabled = $2 WHERE operator_id = $1")
+            .bind(operator_id)
+            .bind(enabled)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Records that a credential was used. Best effort by design: a failure
+    /// here must never refuse a legitimate request.
+    pub async fn touch_operator(&self, operator_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE operators SET last_used_at = now() WHERE operator_id = $1")
+            .bind(operator_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
     // Approvals
     // ---------------------------------------------------------------------
 
@@ -392,13 +502,16 @@ impl Database {
             reason: r.try_get("reason")?,
             created_at: r.try_get("created_at")?,
             decided_at: r.try_get("decided_at")?,
+            decided_by: r.try_get("decided_by")?,
+            decided_by_label: r.try_get("decided_by_label")?,
         })
     }
 
     pub async fn list_approvals(&self, limit: i64) -> Result<Vec<ApprovalRecord>, DbError> {
         let rows = sqlx::query(
             "SELECT approval_id, agent_id, session_pubkey, resource, price, calls,
-                    state, reason, created_at, decided_at
+                    state, reason, created_at, decided_at,
+                    decided_by, decided_by_label
              FROM approvals ORDER BY created_at DESC LIMIT $1",
         )
         .bind(limit)
@@ -414,17 +527,25 @@ impl Database {
         approval_id: &str,
         approved: bool,
         reason: Option<&str>,
+        decided_by: &str,
+        decided_by_label: &str,
     ) -> Result<bool, DbError> {
         let done = sqlx::query(
             r#"
             UPDATE approvals
-            SET state = $2, reason = $3, decided_at = now()
+            SET state = $2, reason = $3, decided_at = now(),
+                decided_by = $4, decided_by_label = $5
             WHERE approval_id = $1 AND state = 'pending'
             "#,
         )
         .bind(approval_id)
         .bind(if approved { "approved" } else { "rejected" })
         .bind(reason)
+        .bind(decided_by)
+        // A SNAPSHOT, not a join. Deleting or renaming an operator must not
+        // rewrite who approved what — an audit record that changes when a row
+        // elsewhere changes is not an audit record.
+        .bind(decided_by_label)
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected() > 0)
@@ -640,7 +761,7 @@ mod pg_tests {
         assert!(!db.consume_approval(&id, "/weather", 1_000).await.unwrap());
         assert!(db.has_pending_approval(&id, "/weather", 1_000).await.unwrap());
 
-        assert!(db.decide_approval(&approval, true, None).await.unwrap());
+        assert!(db.decide_approval(&approval, true, None, "op_test", "Test").await.unwrap());
         assert!(
             !db.has_pending_approval(&id, "/weather", 1_000).await.unwrap(),
             "a decided approval is no longer pending"
@@ -668,7 +789,7 @@ mod pg_tests {
         db.create_approval(&approval, &id, None, "/weather", 1_000, 1)
             .await
             .unwrap();
-        db.decide_approval(&approval, true, None).await.unwrap();
+        db.decide_approval(&approval, true, None, "op_test", "Test").await.unwrap();
 
         assert!(
             !db.consume_approval(&id, "/analyse", 1_000).await.unwrap(),
@@ -679,6 +800,112 @@ mod pg_tests {
             "a different price must not spend it"
         );
         assert!(db.consume_approval(&id, "/weather", 1_000).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn an_operator_round_trips_and_can_be_revoked() {
+        let db = connect().await;
+        let id = random_id("op");
+        let token = format!("tok_{}", uuid::Uuid::new_v4().simple());
+        let hash = crate::auth::token_hash(&token);
+
+        assert!(db.create_operator(&id, "Alice", &hash).await.unwrap());
+
+        let found = db.operator_by_token_hash(&hash).await.unwrap().expect("found");
+        assert_eq!(found.operator_id, id);
+        assert_eq!(found.label, "Alice");
+        assert!(found.enabled);
+
+        // Revocation must bite at lookup, not merely in the listing: a
+        // disabled credential that still authenticates is not revoked.
+        assert!(db.set_operator_enabled(&id, false).await.unwrap());
+        assert!(
+            db.operator_by_token_hash(&hash).await.unwrap().is_none(),
+            "a disabled operator must not resolve"
+        );
+
+        assert!(db.set_operator_enabled(&id, true).await.unwrap());
+        assert!(db.operator_by_token_hash(&hash).await.unwrap().is_some());
+
+        // An operator that does not exist cannot be revoked, and saying it was
+        // would tell somebody they had removed access they had not.
+        assert!(!db.set_operator_enabled("op_nope", false).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn a_wrong_token_resolves_to_nothing() {
+        let db = connect().await;
+        let hash = crate::auth::token_hash("definitely-not-a-real-token");
+        assert!(db.operator_by_token_hash(&hash).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn the_same_token_cannot_be_registered_twice() {
+        // Two operators sharing a token would be indistinguishable in the
+        // audit trail, which defeats the point of having one.
+        let db = connect().await;
+        let token = format!("tok_{}", uuid::Uuid::new_v4().simple());
+        let hash = crate::auth::token_hash(&token);
+
+        assert!(db.create_operator(&random_id("op"), "first", &hash).await.unwrap());
+        assert!(
+            !db.create_operator(&random_id("op"), "second", &hash).await.unwrap(),
+            "a duplicate token hash must be refused"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn a_decision_records_who_made_it_and_survives_their_deletion() {
+        let db = connect().await;
+        let agent = random_id("agt");
+        db.create_agent(&agent, "bot", &random_key(), None, AgentMode::Human)
+            .await
+            .unwrap();
+
+        let approval = random_id("apr");
+        db.create_approval(&approval, &agent, None, "/weather", 1_000, 1)
+            .await
+            .unwrap();
+
+        let op = random_id("op");
+        db.create_operator(&op, "Alice", &crate::auth::token_hash(&op))
+            .await
+            .unwrap();
+
+        assert!(db
+            .decide_approval(&approval, true, Some("looks fine"), &op, "Alice")
+            .await
+            .unwrap());
+
+        let listed = db.list_approvals(50).await.unwrap();
+        let mine = listed
+            .iter()
+            .find(|a| a.approval_id == approval)
+            .expect("listed");
+        assert_eq!(mine.decided_by.as_deref(), Some(op.as_str()));
+        assert_eq!(mine.decided_by_label.as_deref(), Some("Alice"));
+
+        // The label is a SNAPSHOT. Renaming the operator must not rewrite who
+        // approved what — an audit record that changes when a row elsewhere
+        // changes is not an audit record.
+        sqlx::query("UPDATE operators SET label = $2 WHERE operator_id = $1")
+            .bind(&op)
+            .bind("Alice (left the company)")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let again = db.list_approvals(50).await.unwrap();
+        let still = again.iter().find(|a| a.approval_id == approval).unwrap();
+        assert_eq!(
+            still.decided_by_label.as_deref(),
+            Some("Alice"),
+            "the trail records what was true at the time of the decision"
+        );
     }
 
     #[tokio::test]
@@ -695,13 +922,13 @@ mod pg_tests {
             .await
             .unwrap();
         assert!(db
-            .decide_approval(&approval, false, Some("too expensive"))
+            .decide_approval(&approval, false, Some("too expensive"), "op_test", "Test")
             .await
             .unwrap());
 
         // A second click must not turn the refusal into permission.
         assert!(
-            !db.decide_approval(&approval, true, None).await.unwrap(),
+            !db.decide_approval(&approval, true, None, "op_test", "Test").await.unwrap(),
             "only a pending approval can be decided"
         );
         assert!(!db.consume_approval(&id, "/analyse", 25_000).await.unwrap());

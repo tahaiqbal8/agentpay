@@ -78,6 +78,14 @@ fn control_plane(state: Arc<AppState>) -> Router {
             axum::routing::delete(control::delete_provider),
         )
         .route("/v1/agent/plan", post(control::plan))
+        .route(
+            "/v1/operators",
+            get(control::list_operators).post(control::create_operator),
+        )
+        .route(
+            "/v1/operators/{operator_id}/status",
+            post(control::set_operator_status),
+        )
         .route("/v1/approvals", get(control::list_approvals))
         .route(
             "/v1/approvals/{approval_id}/decide",

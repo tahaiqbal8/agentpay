@@ -171,6 +171,9 @@ export interface Approval {
   reason: string | null;
   created_at: string;
   decided_at: string | null;
+  /** Who decided, snapshotted at the moment of the decision. */
+  decided_by: string | null;
+  decided_by_label: string | null;
 }
 
 export interface Health {

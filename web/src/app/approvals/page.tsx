@@ -167,6 +167,21 @@ export default function ApprovalsPage() {
                   {a.reason && ` · ${a.reason}`}
                 </p>
 
+                {/* The trail. A decided approval that cannot name its decider
+                    is a workflow, not an audit record — so say who, and say
+                    plainly when the record predates per-operator credentials
+                    rather than leaving a blank to be misread. */}
+                {a.decided_at && (
+                  <p className="mt-0.5 text-[10px] text-[var(--color-fg-muted)]">
+                    {a.state === "rejected" ? "Rejected" : "Approved"} by{" "}
+                    <span className="font-medium text-[var(--color-fg)]">
+                      {a.decided_by_label ?? "an unrecorded operator"}
+                    </span>
+                    {!a.decided_by_label &&
+                      " — decided before per-operator credentials existed"}
+                  </p>
+                )}
+
                 {agent && (
                   <div className="mt-1">
                     <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
@@ -234,6 +249,13 @@ export default function ApprovalsPage() {
           <p>
             A retry does not queue a second copy: one pending proposal exists per agent, resource
             and price.
+          </p>
+          <p>
+            <span className="font-semibold text-[var(--color-fg)]">Who decided is recorded.</span>{" "}
+            Each decision stores the operator id and their name <em>as it was at that moment</em> —
+            a snapshot, not a lookup, so renaming or removing an operator later cannot rewrite who
+            approved what. A decision made with the shared admin token is recorded as exactly
+            that.
           </p>
           <p className="border-t border-[var(--color-border)] pt-2.5">
             <span className="font-semibold text-[var(--color-fg)]">What approving cannot do:</span>{" "}
