@@ -4,21 +4,19 @@ import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ArrowDown,
-  BadgeCheck,
   Binary,
   ChevronRight,
   Link2,
   Search,
-  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, variantForReason } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { MonoKey } from "@/components/mono";
+import { Field, Input } from "@/components/ui/input";
 import { useToast } from "@/components/toast";
 import { api, type EvidenceProof, type SessionEvidence } from "@/lib/api";
+import { DECISION_LABEL, DECISION_WHY } from "@/lib/constants";
 import { formatUsdc, truncateHash } from "@/lib/format";
 
 /**
@@ -73,6 +71,38 @@ function HashChip({ value, tone = "dim" }: { value: string; tone?: "dim" | "acce
   );
 }
 
+/** A full hash, labelled, on its own ground. */
+function HashBlock({
+  label,
+  value,
+  tone = "muted",
+  className,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: "muted" | "accent" | "cyan" | "danger" | "fg";
+  className?: string;
+}) {
+  const cls = {
+    muted: "text-[var(--color-fg-muted)]",
+    accent: "text-[var(--color-accent)]",
+    cyan: "text-[var(--color-cyan)]",
+    danger: "text-[var(--color-danger)]",
+    fg: "text-[var(--color-fg)]",
+  }[tone];
+  return (
+    <div
+      className={
+        className ??
+        "rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5"
+      }
+    >
+      <p className="t-label">{label}</p>
+      <code className={`mt-1 block break-all font-mono text-[11px] ${cls}`}>{value}</code>
+    </div>
+  );
+}
+
 /** Ladder view of the evidence log; each leaf links to its predecessor. */
 function ChainLadder({
   evidence,
@@ -86,13 +116,16 @@ function ChainLadder({
   return (
     <div className="space-y-1">
       {evidence.entries.map((e, i) => {
-        const allowed = e.decision === "ALLOWED";
         const active = selected === e.sequence_id;
+        // A refusal is the system working. Only a forged claim or a broken
+        // dependency is red here — see `variantForReason`.
+        const tone = variantForReason(e.decision);
         return (
           <button
             key={e.sequence_id}
+            aria-pressed={active}
             onClick={() => onSelect(e.sequence_id)}
-            className={`w-full rounded-md border p-2.5 text-left transition-colors ${
+            className={`interactive w-full rounded-md border p-2.5 text-left ${
               active
                 ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
                 : "border-[var(--color-border)] bg-[var(--color-surface-2)] hover:border-[var(--color-border-bright)]"
@@ -102,17 +135,22 @@ function ChainLadder({
               <span className="tnum grid size-5 shrink-0 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
                 {e.sequence_id}
               </span>
-              <Badge variant={allowed ? "allowed" : "denied"}>
-                {allowed ? "ALLOWED" : e.decision.replace(/^ERR_/, "")}
-              </Badge>
+              <span title={DECISION_WHY[e.decision] ?? e.decision}>
+                <Badge variant={tone}>
+                  {DECISION_LABEL[e.decision] ?? e.decision.replace(/^ERR_/, "")}
+                </Badge>
+              </span>
               <span className="tnum ml-auto font-mono text-[11px] text-[var(--color-fg)]">
                 {formatUsdc(e.cumulative_amount)}
               </span>
             </div>
             <div className="mt-1.5 flex items-center gap-1.5 pl-7">
-              <Link2 className="size-3 shrink-0 text-[var(--color-fg-dim)]" />
+              <Link2 aria-hidden="true" className="size-3 shrink-0 text-[var(--color-fg-dim)]" />
               <HashChip value={e.prev_hash} />
-              <ChevronRight className="size-3 shrink-0 text-[var(--color-fg-dim)]" />
+              <ChevronRight
+                aria-hidden="true"
+                className="size-3 shrink-0 text-[var(--color-fg-dim)]"
+              />
               <HashChip value={e.entry_hash} tone="cyan" />
             </div>
             {i < evidence.entries.length - 1 && (
@@ -217,281 +255,291 @@ function VerifierInner() {
   // could report anything, but the program's stored root is a public fact.
   const chainRoot = onChain?.settled ? onChain.merkle_root : undefined;
   const anchored = valid && chainRoot !== undefined && chainRoot === recomputed;
-  const chainDisagrees =
-    valid && chainRoot !== undefined && chainRoot !== recomputed;
+  const chainDisagrees = valid && chainRoot !== undefined && chainRoot !== recomputed;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
-      {/* ---- input + chain ---- */}
-      <div className="space-y-4">
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Inclusion proof generator</CardTitle>
-              <CardDescription>Prove one decision against the on-chain root</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                session_pubkey
-              </label>
-              <div className="flex gap-2">
-                <Input
-                  value={session}
-                  onChange={(e) => setSession(e.target.value)}
-                  placeholder="Base58 session address"
-                  className="font-mono text-xs"
-                />
-                <Button variant="outline" size="icon" onClick={() => loadEvidence(session)} aria-label="Load evidence">
-                  <Search />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                sequence_id
-              </label>
-              <div className="flex gap-2">
-                <Input
-                  value={sequenceId}
-                  onChange={(e) => setSequenceId(e.target.value)}
-                  inputMode="numeric"
-                  className="font-mono text-xs"
-                />
-                <Button onClick={() => verify()} disabled={busy || !session.trim()}>
-                  {busy ? "Verifying…" : "Verify proof"}
-                </Button>
-              </div>
-            </div>
-            {error && (
-              <p className="rounded border border-[#7f1d1d] bg-[#ef44441a] px-2.5 py-2 font-mono text-[11px] text-[var(--color-danger)]">
-                {error}
-              </p>
-            )}
-          </CardContent>
-        </Card>
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">Verifier</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Prove that one decision is covered by a Merkle root committed on Solana. The hashing
+            happens in this browser, so the answer does not depend on trusting the gateway.
+          </p>
+        </div>
+        <Badge variant="info">Solana devnet</Badge>
+      </header>
 
-        {evidence && (
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+        {/* ---- input + chain ---- */}
+        <div className="min-w-0 space-y-4">
           <Card>
             <CardHeader>
               <div>
-                <CardTitle>Evidence log</CardTitle>
-                <CardDescription>
-                  {evidence.entry_count} entries · click one to prove it
-                </CardDescription>
+                <CardTitle>Inclusion proof generator</CardTitle>
+                <CardDescription>Prove one decision against the on-chain root</CardDescription>
               </div>
-              {evidence.chain_valid ? (
-                <Badge variant="allowed">
-                  <ShieldCheck className="size-3" /> chain intact
-                </Badge>
-              ) : (
-                <Badge variant="danger">
-                  <ShieldAlert className="size-3" /> chain broken
-                </Badge>
-              )}
             </CardHeader>
-            <CardContent className="max-h-[520px] overflow-y-auto">
-              <div className="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                  merkle_root
+            <CardContent className="space-y-3">
+              <Field label="session_pubkey" htmlFor="session-pubkey">
+                <div className="flex gap-2">
+                  <Input
+                    id="session-pubkey"
+                    value={session}
+                    onChange={(e) => setSession(e.target.value)}
+                    placeholder="Base58 session address"
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="mt-1"
+                    onClick={() => loadEvidence(session)}
+                    aria-label="Load evidence"
+                  >
+                    <Search />
+                  </Button>
+                </div>
+              </Field>
+
+              <Field label="sequence_id" htmlFor="sequence-id">
+                <div className="flex gap-2">
+                  <Input
+                    id="sequence-id"
+                    value={sequenceId}
+                    onChange={(e) => setSequenceId(e.target.value)}
+                    inputMode="numeric"
+                    className="font-mono text-xs"
+                  />
+                  <Button className="mt-1" onClick={() => verify()} disabled={busy || !session.trim()}>
+                    {busy ? "Verifying…" : "Verify proof"}
+                  </Button>
+                </div>
+              </Field>
+
+              {error && (
+                <p className="rounded border border-[var(--color-danger-dim)] bg-[#ef44441a] px-2.5 py-2 font-mono text-[11px] text-[var(--color-danger)]">
+                  {error}
                 </p>
-                <code className="break-all font-mono text-[11px] text-[var(--color-cyan)]">
-                  {evidence.merkle_root}
-                </code>
-              </div>
-              <ChainLadder
-                evidence={evidence}
-                selected={proof?.sequence_id ?? null}
-                onSelect={(seq) => verify(seq)}
-              />
+              )}
             </CardContent>
           </Card>
-        )}
-      </div>
 
-      {/* ---- proof step-through ---- */}
-      <Card glow={valid}>
-        <CardHeader>
-          <div>
-            <CardTitle>Proof step-through</CardTitle>
-            <CardDescription>
-              Recomputed in this browser with WebCrypto, not taken from the gateway
-            </CardDescription>
-          </div>
-          {proof &&
-            (valid ? (
-              <Badge variant="allowed">
-                <BadgeCheck className="size-3" /> Cryptographically validated
-              </Badge>
-            ) : (
-              <Badge variant="danger">
-                <ShieldAlert className="size-3" /> Does not verify
-              </Badge>
-            ))}
-        </CardHeader>
-
-        {!proof ? (
-          <CardContent className="grid-bg flex min-h-[420px] flex-col items-center justify-center gap-2 text-center">
-            <Binary className="size-8 text-[var(--color-fg-dim)]" />
-            <p className="text-xs text-[var(--color-fg-dim)]">
-              Enter a session and sequence id, or pick an entry from the log.
-            </p>
-          </CardContent>
-        ) : (
-          <CardContent className="space-y-3">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">Decision</p>
-                <div className="mt-1">
-                  <Badge variant={proof.decision === "ALLOWED" ? "allowed" : "denied"}>
-                    {proof.decision}
-                  </Badge>
+          {evidence && (
+            <Card>
+              <CardHeader>
+                <div>
+                  <CardTitle>Evidence log</CardTitle>
+                  <CardDescription>
+                    {evidence.entry_count} entries · click one to prove it
+                  </CardDescription>
                 </div>
-                <p className="tnum mt-2 font-mono text-sm">{formatUsdc(proof.cumulative_amount)}</p>
-                <p className="text-[10px] text-[var(--color-fg-dim)]">
-                  seq {proof.sequence_id} · nonce {proof.nonce}
-                </p>
-              </div>
-              <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
-                <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">Position</p>
-                <p className="tnum mt-1 font-mono text-sm">
-                  leaf {proof.leaf_index} of {proof.total_leaves}
-                </p>
-                <p className="text-[10px] text-[var(--color-fg-dim)]">
-                  {proof.proof.length} sibling hop{proof.proof.length === 1 ? "" : "s"}
-                </p>
-              </div>
-            </div>
+                {/* The badge carries its own glyph, so no second icon here:
+                    two symbols for one fact reads as two facts. */}
+                {evidence.chain_valid ? (
+                  <Badge variant="allowed">chain intact</Badge>
+                ) : (
+                  <Badge variant="danger">chain broken</Badge>
+                )}
+              </CardHeader>
+              <CardContent className="max-h-[520px] overflow-y-auto">
+                <HashBlock label="merkle_root" value={evidence.merkle_root} tone="cyan" className="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5" />
+                <ChainLadder
+                  evidence={evidence}
+                  selected={proof?.sequence_id ?? null}
+                  onSelect={(seq) => verify(seq)}
+                />
+              </CardContent>
+            </Card>
+          )}
+        </div>
 
-            <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
-              <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                leaf_hash
-              </p>
-              <code className="break-all font-mono text-[11px] text-[var(--color-fg)]">
-                {proof.leaf_hash}
-              </code>
+        {/* ---- proof step-through ---- */}
+        <Card
+          className="min-w-0"
+          glow={valid}
+          accent={proof ? (valid ? (anchored ? "accent" : "cyan") : "danger") : undefined}
+        >
+          <CardHeader>
+            <div>
+              <CardTitle>Proof step-through</CardTitle>
+              <CardDescription>
+                Recomputed in this browser with WebCrypto, not taken from the gateway
+              </CardDescription>
             </div>
-
-            {/* sibling path */}
-            <div className="space-y-1.5">
-              {steps.map((s) => (
-                <div
-                  key={s.index}
-                  className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="grid size-5 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
-                      {s.index + 1}
-                    </span>
-                    <Badge variant="info">sibling {s.side}</Badge>
-                    <span className="ml-auto font-mono text-[10px] text-[var(--color-fg-dim)]">
-                      sha256({s.side === "left" ? "sibling ‖ running" : "running ‖ sibling"})
-                    </span>
-                  </div>
-                  <div className="mt-2 grid gap-1 pl-7">
-                    <div className="flex items-center gap-2">
-                      <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">running</span>
-                      <HashChip value={s.running} />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">sibling</span>
-                      <HashChip value={s.sibling} tone="cyan" />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <ArrowDown className="size-3 text-[var(--color-fg-dim)]" />
-                      <HashChip value={s.result} tone="accent" />
-                    </div>
-                  </div>
-                </div>
+            {proof &&
+              (valid ? (
+                <Badge variant="allowed">Cryptographically validated</Badge>
+              ) : (
+                <Badge variant="danger">Does not verify</Badge>
               ))}
-              {steps.length === 0 && (
-                <p className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 text-[11px] text-[var(--color-fg-dim)}">
-                  Single-leaf tree: the leaf is already the root, so the proof is empty.
-                </p>
-              )}
-            </div>
+          </CardHeader>
 
-            {/* comparison */}
-            <div
-              className={`rounded-md border p-3 ${
-                valid
-                  ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
-                  : "border-[#7f1d1d] bg-[#ef44441a]"
-              }`}
-            >
-              <div className="grid gap-2">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                    recomputed in browser
-                  </p>
-                  <code className="break-all font-mono text-[11px]">{recomputed}</code>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                    root reported by gateway
-                  </p>
-                  <code className="break-all font-mono text-[11px]">{proof.merkle_root}</code>
-                </div>
-                {/* The third value is the only one neither this page nor the
-                    gateway controls. It decides the audit. */}
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                    root committed on chain
-                  </p>
-                  {chainRoot !== undefined ? (
-                    <code
-                      className={`break-all font-mono text-[11px] ${
-                        anchored ? "text-[var(--color-accent)]" : "text-[var(--color-danger)]"
-                      }`}
-                    >
-                      {chainRoot}
-                    </code>
-                  ) : (
-                    <span className="text-[11px] text-[var(--color-fg-dim)]">
-                      {onChain === null
-                        ? "reading the chain…"
-                        : "not settled yet — nothing is committed on chain for this session"}
+          {!proof ? (
+            <CardContent className="grid-bg flex min-h-[420px] flex-col items-center justify-center gap-2 text-center">
+              <Binary aria-hidden="true" className="size-8 text-[var(--color-fg-dim)]" />
+              <p className="text-xs text-[var(--color-fg-muted)]">
+                Enter a session and sequence id, or pick an entry from the log.
+              </p>
+              <p className="t-support max-w-xs">
+                Every hash below is computed here. Nothing on this side of the page is taken on the
+                gateway&apos;s word.
+              </p>
+            </CardContent>
+          ) : (
+            <CardContent className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
+                  <p className="t-label">Decision</p>
+                  <div className="mt-1">
+                    <span title={DECISION_WHY[proof.decision] ?? proof.decision}>
+                      <Badge variant={variantForReason(proof.decision)}>{proof.decision}</Badge>
                     </span>
-                  )}
+                  </div>
+                  <p className="tnum mt-2 font-mono text-sm">{formatUsdc(proof.cumulative_amount)}</p>
+                  <p className="t-support">
+                    seq {proof.sequence_id} · nonce {proof.nonce}
+                  </p>
+                </div>
+                <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
+                  <p className="t-label">Position</p>
+                  <p className="tnum mt-1 font-mono text-sm">
+                    leaf {proof.leaf_index} of {proof.total_leaves}
+                  </p>
+                  <p className="t-support">
+                    {proof.proof.length} sibling hop{proof.proof.length === 1 ? "" : "s"}
+                  </p>
                 </div>
               </div>
-              <p
-                className={`mt-2 text-xs font-semibold ${
-                  !valid || chainDisagrees
-                    ? "text-[var(--color-danger)]"
-                    : anchored
-                    ? "text-[var(--color-accent)]"
-                    : "text-[var(--color-warn)]"
+
+              <HashBlock label="leaf_hash" value={proof.leaf_hash} tone="fg" />
+
+              {/* sibling path */}
+              <div className="space-y-1.5">
+                {steps.map((s) => (
+                  <div
+                    key={s.index}
+                    className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="grid size-5 place-items-center rounded bg-[var(--color-bg)] font-mono text-[10px] text-[var(--color-fg-dim)]">
+                        {s.index + 1}
+                      </span>
+                      <Badge variant="info">sibling {s.side}</Badge>
+                      <span className="ml-auto font-mono text-[10px] text-[var(--color-fg-dim)]">
+                        sha256({s.side === "left" ? "sibling ‖ running" : "running ‖ sibling"})
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-1 pl-7">
+                      <div className="flex items-center gap-2">
+                        <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                          running
+                        </span>
+                        <HashChip value={s.running} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-14 shrink-0 text-[10px] text-[var(--color-fg-dim)]">
+                          sibling
+                        </span>
+                        <HashChip value={s.sibling} tone="cyan" />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <ArrowDown aria-hidden="true" className="size-3 text-[var(--color-fg-dim)]" />
+                        <HashChip value={s.result} tone="accent" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {steps.length === 0 && (
+                  <p className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 text-[11px] text-[var(--color-fg-muted)]">
+                    Single-leaf tree: the leaf is already the root, so the proof is empty.
+                  </p>
+                )}
+              </div>
+
+              {/* comparison */}
+              <div
+                className={`rounded-md border p-3 ${
+                  valid
+                    ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
+                    : "border-[var(--color-danger-dim)] bg-[#ef44441a]"
                 }`}
               >
-                {!valid
-                  ? "Mismatch — do not trust this proof."
-                  : chainDisagrees
-                  ? "The chain committed a DIFFERENT root — the gateway's log does not match what it settled."
-                  : anchored
-                  ? "Anchored — this decision is provably covered by a root committed on Solana."
-                  : "Proof holds, but nothing is anchored on chain until this session settles."}
-              </p>
-              {anchored && (
-                <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
-                  Check it yourself:{" "}
-                  <code className="font-mono">
-                    solana account {onChain?.settlement_record} -u devnet
-                  </code>
+                <div className="grid gap-2">
+                  <HashBlock
+                    label="recomputed in browser"
+                    value={recomputed}
+                    tone="fg"
+                    className=""
+                  />
+                  <HashBlock
+                    label="root reported by gateway"
+                    value={proof.merkle_root}
+                    tone="fg"
+                    className=""
+                  />
+                  {/* The third value is the only one neither this page nor the
+                      gateway controls. It decides the audit. */}
+                  <div>
+                    <p className="t-label">root committed on chain</p>
+                    {chainRoot !== undefined ? (
+                      <code
+                        className={`mt-1 block break-all font-mono text-[11px] ${
+                          anchored ? "text-[var(--color-accent)]" : "text-[var(--color-danger)]"
+                        }`}
+                      >
+                        {chainRoot}
+                      </code>
+                    ) : (
+                      <span className="mt-1 block text-[11px] text-[var(--color-fg-muted)]">
+                        {onChain === null
+                          ? "reading the chain…"
+                          : "not settled yet — nothing is committed on chain for this session"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <p
+                  className={`mt-2 text-xs font-semibold ${
+                    !valid || chainDisagrees
+                      ? "text-[var(--color-danger)]"
+                      : anchored
+                      ? "text-[var(--color-accent)]"
+                      : "text-[var(--color-warn)]"
+                  }`}
+                >
+                  {!valid
+                    ? "Mismatch — do not trust this proof."
+                    : chainDisagrees
+                    ? "The chain committed a DIFFERENT root — the gateway's log does not match what it settled."
+                    : anchored
+                    ? "Anchored — this decision is provably covered by a root committed on Solana."
+                    : "Proof holds, but nothing is anchored on chain until this session settles."}
                 </p>
-              )}
-            </div>
-          </CardContent>
-        )}
-      </Card>
+                {anchored && (
+                  <p className="t-support mt-1 flex flex-wrap items-center gap-1">
+                    <ShieldCheck
+                      aria-hidden="true"
+                      className="size-3 text-[var(--color-accent)]"
+                    />
+                    Check it yourself:{" "}
+                    <code className="font-mono text-[var(--color-fg-muted)]">
+                      solana account {onChain?.settlement_record} -u devnet
+                    </code>
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
 
 export default function VerifierPage() {
   return (
-    <React.Suspense fallback={<p className="text-xs text-[var(--color-fg-dim)]">Loading…</p>}>
+    <React.Suspense fallback={<p className="text-xs text-[var(--color-fg-muted)]">Loading…</p>}>
       <VerifierInner />
     </React.Suspense>
   );
