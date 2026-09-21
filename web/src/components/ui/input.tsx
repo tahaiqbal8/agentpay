@@ -1,16 +1,65 @@
 import * as React from "react";
+import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const BASE =
+  "w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] " +
+  "px-2.5 text-xs text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] " +
+  "transition-colors hover:border-[var(--color-border-bright)] " +
+  "focus:border-[var(--color-cyan-dim)] disabled:opacity-40";
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
-    <input
-      ref={ref}
-      className={cn(
-        "flex h-9 w-full rounded-md border border-[var(--color-border-bright)] bg-[var(--color-bg)] px-3 py-1 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-dim)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] disabled:opacity-50",
-        className
-      )}
-      {...props}
-    />
+    <input ref={ref} className={cn(BASE, "mt-1 h-8", className)} {...props} />
   )
 );
 Input.displayName = "Input";
+
+/**
+ * Filter field.
+ *
+ * Separate from `Input` because it carries an icon and no label — a control
+ * that narrows what is already on screen, rather than a field that collects a
+ * value. Typing in it changes a view; typing in an `Input` changes data.
+ */
+export const SearchInput = React.forwardRef<
+  HTMLInputElement,
+  React.InputHTMLAttributes<HTMLInputElement>
+>(({ className, ...props }, ref) => (
+  <div className={cn("relative", className)}>
+    <Search
+      aria-hidden="true"
+      className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--color-fg-dim)]"
+    />
+    <input
+      ref={ref}
+      type="search"
+      className={cn(BASE, "h-8 pl-8")}
+      {...props}
+    />
+  </div>
+));
+SearchInput.displayName = "SearchInput";
+
+/** A field with its label and optional hint, laid out consistently. */
+export function Field({
+  label,
+  hint,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  hint?: React.ReactNode;
+  htmlFor?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="block">
+      <label htmlFor={htmlFor} className="t-label">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="t-support mt-1">{hint}</p>}
+    </div>
+  );
+}

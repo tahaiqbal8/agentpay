@@ -34,10 +34,28 @@
   --color-warn: #f59e0b;
   --color-warn-dim: #78350f;
 
+  /* Agents, policy, planning, autonomy.
+   *
+   * The one colour this product needed and did not have. An agent acting
+   * inside a human's envelope is neither "healthy" nor "informational" nor a
+   * warning — it is a distinct idea, and giving it its own colour is what lets
+   * a reader tell policy from plumbing at a glance. */
+  --color-agent: #a78bfa;
+  --color-agent-dim: #4c1d95;
+  --color-agent-glow: #a78bfa26;
+
   /* Genuine faults */
   --color-danger: #ef4444;
+  --color-danger-dim: #7f1d1d;
 
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* ---- Elevation -------------------------------------------------------
+   * Three levels, used consistently, so depth means position in the
+   * hierarchy rather than however a component happened to be styled. */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-raised: 0 4px 16px -4px rgb(0 0 0 / 0.5);
+  --shadow-float: 0 12px 32px -8px rgb(0 0 0 / 0.6);
 }
 
 :root {
@@ -107,3 +125,117 @@ body {
   border: 2px solid var(--color-bg);
 }
 ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+
+/* ---------------------------------------------------------------------------
+ * Typography scale
+ *
+ * Seven roles, and every piece of text on the console picks one. Named for
+ * what a thing IS rather than how big it is, so a heading cannot drift into
+ * looking like a value because somebody reached for a different size.
+ * ------------------------------------------------------------------------ */
+
+.t-page {          /* one per page, the only place this size appears */
+  font-size: 1.375rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+
+.t-section {       /* a card's title */
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.t-kpi {           /* the number a reader came for */
+  font-size: 1.75rem;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg);
+}
+
+.t-body {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-fg-muted);
+}
+
+.t-support {       /* the line under a value that explains it */
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--color-fg-dim);
+}
+
+.t-label {         /* column headers, field labels */
+  font-size: 0.625rem;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-fg-dim);
+}
+
+/* Monospace is for values a reader might COPY or compare character by
+ * character — keys, ids, signatures, hashes, nonces, roots. Never for prose:
+ * a paragraph set in mono reads as code and stops being read. */
+.t-mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * Focus
+ *
+ * One visible ring everywhere, including for keyboard users who never touch a
+ * mouse. `:focus-visible` rather than `:focus` so clicking a button does not
+ * leave a ring behind it.
+ * ------------------------------------------------------------------------ */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-cyan);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Motion
+ *
+ * Fast and small. An operator surface that animates is an operator surface
+ * that feels slow, and anyone who has set a reduced-motion preference has
+ * already said what they want.
+ * ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* A row or card that responds to the pointer, uniformly. */
+.interactive {
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+/* Loading state: a shape where the content will be, not a spinner that says
+ * nothing about what is coming. */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.6; }
+}
+
+.skeleton {
+  background: var(--color-surface-2);
+  border-radius: 4px;
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
