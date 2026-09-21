@@ -41,6 +41,25 @@ export const SearchInput = React.forwardRef<
 ));
 SearchInput.displayName = "SearchInput";
 
+/**
+ * A dropdown, styled to match `Input`.
+ *
+ * Kept as a real `<select>` rather than a scripted listbox: the native control
+ * is keyboard-accessible, announces itself correctly, and works on a phone
+ * without any of that being re-implemented.
+ */
+export const Select = React.forwardRef<
+  HTMLSelectElement,
+  React.SelectHTMLAttributes<HTMLSelectElement>
+>(({ className, ...props }, ref) => (
+  <select
+    ref={ref}
+    className={cn(BASE, "mt-1 h-8 font-mono", className)}
+    {...props}
+  />
+));
+Select.displayName = "Select";
+
 /** A field with its label and optional hint, laid out consistently. */
 export function Field({
   label,

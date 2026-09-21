@@ -5,7 +5,7 @@ import { Bot, Loader2, Plus, ShieldOff, ShieldCheck, TriangleAlert } from "lucid
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { MonoKey } from "@/components/mono";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/toast";
@@ -21,33 +21,7 @@ import { formatUsdc } from "@/lib/format";
  * deposit, or that raising `max_total` gives it more money. Neither is true.
  */
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-        {label}
-      </span>
-      {children}
-      {hint && <span className="mt-0.5 block text-[10px] text-[var(--color-fg-dim)]">{hint}</span>}
-    </label>
-  );
-}
-
-function AgentCard({
-  agent,
-  onChanged,
-}: {
-  agent: Agent;
-  onChanged: () => void;
-}) {
+function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = React.useState(false);
   const [open, setOpen] = React.useState(false);
@@ -64,6 +38,9 @@ function AgentCard({
   const [mode, setMode] = React.useState<AgentMode>(agent.mode);
 
   const suspended = agent.status === "suspended";
+  // Ids are namespaced per agent: several of these cards are open at once, and
+  // duplicate ids would point every label at the first card's input.
+  const id = (name: string) => `${agent.agent_id}-${name}`;
 
   // Percentage of the ENVELOPE consumed, not of the escrow. BigInt throughout:
   // no float touches an amount, here or anywhere else.
@@ -122,15 +99,28 @@ function AgentCard({
     <div
       className={`rounded-md border p-3 ${
         suspended
-          ? "border-[#7f1d1d] bg-[#ef44441a]"
+          ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
           : "border-[var(--color-border)] bg-[var(--color-surface-2)]"
       }`}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <Bot className="size-4 shrink-0 text-[var(--color-fg-dim)]" />
+        <span
+          aria-hidden="true"
+          className={`grid size-6 shrink-0 place-items-center rounded-md ${
+            suspended ? "bg-[#ef44441a]" : "bg-[#a78bfa1a]"
+          }`}
+        >
+          <Bot
+            className={`size-3.5 ${
+              suspended ? "text-[var(--color-danger)]" : "text-[var(--color-agent)]"
+            }`}
+          />
+        </span>
         <span className="text-sm font-medium text-[var(--color-fg)]">{agent.label}</span>
-        <Badge variant={suspended ? "denied" : "allowed"}>{agent.status}</Badge>
-        <Badge variant="neutral">{agent.mode}</Badge>
+        <Badge variant={suspended ? "danger" : "allowed"}>{agent.status}</Badge>
+        {/* Purple is the agent/policy colour throughout the console: the mode
+            is what the human decided about autonomy, not a status. */}
+        <Badge variant="agent">{agent.mode}</Badge>
         <span className="ml-auto">
           <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
         </span>
@@ -142,7 +132,7 @@ function AgentCard({
             <span className="tnum font-mono text-[var(--color-fg)]">
               {formatUsdc(agent.spent)} / {formatUsdc(agent.policy.max_total)}
             </span>
-            <span className="text-[10px] text-[var(--color-fg-dim)]">
+            <span className="t-support">
               {agent.calls} call{agent.calls === 1 ? "" : "s"}
               {agent.policy.max_calls != null && ` of ${agent.policy.max_calls}`}
               {agent.remaining != null && ` · ${formatUsdc(agent.remaining)} left`}
@@ -150,10 +140,14 @@ function AgentCard({
           </div>
           {pct != null && (
             <div className="mt-1.5">
-              <Progress percent={Math.min(pct, 100)} tone={pct >= 90 ? "warn" : "accent"} />
+              <Progress
+                percent={Math.min(pct, 100)}
+                tone={pct >= 90 ? "warn" : "agent"}
+                label={`${pct}% of this agent's envelope has been spent`}
+              />
             </div>
           )}
-          <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-fg-dim)]">
+          <p className="t-support mt-1.5 leading-relaxed">
             Max {formatUsdc(agent.policy.max_per_call)} per call
             {agent.policy.approval_threshold != null &&
               ` · a human decides at ${formatUsdc(agent.policy.approval_threshold)}`}
@@ -163,14 +157,20 @@ function AgentCard({
           </p>
         </div>
       ) : (
-        <p className="mt-2 text-[11px] text-[var(--color-warn)]">
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-warn)]">
           Not authorized. Only this agent&apos;s on-chain escrow bounds it — there is no
           per-resource or per-call limit until one is set.
         </p>
       )}
 
       <div className="mt-2.5 flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)} disabled={busy}>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setOpen((v) => !v)}
+          disabled={busy}
+          aria-expanded={open}
+        >
           {agent.policy ? "Edit authorization" : "Authorize"}
         </Button>
         <Button
@@ -192,40 +192,65 @@ function AgentCard({
 
       {open && (
         <div className="mt-3 space-y-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
-          <p className="text-[10px] leading-relaxed text-[var(--color-fg-dim)]">
+          <p className="t-support leading-relaxed">
             All amounts are micro-USDC. This envelope can only narrow what the escrow already
             permits — it never grants more.
           </p>
           <div className="grid gap-2.5 sm:grid-cols-2">
-            <Field label="max_total" hint="Ceiling across everything">
-              <Input value={maxTotal} onChange={(e) => setMaxTotal(e.target.value)} />
+            <Field label="max_total" hint="Ceiling across everything" htmlFor={id("max-total")}>
+              <Input
+                id={id("max-total")}
+                value={maxTotal}
+                onChange={(e) => setMaxTotal(e.target.value)}
+              />
             </Field>
-            <Field label="max_per_call" hint="Ceiling on one purchase">
-              <Input value={maxPerCall} onChange={(e) => setMaxPerCall(e.target.value)} />
+            <Field label="max_per_call" hint="Ceiling on one purchase" htmlFor={id("max-per-call")}>
+              <Input
+                id={id("max-per-call")}
+                value={maxPerCall}
+                onChange={(e) => setMaxPerCall(e.target.value)}
+              />
             </Field>
-            <Field label="approval_threshold" hint="Blank = never ask">
-              <Input value={threshold} onChange={(e) => setThreshold(e.target.value)} />
+            <Field label="approval_threshold" hint="Blank = never ask" htmlFor={id("threshold")}>
+              <Input
+                id={id("threshold")}
+                value={threshold}
+                onChange={(e) => setThreshold(e.target.value)}
+              />
             </Field>
-            <Field label="max_calls" hint="Blank = unlimited">
-              <Input value={maxCalls} onChange={(e) => setMaxCalls(e.target.value)} />
+            <Field label="max_calls" hint="Blank = unlimited" htmlFor={id("max-calls")}>
+              <Input
+                id={id("max-calls")}
+                value={maxCalls}
+                onChange={(e) => setMaxCalls(e.target.value)}
+              />
             </Field>
           </div>
-          <Field label="allowed_resources" hint="Comma separated. Blank = any resource.">
+          <Field
+            label="allowed_resources"
+            hint="Comma separated. Blank = any resource."
+            htmlFor={id("resources")}
+          >
             <Input
+              id={id("resources")}
               value={resources}
               onChange={(e) => setResources(e.target.value)}
               placeholder="/weather, /quote"
             />
           </Field>
-          <Field label="mode" hint="Human mode asks a person for every spend.">
-            <select
+          <Field
+            label="mode"
+            hint="Human mode asks a person for every spend."
+            htmlFor={id("mode")}
+          >
+            <Select
+              id={id("mode")}
               value={mode}
               onChange={(e) => setMode(e.target.value as AgentMode)}
-              className="mt-1 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2.5 py-1.5 font-mono text-xs text-[var(--color-fg)]"
             >
               <option value="human">human — a person approves each spend</option>
               <option value="autonomous">autonomous — acts alone inside the envelope</option>
-            </select>
+            </Select>
           </Field>
           <Button size="sm" onClick={authorize} disabled={busy} className="w-full">
             {busy ? <Loader2 className="size-3 animate-spin" /> : null}
@@ -283,95 +308,142 @@ export default function AgentsPage() {
     void load();
   };
 
+  const suspendedCount = agents.filter((a) => a.status === "suspended").length;
+  const unauthorized = agents.filter((a) => !a.policy).length;
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Agents</CardTitle>
-            <CardDescription>Identity, wallet and permission envelope</CardDescription>
-          </div>
-          <Badge variant="neutral">{agents.length}</Badge>
-        </CardHeader>
-        <CardContent className="max-h-[640px] space-y-2 overflow-y-auto p-2">
-          {unavailable && (
-            <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-3">
-              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]" />
-              <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
-                <span className="font-semibold text-[var(--color-warn)]">
-                  The control plane is unavailable.
-                </span>{" "}
-                Agents, policies and the registry need a database, and this gateway is running
-                without one. Claims are still verified; nothing here can be stored.
-              </p>
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">Agents</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Who may spend, and how much. The escrow on chain is the hard ceiling; everything set
+            here narrows it.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {unauthorized > 0 && (
+            <Badge variant="denied">{unauthorized} without an envelope</Badge>
+          )}
+          {suspendedCount > 0 && <Badge variant="danger">{suspendedCount} suspended</Badge>}
+        </div>
+      </header>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <Card className="min-w-0">
+          <CardHeader>
+            <div>
+              <CardTitle>Agents</CardTitle>
+              <CardDescription>Identity, wallet and permission envelope</CardDescription>
             </div>
-          )}
-          {loaded && !unavailable && agents.length === 0 && (
-            <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-              No agents yet. Create one to bind a wallet and set what it may spend.
-            </p>
-          )}
-          {agents.map((a) => (
-            <AgentCard key={a.agent_id} agent={a} onChanged={load} />
-          ))}
-        </CardContent>
-      </Card>
+            <Badge variant="neutral">{agents.length}</Badge>
+          </CardHeader>
+          <CardContent className="max-h-[640px] space-y-2 overflow-y-auto p-2">
+            {unavailable && (
+              <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-3">
+                <TriangleAlert
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
+                />
+                <p className="text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+                  <span className="font-semibold text-[var(--color-warn)]">
+                    The control plane is unavailable.
+                  </span>{" "}
+                  Agents, policies and the registry need a database, and this gateway is running
+                  without one. Claims are still verified; nothing here can be stored.
+                </p>
+              </div>
+            )}
+            {loaded && !unavailable && agents.length === 0 && (
+              <div className="py-12 text-center">
+                <p className="text-xs text-[var(--color-fg-muted)]">No agents yet.</p>
+                <p className="t-support mx-auto mt-1 max-w-xs">
+                  Create one to bind a wallet to an identity and set what it may spend.
+                </p>
+              </div>
+            )}
+            {agents.map((a) => (
+              <AgentCard key={a.agent_id} agent={a} onChanged={load} />
+            ))}
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>New agent</CardTitle>
-            <CardDescription>Bind an Ed25519 wallet to an identity</CardDescription>
-          </div>
-          <Plus className="size-4 text-[var(--color-fg-dim)]" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Field label="label">
-            <Input
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="Research bot"
-            />
-          </Field>
-          <Field label="agent_pubkey" hint="The key the agent signs its claims with.">
-            <Input
-              value={pubkey}
-              onChange={(e) => setPubkey(e.target.value)}
-              placeholder="Base58 Ed25519 public key"
-            />
-          </Field>
-          <Field label="owner_pubkey" hint="Optional. The human who owns it.">
-            <Input
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-              placeholder="Base58, optional"
-            />
-          </Field>
-          <Button
-            onClick={create}
-            disabled={busy || !label.trim() || !pubkey.trim() || unavailable}
-            className="w-full"
-          >
-            {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-            Create agent
-          </Button>
+        <div className="min-w-0 space-y-4">
+          <Card accent="agent">
+            <CardHeader>
+              <div>
+                <CardTitle>New agent</CardTitle>
+                <CardDescription>Bind an Ed25519 wallet to an identity</CardDescription>
+              </div>
+              <Plus aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Field label="label" htmlFor="new-agent-label">
+                <Input
+                  id="new-agent-label"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="Research bot"
+                />
+              </Field>
+              <Field
+                label="agent_pubkey"
+                hint="The key the agent signs its claims with."
+                htmlFor="new-agent-pubkey"
+              >
+                <Input
+                  id="new-agent-pubkey"
+                  value={pubkey}
+                  onChange={(e) => setPubkey(e.target.value)}
+                  placeholder="Base58 Ed25519 public key"
+                />
+              </Field>
+              <Field
+                label="owner_pubkey"
+                hint="Optional. The human who owns it."
+                htmlFor="new-agent-owner"
+              >
+                <Input
+                  id="new-agent-owner"
+                  value={owner}
+                  onChange={(e) => setOwner(e.target.value)}
+                  placeholder="Base58, optional"
+                />
+              </Field>
+              <Button
+                onClick={create}
+                disabled={busy || !label.trim() || !pubkey.trim() || unavailable}
+                className="w-full"
+              >
+                {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+                Create agent
+              </Button>
+            </CardContent>
+          </Card>
 
-          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-3">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-dim)]">
-              What creating an agent does not do
-            </p>
-            <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
-              It does not create a wallet, hold a private key, or move any money. The agent&apos;s
-              spending power comes entirely from an on-chain escrow opened against this key. The
-              envelope set here can only narrow that — never widen it.
-            </p>
-            <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
-              Suspending an agent stops it at this gateway immediately. It does not claw back the
-              escrow, and it does not recall a settlement already in flight.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>What creating an agent does not do</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+              <p>
+                It does not create a wallet, hold a private key, or move any money. The
+                agent&apos;s spending power comes entirely from an on-chain escrow opened against
+                this key. The envelope set here can only narrow that — never widen it.
+              </p>
+              <p>
+                Suspending an agent stops it at this gateway immediately. It does not claw back the
+                escrow, and it does not recall a settlement already in flight.
+              </p>
+              <p className="border-t border-[var(--color-border)] pt-2.5">
+                An agent with no envelope is not unrestricted — its escrow still bounds it
+                absolutely — but nothing narrower applies: no per-call ceiling, no resource
+                allowlist, no approval step.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }
