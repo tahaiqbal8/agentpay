@@ -3,19 +3,12 @@
 import * as React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import {
-  ArrowLeft,
-  Ban,
-  CheckCircle2,
-  ExternalLink,
-  Landmark,
-  ShieldCheck,
-  ShieldAlert,
-} from "lucide-react";
+import { ArrowLeft, Ban, CheckCircle2, ExternalLink, Landmark } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, variantForReason } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Stat } from "@/components/ui/stat";
 import { MonoKey } from "@/components/mono";
 import { api, type SessionEvidence, type SessionSummary } from "@/lib/api";
 import { DECISION_LABEL, DECISION_WHY } from "@/lib/constants";
@@ -29,12 +22,10 @@ import {
   truncateHash,
 } from "@/lib/format";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-[var(--color-border)] py-2 last:border-0">
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-        {label}
-      </span>
+      <span className="t-label">{label}</span>
       <span className="min-w-0 text-right">{children}</span>
     </div>
   );
@@ -52,6 +43,7 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
     <div className="space-y-1">
       {ev.entries.map((e) => {
         const allowed = e.decision === "ALLOWED";
+        const tone = variantForReason(e.decision);
         const pct = consumedPercent(e.cumulative_amount, deposit);
         return (
           <div
@@ -59,6 +51,8 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
             className={`rounded-md border p-2.5 ${
               allowed
                 ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+                : tone === "danger"
+                ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
                 : "border-[var(--color-warn-dim)] bg-[#f59e0b0d]"
             }`}
           >
@@ -67,7 +61,7 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
                 {e.sequence_id}
               </span>
               <span title={DECISION_WHY[e.decision] ?? e.decision}>
-                <Badge variant={allowed ? "allowed" : "denied"}>
+                <Badge variant={tone}>
                   {DECISION_LABEL[e.decision] ?? e.decision.replace(/^ERR_/, "")}
                 </Badge>
               </span>
@@ -80,7 +74,15 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
             </div>
             {/* Only allowed claims moved the bar; denials show where it stayed. */}
             <div className="mt-2 pl-7">
-              <Progress percent={allowed ? pct : 0} tone={allowed ? "accent" : "warn"} />
+              <Progress
+                percent={allowed ? pct : 0}
+                tone={allowed ? "accent" : "warn"}
+                label={
+                  allowed
+                    ? `High-water mark after this claim: ${pct.toFixed(1)}% of the deposit`
+                    : "Refused — the mark did not move"
+                }
+              />
             </div>
             <div className="mt-1 flex items-center gap-1.5 pl-7">
               <code
@@ -100,7 +102,7 @@ function Ladder({ ev, deposit }: { ev: SessionEvidence; deposit: string }) {
         );
       })}
       {ev.entries.length === 0 && (
-        <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
+        <p className="py-10 text-center text-xs text-[var(--color-fg-muted)]">
           No claims have been made against this session yet.
         </p>
       )}
@@ -144,16 +146,24 @@ export default function SessionDetailPage() {
   const denied = (evidence?.entries.length ?? 0) - allowed;
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button asChild variant="ghost" size="sm">
+    <div className="space-y-5">
+      <header className="space-y-2">
+        <Button asChild variant="ghost" size="sm" className="-ml-2">
           <Link href="/">
             <ArrowLeft /> Monitor
           </Link>
         </Button>
-        <code className="font-mono text-xs text-[var(--color-fg-muted)]">{pubkey}</code>
-        {st && <Badge variant={st.tone}>{st.label}</Badge>}
-      </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="t-page">Session</h1>
+          {st && <Badge variant={st.tone}>{st.label}</Badge>}
+        </div>
+        <MonoKey
+          value={pubkey}
+          head={10}
+          tail={10}
+          href={pubkey ? explorerAddress(pubkey) : undefined}
+        />
+      </header>
 
       {loaded && notFound && (
         <Card>
@@ -161,17 +171,18 @@ export default function SessionDetailPage() {
             <p className="text-sm text-[var(--color-fg-muted)]">
               The gateway is not tracking this session.
             </p>
-            <p className="mt-1 text-xs text-[var(--color-fg-dim)]">
-              It may exist on chain without ever having been registered.
+            <p className="t-support mx-auto mt-1 max-w-sm">
+              It may exist on chain without ever having been registered. Nothing here is missing —
+              this gateway simply never saw it.
             </p>
           </CardContent>
         </Card>
       )}
 
       {session && st && (
-        <div className="grid gap-4 xl:grid-cols-[1fr_1.3fr]">
-          <div className="space-y-4">
-            <Card>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+          <div className="min-w-0 space-y-4">
+            <Card accent={st.wouldAccept ? "accent" : "warn"}>
               <CardHeader>
                 <div>
                   <CardTitle>Allowance</CardTitle>
@@ -184,8 +195,8 @@ export default function SessionDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
-                  <div className="flex items-baseline justify-between">
-                    <span className="tnum font-mono text-xl">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="tnum font-mono text-xl text-[var(--color-fg)]">
                       {formatUsdc(session.cumulative_accepted)}
                     </span>
                     <span className="tnum font-mono text-xs text-[var(--color-fg-dim)]">
@@ -194,47 +205,41 @@ export default function SessionDetailPage() {
                   </div>
                   <Progress
                     className="mt-2"
-                    percent={consumedPercent(
-                      session.cumulative_accepted,
-                      session.deposited_total
-                    )}
+                    percent={consumedPercent(session.cumulative_accepted, session.deposited_total)}
                     tone="accent"
+                    label="Share of the escrowed deposit consumed"
                   />
-                  <p className="mt-2 text-[10px] text-[var(--color-fg-dim)]">
+                  <p className="t-support mt-2">
                     {formatUsdcCompact(session.remaining)} USDC still available
                   </p>
                 </div>
 
-                <Field label="Agent">
+                <Row label="Agent">
                   <MonoKey value={session.agent} href={explorerAddress(session.agent)} />
-                </Field>
-                <Field label="Provider">
+                </Row>
+                <Row label="Provider">
                   <MonoKey value={session.provider} href={explorerAddress(session.provider)} />
-                </Field>
-                <Field label="Mint">
+                </Row>
+                <Row label="Mint">
                   <MonoKey value={session.mint} href={explorerAddress(session.mint)} />
-                </Field>
-                <Field label="Last nonce">
+                </Row>
+                <Row label="Last nonce">
                   <span className="tnum font-mono text-xs">{session.last_nonce ?? "—"}</span>
-                </Field>
-                <Field label="Expiry">
+                </Row>
+                <Row label="Expiry">
                   <span className="tnum font-mono text-xs">
                     {st.status === "settled" ? "—" : expiryCountdown(session.expires_at).label}
                   </span>
-                </Field>
-                <Field label="Opened">
+                </Row>
+                <Row label="Opened">
                   <span className="font-mono text-xs text-[var(--color-fg-muted)]">
                     {new Date(session.created_at).toLocaleString()}
                   </span>
-                </Field>
+                </Row>
 
                 <div className="mt-3 flex gap-2">
                   <Button asChild variant="outline" size="sm" className="flex-1">
-                    <a
-                      href={explorerAddress(session.session)}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a href={explorerAddress(session.session)} target="_blank" rel="noreferrer">
                       On chain <ExternalLink />
                     </a>
                   </Button>
@@ -251,8 +256,8 @@ export default function SessionDetailPage() {
                 </div>
 
                 {st.status === "expired" && (
-                  <div className="mt-3 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-2.5">
-                    <p className="text-[11px] text-[var(--color-warn)]">
+                  <div className="mt-3 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5">
+                    <p className="text-[11px] leading-relaxed text-[var(--color-warn)]">
                       <strong className="font-semibold">Past settlement.</strong>{" "}
                       <span className="text-[var(--color-fg-muted)]">
                         <code className="font-mono">settle_session</code> refuses once expiry plus
@@ -268,58 +273,46 @@ export default function SessionDetailPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Decisions</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-2">
-                <div className="rounded-md border border-[var(--color-accent-dim)] bg-[#10b9811a] p-3">
-                  <CheckCircle2 className="size-4 text-[var(--color-accent)]" />
-                  <p className="tnum mt-1 text-xl font-semibold text-[var(--color-accent)]">
-                    {allowed}
-                  </p>
-                  <p className="text-[10px] text-[var(--color-fg-dim)]">allowed</p>
-                </div>
-                <div className="rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-3">
-                  <Ban className="size-4 text-[var(--color-warn)]" />
-                  <p className="tnum mt-1 text-xl font-semibold text-[var(--color-warn)]">
-                    {denied}
-                  </p>
-                  <p className="text-[10px] text-[var(--color-fg-dim)]">refused</p>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="grid grid-cols-2 gap-3">
+              <Stat
+                label="Allowed"
+                value={String(allowed)}
+                support="claims that moved the mark"
+                icon={CheckCircle2}
+                tone="accent"
+              />
+              <Stat
+                label="Refused"
+                value={String(denied)}
+                support="recorded, not discarded"
+                icon={Ban}
+                tone={denied > 0 ? "warn" : "neutral"}
+              />
+            </div>
           </div>
 
-          <Card>
+          <Card className="min-w-0">
             <CardHeader>
               <div>
                 <CardTitle>Claim ladder</CardTitle>
-                <CardDescription>
-                  Every decision in order, denials included
-                </CardDescription>
+                <CardDescription>Every decision in order, denials included</CardDescription>
               </div>
+              {/* No icon beside the glyph the badge already carries. */}
               {evidence &&
                 (evidence.chain_valid ? (
-                  <Badge variant="allowed">
-                    <ShieldCheck className="size-3" /> chain intact
-                  </Badge>
+                  <Badge variant="allowed">chain intact</Badge>
                 ) : (
-                  <Badge variant="danger">
-                    <ShieldAlert className="size-3" /> chain broken
-                  </Badge>
+                  <Badge variant="danger">chain broken</Badge>
                 ))}
             </CardHeader>
             <CardContent className="max-h-[680px] overflow-y-auto">
               {evidence && evidence.entry_count > 0 && (
                 <div className="mb-3 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                    merkle_root
-                  </p>
-                  <code className="break-all font-mono text-[11px] text-[var(--color-cyan)]">
+                  <p className="t-label">merkle_root</p>
+                  <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-cyan)]">
                     {evidence.merkle_root}
                   </code>
-                  <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
+                  <p className="t-support mt-1">
                     {st.status === "settled"
                       ? "Committed on chain by the settlement transaction."
                       : "Will be committed on chain when this session settles."}
@@ -329,7 +322,7 @@ export default function SessionDetailPage() {
               {evidence ? (
                 <Ladder ev={evidence} deposit={session.deposited_total} />
               ) : (
-                <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
+                <p className="py-10 text-center text-xs text-[var(--color-fg-muted)]">
                   Loading evidence…
                 </p>
               )}
