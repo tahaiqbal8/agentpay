@@ -86,6 +86,35 @@ bought.price;          // charged anyway
 payment and forwarding both worked — and retrying would cost again. `buyMany`
 stops when it sees one, rather than spending the budget on errors.
 
+## Planning
+
+```ts
+const plan = await pay.plan("/weather", 50);
+plan.options[0].affordable_calls;  // bounded by the human's policy envelope
+plan.options[0].refused_by;        // the rule that stops it, if one does
+plan.recommended;                  // cheapest usable provider
+plan.escrow_remaining;             // the absolute bound
+```
+
+### `plan()` vs `affordableCalls()`
+
+|  | `affordableCalls()` | `plan()` |
+| --- | --- | --- |
+| Bound reported | **Escrow ceiling** — remaining deposit ÷ price | **Policy envelope** — allowlist, per-call cap, call count, budget |
+| Needs a signature | No | Yes |
+| Round trips | Two reads | One signed call |
+| Accuracy | Optimistic — the envelope may be narrower | Authoritative at the moment it was asked |
+
+Use `affordableCalls()` for a cheap upper bound and `plan()` when the answer has
+to match what the gateway will actually admit.
+
+**A plan reserves nothing.** Another purchase can consume the budget a moment
+later; `buy()` remains the authority and re-checks every rule.
+
+The signature is a claim at the session's **current** cumulative and nonce, which
+makes it provably unspendable: the gateway and the program both admit a claim
+only when its cumulative is strictly greater than the accepted total.
+
 ## Settling
 
 ```ts

@@ -17,6 +17,8 @@ export type {
   Purchase,
   BuyManyResult,
   SessionState,
+  SessionPlan,
+  SessionPlanOption,
   Settlement,
   RetryOptions,
 } from "./client";

@@ -119,6 +119,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/evidence/proof", post(routes::evidence_proof))
         .route("/v1/catalogue", get(control::catalogue))
+        // The agent's own planner. In the OPEN router deliberately: identity
+        // comes from a signature over the session, not from the operator
+        // token, and placement here means `limit_general` already covers it.
+        .route("/v1/session/plan", post(control::plan_for_session))
         .with_state(Arc::clone(&state));
 
     let open = open.layer(axum::middleware::from_fn_with_state(

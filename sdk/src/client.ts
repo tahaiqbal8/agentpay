@@ -118,6 +118,36 @@ export interface Settlement {
   settlementRecord: string;
 }
 
+/** One provider's offer, as the session planner reports it. */
+export interface SessionPlanOption {
+  provider_id: string;
+  provider_label: string;
+  resource: string;
+  unit_price: string;
+  affordable_calls: number;
+  total_cost: string;
+  sufficient: boolean;
+  /** The policy rule that stops this option, if one does. */
+  refused_by: string | null;
+  needs_approval: boolean;
+}
+
+/** What the agent's own planner answers. */
+export interface SessionPlan {
+  session: string;
+  resource: string;
+  requested_calls: number;
+  /** Cheapest first. An unaffordable option is still listed, with its reason. */
+  options: SessionPlanOption[];
+  recommended: string | null;
+  spent: string;
+  /** Envelope left, or null when the agent has no policy. */
+  remaining: string | null;
+  /** Escrow left on chain — the absolute bound. */
+  escrow_remaining: string;
+  unavailable: { provider_id: string; base_url: string; error: string }[];
+}
+
 export interface RetryOptions {
   /**
    * How many times to retry a TRANSIENT failure.
@@ -242,6 +272,57 @@ export class AgentPayClient {
   /** What this client believes it has committed so far. */
   get spent(): bigint {
     return this.cumulative;
+  }
+
+  /**
+   * Asks the gateway what this session could afford, bounded by the human's
+   * policy envelope.
+   *
+   * # How this differs from `affordableCalls()`
+   *
+   * | | `affordableCalls()` | `plan()` |
+   * | --- | --- | --- |
+   * | Bound reported | The **escrow ceiling** — remaining deposit ÷ price | The **policy envelope** — allowlist, per-call cap, call count, budget |
+   * | Needs a signature | No | Yes |
+   * | Round trips | Two reads | One signed call |
+   * | Can be wrong | Optimistic: the envelope may be narrower | Authoritative at the moment it was asked |
+   *
+   * Use `affordableCalls()` for a cheap upper bound, `plan()` when the answer
+   * has to match what the gateway will actually admit.
+   *
+   * # What it does not do
+   *
+   * It reserves nothing. Another purchase can consume the budget a moment
+   * later, and the plan says nothing about who gets there first — `buy()`
+   * remains the authority, and re-checks every rule.
+   *
+   * # Authentication
+   *
+   * Signs a claim at the session's CURRENT cumulative and nonce. Such a claim
+   * is **provably unspendable**: the gateway and the on-chain program both
+   * admit a claim only when its cumulative is strictly greater than the
+   * accepted total, so this one is refused `ERR_CLAIM_NOT_MONOTONIC`
+   * everywhere payment happens.
+   */
+  async plan(resource: string, calls: number): Promise<SessionPlan> {
+    const claimJson = Buffer.from(
+      await this.encodeClaim(this.cumulative, this.nonce),
+      "base64"
+    ).toString("utf8");
+
+    const res = await this.doFetch(`${this.gateway}/v1/session/plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session: this.sessionB58,
+        resource,
+        calls,
+        claim: JSON.parse(claimJson),
+      }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw errorFrom(res.status, body);
+    return body as SessionPlan;
   }
 
   /** Asks the price without paying. This is the 402 handshake. */
@@ -502,10 +583,11 @@ export class AgentPayClient {
    * caps, call counts — may be narrower, and the agent is not told it: reading
    * another party's spending rules is an operator's business, not an agent's.
    *
-   * So treat this as a ceiling, not a permission. The definitive answer comes
-   * from actually buying, and a refusal names the exact rule that stopped it.
-   * `buyMany` already stops there, which is why an agent does not need to
-   * predict in advance.
+   * So treat this as a ceiling, not a permission. For the policy-bounded
+   * answer use `plan()`, which signs and asks the gateway. The definitive
+   * answer still comes from actually buying, and a refusal names the exact
+   * rule that stopped it — `buyMany` already stops there, which is why an
+   * agent does not need to predict in advance.
    */
   async affordableCalls(resource: string): Promise<number> {
     const [{ price }, state] = await Promise.all([

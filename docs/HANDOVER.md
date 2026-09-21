@@ -132,7 +132,7 @@ before planning work against it.
 | 4 | Human authorization + funding | Human | **Built** — `open_session` on-chain, plus an off-chain envelope: per-resource allowlist, per-call cap, total budget, call count, approval threshold, suspension | `open_session` + `POST /v1/agents/{id}/authorize`, `policy.rs` |
 | 5 | API / AI registry | Platform | **Built** — many providers, catalogues aggregated live | `registry.rs`, `GET /v1/catalogue` |
 | 6 | API selection | Agent | **Built** — offers for a resource, cheapest first, with a recommendation | `POST /v1/agent/plan` |
-| 7 | Agent decision (how many calls) | Agent | **Partial** — an agent sizes a run itself with `affordableCalls()`; the operator planner reports what the envelope affords. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan`, SDK `affordableCalls`; §11 |
+| 7 | Agent decision (how many calls) | Agent | **Built** — `POST /v1/session/plan` answers for the agent that holds the session, authenticated by a signature rather than the operator token. Choosing a task's real call count is still the application's job; there is no task planner. | `control.rs::plan_for_session`, SDK `plan()`; §11 |
 | 8 | API calls | Agent | **Built** — 402 handshake, signed cumulative claims, and `@agentpay/client` so an integrator writes three lines rather than 194 | `/v1/buy/{resource}`, `sdk/`, §4 |
 | 9 | Gateway enforcement | Gateway | **Built** — policy, signature, ordering, high-water mark, price match | `verify_claim`, `evaluate_claim`, `policy.rs`, §4 |
 | 10 | Provider delivery | Provider | **Built** — forwarded only after admission | `buy.rs`, §4 |
@@ -361,6 +361,7 @@ modules.
 | GET | `/v1/session/{pubkey}/evidence` | Full evidence log plus Merkle root |
 | GET | `/v1/session/{pubkey}/settlement` | The root the program actually stored |
 | POST | `/v1/evidence/proof` | Merkle inclusion proof for one decision |
+| POST | `/v1/session/plan` | The agent's own planner — authenticated by a signature over its session |
 
 Control plane:
 

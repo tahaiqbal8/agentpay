@@ -433,8 +433,188 @@ function fail(msg: string): never {
     secondUse.body?.reason_code
   );
 
+  // ---- the agent's own planner -------------------------------------------
+  //
+  // Everything here is about ONE property: the planner answers questions and
+  // authorizes nothing. The claim it accepts is refused everywhere payment
+  // happens, and 8.x below proves that by replaying it.
+  console.log("\n9. the agent plans its own session (no admin token)");
+
+  // Section 8 left the agent in human mode, where every purchase waits for a
+  // person. Back to autonomous so the plan -> buy -> plan check below measures
+  // the planner rather than the approval queue.
+  await api("POST", `/v1/agents/${agentId}/authorize`, {
+    max_total: "50000",
+    max_per_call: "25000",
+    allowed_resources: ["/weather", "/quote"],
+    max_calls: 50,
+    mode: "autonomous",
+  });
+
+  function planClaim(cumulative: bigint, n: bigint) {
+    const msg = buildClaimMessage(session, cumulative, n, claimExpiry);
+    return {
+      session: session.toBase58(),
+      cumulative_amount: cumulative.toString(),
+      nonce: n.toString(),
+      expires_at: claimExpiry.toString(),
+      signature: bs58.encode(nacl.sign.detached(msg, agentKp.secretKey)),
+    };
+  }
+
+  /** Deliberately sends NO admin token: this is the agent's own endpoint. */
+  async function sessionPlan(body: any) {
+    const r = await fetch(`${BASE}/v1/session/plan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, body: (await r.json().catch(() => null)) as any };
+  }
+
+  const good = await sessionPlan({
+    session: session.toBase58(),
+    resource: "/weather",
+    calls: 10,
+    claim: planClaim(cumulative, nonce),
+  });
+  check(
+    "a correctly signed session claim plans, with no admin token",
+    good.status === 200,
+    `HTTP ${good.status} ${good.body?.reason_code ?? ""}`
+  );
+  check(
+    "the response carries no agent_id",
+    good.status === 200 && good.body.agent_id === undefined,
+    "an operator identifier would be a leak"
+  );
+  check(
+    "escrow_remaining matches the session",
+    good.body?.escrow_remaining === (DEPOSIT - cumulative).toString(),
+    `${good.body?.escrow_remaining} vs ${DEPOSIT - cumulative}`
+  );
+
+  // A different keypair: the cross-agent disclosure test.
+  const stranger = Keypair.generate();
+  const forgedMsg = buildClaimMessage(session, cumulative, nonce, claimExpiry);
+  const forged = await sessionPlan({
+    session: session.toBase58(),
+    resource: "/weather",
+    calls: 10,
+    claim: {
+      session: session.toBase58(),
+      cumulative_amount: cumulative.toString(),
+      nonce: nonce.toString(),
+      expires_at: claimExpiry.toString(),
+      signature: bs58.encode(nacl.sign.detached(forgedMsg, stranger.secretKey)),
+    },
+  });
+  check(
+    "a different keypair cannot plan for this session",
+    forged.status === 401 && forged.body?.reason_code === "ERR_INVALID_SIGNATURE",
+    forged.body?.reason_code ?? String(forged.status)
+  );
+
+  // A SPENDABLE claim handed to a read endpoint is refused, not merely ignored.
+  const higher = await sessionPlan({
+    session: session.toBase58(),
+    resource: "/weather",
+    calls: 10,
+    claim: planClaim(cumulative + 1000n, nonce + 1n),
+  });
+  check(
+    "a higher cumulative is refused",
+    higher.status === 400 && higher.body?.reason_code === "ERR_PLAN_CLAIM_MISMATCH",
+    higher.body?.reason_code ?? String(higher.status)
+  );
+
+  // THE LOAD-BEARING TEST. The claim that authenticated the plan is replayed
+  // as payment. If either of these ever returns 200, the planner has become a
+  // way to buy.
+  //
+  // Two gates catch it, and they answer differently because of where they sit
+  // in the ordering:
+  //
+  //   /v1/buy          price match runs BEFORE admit_claim, and a planning
+  //                    claim carries `cumulative == accepted` rather than
+  //                    `accepted + price`, so it is refused there first with
+  //                    ERR_PRICE_MISMATCH.
+  //   /v1/claim/verify no price step, so the claim reaches evaluate_claim and
+  //                    is refused ERR_CLAIM_NOT_MONOTONIC — the rule the
+  //                    program applies too.
+  //
+  // Both are asserted. The invariant is "unspendable", and it holds at every
+  // gate; only the code differs by which gate is reached first.
+  const replayed = await fetch(`${BASE}/v1/buy/weather?city=Lahore`, {
+    headers: {
+      "x-agentpay-claim": Buffer.from(
+        JSON.stringify(planClaim(cumulative, nonce))
+      ).toString("base64"),
+    },
+  });
+  const replayBody = (await replayed.json().catch(() => null)) as any;
+  check(
+    "the planning claim CANNOT be spent at /v1/buy",
+    replayed.status !== 200 &&
+      replayBody?.reason_code === "ERR_PRICE_MISMATCH",
+    `${replayed.status} ${replayBody?.reason_code} (price gate, before admit_claim)`
+  );
+
+  const replayVerify = await api("POST", "/v1/claim/verify", {
+    claim: planClaim(cumulative, nonce),
+  });
+  check(
+    "and is refused non-monotonic where the price gate is absent",
+    replayVerify.status !== 200 &&
+      replayVerify.body?.reason_code === "ERR_CLAIM_NOT_MONOTONIC",
+    `${replayVerify.status} ${replayVerify.body?.reason_code} (the rule the program applies)`
+  );
+
+  // The operator planner and the agent planner must agree, or the two front
+  // doors have drifted apart.
+  const operatorPlan = await api("POST", "/v1/agent/plan", {
+    agent_id: agentId,
+    resource: "/weather",
+    calls: 10,
+  });
+  check(
+    "operator and session planners agree",
+    operatorPlan.body?.options?.[0]?.affordable_calls ===
+      good.body?.options?.[0]?.affordable_calls,
+    `operator ${operatorPlan.body?.options?.[0]?.affordable_calls} vs ` +
+      `agent ${good.body?.options?.[0]?.affordable_calls}`
+  );
+
+  check(
+    "/v1/agent/plan still needs the operator token",
+    (
+      await fetch(`${BASE}/v1/agent/plan`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent_id: agentId, resource: "/weather", calls: 1 }),
+      })
+    ).status === 401,
+    "unchanged from the operator's perspective"
+  );
+
+  // Plan, buy, plan again: the number moves, and nothing was reserved.
+  //
+  // Ask for MORE than the envelope affords. Asking for 10 when 45 are
+  // available would be capped by the request rather than the budget, and the
+  // answer could not move however much was spent in between.
+  const wide = { session: session.toBase58(), resource: "/weather", calls: 1000 };
+  const beforePlan = await sessionPlan({ ...wide, claim: planClaim(cumulative, nonce) });
+  const before = beforePlan.body.options[0].affordable_calls;
+  await buy("weather?city=Hyderabad", 1000n);
+  const after = await sessionPlan({ ...wide, claim: planClaim(cumulative, nonce) });
+  check(
+    "a purchase between plans is reflected, and nothing was reserved",
+    after.body?.options?.[0]?.affordable_calls < before,
+    `${before} -> ${after.body?.options?.[0]?.affordable_calls}`
+  );
+
   // ---- the escrow is still the outer bound -------------------------------
-  console.log("\n9. the chain still has the last word");
+  console.log("\n10. the chain still has the last word");
   const onChain = await api("GET", "/v1/sessions");
   const summary = onChain.body.sessions.find((x: any) => x.session === session.toBase58());
   check(

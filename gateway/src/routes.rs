@@ -106,7 +106,7 @@ fn reconciliation_code(e: &SessionVerificationError) -> ReasonCode {
     }
 }
 
-fn store_denial(e: StoreError, rid: &str) -> Denial {
+pub(crate) fn store_denial(e: StoreError, rid: &str) -> Denial {
     match e {
         // Fail closed: if state cannot be read, deny.
         StoreError::Unavailable => Denial::new(ReasonCode::ERR_STORE_UNAVAILABLE, rid),

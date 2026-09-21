@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::claim::ClaimWire;
 use crate::control_db::{AgentRecord, ApprovalRecord};
 use crate::error::{Denial, ReasonCode};
 use crate::policy::{AgentMode, AgentPolicy, AgentStatus, Spend};
@@ -584,30 +585,24 @@ pub struct PlanResponse {
 ///
 /// The separation matters. A planner that also authorised would be a second
 /// enforcement path to keep in step with the first.
-pub async fn plan(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<PlanRequest>,
-) -> Result<Json<PlanResponse>, Denial> {
-    let rid = request_id();
-    let db = db(&state, &rid)?;
-
-    if req.calls == 0 {
-        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
-    }
-
-    let agent = db
-        .get_agent(&req.agent_id)
-        .await
-        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
-        .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
-
-    let spend = db
-        .agent_spend(&agent.agent_pubkey)
-        .await
-        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
-
+/// The planning calculation, shared by both front doors.
+///
+/// Extracted so the operator planner (`/v1/agent/plan`) and the agent planner
+/// (`/v1/session/plan`) cannot drift apart and report different numbers for
+/// the same question. The logic is unchanged from when it lived inline in
+/// `plan`; only its home moved.
+///
+/// Reads only. It evaluates `policy::evaluate` against a `Spend` the caller
+/// supplies and returns what it found. It writes nothing, reserves nothing,
+/// and advances nothing.
+async fn plan_options(
+    state: &AppState,
+    agent: &AgentRecord,
+    spend: Spend,
+    wanted: &str,
+    calls: u32,
+) -> (Vec<PlanOption>, Option<String>, Vec<crate::registry::ProviderError>) {
     let aggregate = state.registry.aggregate().await;
-    let wanted = crate::policy::normalise_resource(&req.resource);
     let offers: Vec<CatalogueEntry> = aggregate
         .entries
         .iter()
@@ -624,10 +619,10 @@ pub async fn plan(
         };
 
         let (affordable, refused_by, needs_approval) = match agent.policy.as_ref() {
-            // No envelope: the escrow is the only bound, and the planner does
-            // not know the session yet, so it reports the request as-is rather
-            // than inventing a limit.
-            None => (req.calls, None, false),
+            // No envelope: the escrow is the only bound, and this function does
+            // not see the session, so it reports the request as-is rather than
+            // inventing a limit.
+            None => (calls, None, false),
             Some(policy) => {
                 let first = crate::policy::evaluate(
                     agent.status,
@@ -648,7 +643,7 @@ pub async fn plan(
                         // with what will actually be admitted.
                         let mut n = 0u32;
                         let mut running = spend;
-                        while n < req.calls {
+                        while n < calls {
                             let d = crate::policy::evaluate(
                                 agent.status,
                                 agent.mode,
@@ -680,7 +675,7 @@ pub async fn plan(
             unit_price: unit.to_string(),
             affordable_calls: affordable,
             total_cost: total.to_string(),
-            sufficient: affordable >= req.calls,
+            sufficient: affordable >= calls,
             refused_by,
             needs_approval,
         });
@@ -688,12 +683,41 @@ pub async fn plan(
 
     // Cheapest usable option wins. "Usable" means it can afford at least one
     // call; an option that affords none is still listed, with its reason, so
-    // the agent learns why rather than seeing an empty list.
+    // the caller learns why rather than seeing an empty list.
     let recommended = options
         .iter()
         .filter(|o| o.affordable_calls > 0)
         .min_by_key(|o| o.unit_price.parse::<u64>().unwrap_or(u64::MAX))
         .map(|o| o.provider_id.clone());
+
+    (options, recommended, aggregate.unavailable)
+}
+
+pub async fn plan(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PlanRequest>,
+) -> Result<Json<PlanResponse>, Denial> {
+    let rid = request_id();
+    let db = db(&state, &rid)?;
+
+    if req.calls == 0 {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    }
+
+    let agent = db
+        .get_agent(&req.agent_id)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
+
+    let spend = db
+        .agent_spend(&agent.agent_pubkey)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+
+    let wanted = crate::policy::normalise_resource(&req.resource);
+    let (options, recommended, unavailable) =
+        plan_options(&state, &agent, spend, &wanted, req.calls).await;
 
     let remaining = agent
         .policy
@@ -708,7 +732,191 @@ pub async fn plan(
         recommended,
         spent: spend.spent.to_string(),
         remaining,
-        unavailable: aggregate.unavailable,
+        unavailable,
+        request_id: rid,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Session-scoped planning — the agent's own front door
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SessionPlanRequest {
+    /// The session the caller holds, base58.
+    pub session: String,
+    pub resource: String,
+    pub calls: u32,
+    /// A claim over this session at its CURRENT state, proving key possession.
+    /// See `plan_for_session` for why it cannot be spent.
+    pub claim: ClaimWire,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionPlanResponse {
+    pub session: String,
+    pub resource: String,
+    pub requested_calls: u32,
+    pub options: Vec<PlanOption>,
+    pub recommended: Option<String>,
+    pub spent: String,
+    pub remaining: Option<String>,
+    /// Escrow left on chain. The absolute bound; the envelope only narrows it.
+    pub escrow_remaining: String,
+    pub unavailable: Vec<crate::registry::ProviderError>,
+    pub request_id: String,
+}
+
+/// POST /v1/session/plan — the planner an AGENT can reach.
+///
+/// # Why this exists beside `/v1/agent/plan`
+///
+/// That endpoint takes an `agent_id` and lives behind the operator's admin
+/// token. An agent holds a session and a signing key, never that token, so it
+/// could not ask the one question the lifecycle says it asks: *who sells this,
+/// and how many can I afford?*
+///
+/// Opening the operator endpoint was not an option: an `agent_id` parameter on
+/// an unauthenticated route is an enumeration oracle for every agent's
+/// finances. **This request has no such field.** The agent is derived —
+/// session -> `record.agent` -> `get_agent_by_pubkey` — so there is nothing to
+/// enumerate.
+///
+/// # Why the signed claim cannot be spent
+///
+/// The claim must carry `cumulative_amount == record.cumulative_accepted`.
+/// `state::evaluate_claim` admits a claim only when the cumulative is
+/// **strictly** greater than the mark, and the on-chain program applies the
+/// same rule. A claim at exactly the mark is therefore refused
+/// `ERR_CLAIM_NOT_MONOTONIC` by `/v1/buy`, by `/v1/claim/verify` and by the
+/// program.
+///
+/// That is the whole security argument, and it is worth being precise about:
+/// a planning claim buys nothing not because this handler declines to spend
+/// it, but because **no code path in the system accepts it as payment**.
+///
+/// A claim carrying a *higher* cumulative is refused rather than ignored, so
+/// this endpoint never handles a spendable claim at all.
+///
+/// # What this handler does not do
+///
+/// It writes nothing. No store mutation, no evidence entry, no high-water mark
+/// advance, no reservation. A plan is advice that can go stale the moment
+/// another purchase lands — and that is correct. `/v1/buy` is the authority,
+/// and a planner that reserved budget would become a second enforcement path
+/// to keep in step with the first.
+pub async fn plan_for_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SessionPlanRequest>,
+) -> Result<Json<SessionPlanResponse>, Denial> {
+    let rid = request_id();
+    let now = state.now();
+
+    if req.calls == 0 {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    }
+
+    // Order mirrors the money path: cheap checks before the ~60us signature
+    // verification, so a flood of garbage cannot force that work.
+    let Ok(session) = req.session.parse::<solana_pubkey::Pubkey>() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    };
+
+    let Ok((claim, signature)) = req.claim.decode() else {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_CLAIM, &rid));
+    };
+
+    // The claim must be about the session being planned for, or a valid claim
+    // over session A would authenticate a plan for session B.
+    if claim.session != session {
+        return Err(Denial::new(ReasonCode::ERR_MALFORMED_REQUEST, &rid));
+    }
+
+    if claim.is_expired(now) {
+        return Err(Denial::new(ReasonCode::ERR_CLAIM_EXPIRED, &rid));
+    }
+
+    let record = state
+        .store
+        .get(&session)
+        .await
+        .map_err(|e| crate::routes::store_denial(e, &rid))?;
+
+    // Same order as `evaluate_claim`: settled, then expired.
+    if record.is_settled {
+        return Err(Denial::new(ReasonCode::ERR_SESSION_SETTLED, &rid));
+    }
+    let limit = record
+        .expires_at
+        .checked_add(crate::claim::CLOCK_SKEW_TOLERANCE_SECS)
+        .unwrap_or(i64::MAX);
+    if now > limit {
+        return Err(Denial::new(ReasonCode::ERR_SESSION_EXPIRED, &rid));
+    }
+
+    // The binding rule. Exact equality, not "at most": a higher cumulative
+    // would be a spendable claim, and this endpoint must never receive one.
+    if claim.cumulative_amount != record.cumulative_accepted
+        || claim.nonce != record.last_nonce.unwrap_or(0)
+    {
+        warn!(
+            request_id = %rid,
+            session = %session,
+            presented_cumulative = claim.cumulative_amount,
+            expected_cumulative = record.cumulative_accepted,
+            presented_nonce = claim.nonce,
+            expected_nonce = record.last_nonce.unwrap_or(0),
+            "plan: claim does not describe the session's current state"
+        );
+        return Err(Denial::new(ReasonCode::ERR_PLAN_CLAIM_MISMATCH, &rid));
+    }
+
+    // The agent key comes from STORED STATE, never from the request. Accepting
+    // a caller-supplied key would let anyone plan for any session using their
+    // own keypair. Same rule, same reason, as `routes::verify_claim` step 3.
+    if crate::verify::verify_claim_signature(&record.agent, &claim, &signature)
+        != crate::verify::SignatureVerdict::Valid
+    {
+        warn!(request_id = %rid, session = %session, "plan: invalid signature");
+        return Err(Denial::new(ReasonCode::ERR_INVALID_SIGNATURE, &rid));
+    }
+
+    let db = db(&state, &rid)?;
+    let agent = db
+        .get_agent_by_pubkey(&record.agent.to_string())
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
+
+    let spend = db
+        .agent_spend(&agent.agent_pubkey)
+        .await
+        .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
+
+    let wanted = crate::policy::normalise_resource(&req.resource);
+    let (options, recommended, unavailable) =
+        plan_options(&state, &agent, spend, &wanted, req.calls).await;
+
+    let remaining = agent
+        .policy
+        .as_ref()
+        .map(|p| p.max_total.saturating_sub(spend.spent).to_string());
+
+    Ok(Json(SessionPlanResponse {
+        session: session.to_string(),
+        resource: wanted,
+        requested_calls: req.calls,
+        options,
+        recommended,
+        spent: spend.spent.to_string(),
+        remaining,
+        escrow_remaining: record
+            .deposited_total
+            .saturating_sub(record.cumulative_accepted)
+            .to_string(),
+        unavailable,
+        // Deliberately NOT `agent_id`: an operator's identifier, of no use to
+        // the agent and one more thing to leak.
         request_id: rid,
     }))
 }
