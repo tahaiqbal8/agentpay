@@ -5,19 +5,35 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   Ban,
+  Bot,
   CircleCheck,
+  FlaskConical,
   Layers,
-  ShieldAlert,
+  ShieldCheck,
+  Store,
   Wallet,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, variantForReason } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Segmented } from "@/components/ui/segmented";
+import { Stat } from "@/components/ui/stat";
+import {
+  Table,
+  TableSkeleton,
+  TableWrap,
+  TBody,
+  TD,
+  TH,
+  THead,
+  TR,
+} from "@/components/ui/table";
+import { SearchInput } from "@/components/ui/input";
 import { MonoKey } from "@/components/mono";
-import { Input } from "@/components/ui/input";
 import { api, mock, type RecentDecision, type SessionSummary } from "@/lib/api";
 import { DECISION_LABEL, DECISION_WHY } from "@/lib/constants";
 import { isStrandedEscrow, sessionStatus } from "@/lib/session-status";
@@ -33,63 +49,42 @@ type StatusFilter = "all" | "active" | "expired" | "settled";
 type FeedFilter = "all" | "allowed" | "denied";
 type SortKey = "created" | "consumed" | "deposit" | "evidence";
 
-function Stat({
-  label,
-  value,
-  sub,
-  icon: Icon,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  sub?: React.ReactNode;
-  icon: React.ElementType;
-  tone?: "default" | "accent" | "warn" | "danger";
-}) {
-  const chip =
-    tone === "accent"
-      ? "bg-[#10b9811a] text-[var(--color-accent)]"
-      : tone === "warn"
-      ? "bg-[#f59e0b1a] text-[var(--color-warn)]"
-      : tone === "danger"
-      ? "bg-[#ef44441a] text-[var(--color-danger)]"
-      : "bg-[var(--color-surface-2)] text-[var(--color-fg-muted)]";
-  return (
-    <Card>
-      <CardContent className="flex items-start gap-3 p-3">
-        <div className={`grid size-8 shrink-0 place-items-center rounded ${chip}`}>
-          <Icon className="size-4" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">{label}</p>
-          <p className="tnum truncate text-lg font-semibold leading-tight">{value}</p>
-          {sub && <div className="truncate text-[10px] text-[var(--color-fg-dim)]">{sub}</div>}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
+/**
+ * The consumption bar.
+ *
+ * The single most important cell on this page: it answers "how much of what
+ * the human escrowed has this agent actually spent" without the reader doing
+ * arithmetic.
+ *
+ * `consumedPercent` does its comparison in BigInt and returns a number only
+ * for the bar's width. No amount is ever parsed as a float — above 2^53 a
+ * JavaScript number rounds, and these are balances.
+ */
 function HighWaterMark({ s }: { s: SessionSummary }) {
   const pct = consumedPercent(s.cumulative_accepted, s.deposited_total);
   const tone = pct >= 100 ? "danger" : pct >= 80 ? "warn" : "accent";
   const untouched = s.cumulative_accepted === "0";
+
   return (
-    <div className="space-y-1">
+    <div className="min-w-[8.5rem] space-y-1">
       <div className="flex items-baseline justify-between gap-2">
         <span
-          className={`tnum font-mono text-xs ${
+          className={`t-mono text-xs ${
             untouched ? "text-[var(--color-fg-dim)]" : "text-[var(--color-fg)]"
           }`}
         >
           {formatUsdcCompact(s.cumulative_accepted)}
         </span>
-        <span className="tnum font-mono text-[10px] text-[var(--color-fg-dim)]">
+        <span className="t-mono text-[var(--color-fg-dim)]">
           / {formatUsdcCompact(s.deposited_total)}
         </span>
       </div>
-      <Progress percent={pct} tone={tone} />
-      <div className="flex justify-between text-[10px] text-[var(--color-fg-dim)]">
+      <Progress
+        percent={pct}
+        tone={tone}
+        label={`${pct.toFixed(1)}% of the escrowed allowance consumed`}
+      />
+      <div className="t-support flex justify-between gap-2">
         <span>{untouched ? "no claims yet" : `${pct.toFixed(1)}% consumed`}</span>
         <span className="tnum">{formatUsdcCompact(s.remaining)} left</span>
       </div>
@@ -112,29 +107,41 @@ function SortHeader({
   active,
   dir,
   onClick,
-  className,
+  numeric,
 }: {
   label: string;
   active: boolean;
   dir: "asc" | "desc";
   onClick: () => void;
-  className?: string;
+  numeric?: boolean;
 }) {
   return (
-    <th className={className}>
+    <TH numeric={numeric} aria-sort={active ? (dir === "desc" ? "descending" : "ascending") : "none"}>
       <button
         onClick={onClick}
-        className={`inline-flex items-center gap-1 font-medium transition-colors ${
+        className={`inline-flex items-center gap-1 uppercase tracking-[0.06em] transition-colors ${
           active ? "text-[var(--color-fg)]" : "hover:text-[var(--color-fg-muted)]"
         }`}
       >
         {label}
         {active &&
-          (dir === "desc" ? <ArrowDown className="size-3" /> : <ArrowUp className="size-3" />)}
+          (dir === "desc" ? (
+            <ArrowDown aria-hidden="true" className="size-3" />
+          ) : (
+            <ArrowUp aria-hidden="true" className="size-3" />
+          ))}
       </button>
-    </th>
+    </TH>
   );
 }
+
+/** Only routes that exist. `npm run demo` is a shell script, not a button. */
+const QUICK_ACTIONS = [
+  { href: "/agents", label: "New agent", hint: "Identity & envelope", icon: Bot },
+  { href: "/registry", label: "Registry", hint: "Providers & prices", icon: Store },
+  { href: "/verifier", label: "Verify a decision", hint: "Merkle proof", icon: ShieldCheck },
+  { href: "/playground", label: "Simulate a claim", hint: "Without spending", icon: FlaskConical },
+];
 
 export default function MonitorPage() {
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
@@ -251,306 +258,473 @@ export default function MonitorPage() {
   const escrowedLive = withStatus
     .filter((x) => x.st.wouldAccept && x.s.chain_verified)
     .reduce((acc, x) => acc + BigInt(x.s.deposited_total), 0n);
-  const unconfirmed = withStatus.filter(
-    (x) => x.st.wouldAccept && !x.s.chain_verified
-  ).length;
+  const unconfirmed = withStatus.filter((x) => x.st.wouldAccept && !x.s.chain_verified).length;
   const stranded = withStatus.filter((x) => isStrandedEscrow(x.s));
   const strandedTotal = stranded.reduce((acc, x) => acc + BigInt(x.s.remaining), 0n);
   const committed = sessions.reduce((acc, s) => acc + BigInt(s.cumulative_accepted), 0n);
 
+  const showingFiltered = filter !== "" || statusFilter !== "all";
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="space-y-5">
+      {/* ---- header -------------------------------------------------------
+          No name: the browser has no authenticated operator identity, and a
+          greeting with a made-up name would be fabricated data on a page whose
+          entire claim is that its numbers are real. */}
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">AgentPay Command Center</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Monitor agent activity, claims, enforcement decisions and settlements in real time.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {live !== null && (
+            <Badge variant={live ? "allowed" : "denied"}>
+              {live ? "All systems operational" : "Gateway unreachable"}
+            </Badge>
+          )}
+          <Badge variant="info">Solana devnet</Badge>
+        </div>
+      </header>
+
+      {/* ---- level 1: what is happening now ---- */}
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat
-          label="Accepting claims"
+          label="Active sessions"
           value={String(counts.active)}
-          sub={`${counts.expired} expired · ${counts.settled} settled`}
+          support={`${counts.expired} expired · ${counts.settled} settled`}
           icon={Layers}
-          tone={counts.active > 0 ? "accent" : "default"}
+          tone={counts.active > 0 ? "accent" : "neutral"}
         />
+        {/* Purple: escrow under a human's policy is the agent-control surface,
+            not a plain balance. */}
         <Stat
-          label="Escrowed (live)"
+          label="Escrowed"
           value={formatUsdcCompact(escrowedLive)}
-          sub={
+          support={
             unconfirmed > 0
               ? `confirmed on chain · ${unconfirmed} unconfirmed excluded`
               : "confirmed on chain, still accepting"
           }
           icon={Wallet}
-          tone={unconfirmed > 0 ? "warn" : "default"}
+          tone={unconfirmed > 0 ? "warn" : "agent"}
         />
         <Stat
           label="Claimed cumulative"
           value={formatUsdcCompact(committed)}
-          sub="across all sessions"
+          support="across all sessions"
           icon={CircleCheck}
-          tone="accent"
+          tone="cyan"
         />
         <Stat
           label="Denial rate"
           value={`${denialRate}%`}
-          sub={`${denials} of last ${decisions.length} decisions`}
+          support={`${denials} of last ${decisions.length} decisions`}
           icon={Ban}
-          tone={denials > 0 ? "warn" : "default"}
+          tone={denials > 0 ? "warn" : "neutral"}
         />
-      </div>
+      </section>
 
-      {/* Expired sessions still holding escrow are actionable, so say so. */}
+      {/* ---- level 2: what needs attention --------------------------------
+          Amber, not red: escrow sitting past expiry is a thing to do, not a
+          fault. No refund button — the gateway exposes no refund endpoint, and
+          a dead control would be worse than none. */}
       {stranded.length > 0 && (
-        <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] px-3 py-2">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]" />
-          <p className="text-xs text-[var(--color-warn)]">
-            <strong className="font-semibold">
-              {stranded.length} expired session{stranded.length === 1 ? "" : "s"} still holding{" "}
-              {formatUsdcCompact(strandedTotal)} USDC.
-            </strong>{" "}
-            <span className="text-[var(--color-fg-muted)]">
-              After expiry <code className="font-mono">refund_session</code> is permissionless —
-              anyone can return these funds to the agent. Until someone calls it, the escrow just
-              sits there.
-            </span>
-          </p>
-        </div>
+        <Card accent="warn" className="p-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <AlertTriangle
+              aria-hidden="true"
+              className="mt-0.5 size-4 shrink-0 text-[var(--color-warn)]"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-[var(--color-warn)]">
+                {stranded.length} expired session{stranded.length === 1 ? "" : "s"} still holding{" "}
+                {formatUsdcCompact(strandedTotal)} USDC
+              </p>
+              <p className="t-support mt-1 max-w-3xl">
+                After expiry <code className="font-mono">refund_session</code> is permissionless —
+                anyone can return these funds to the agent. Until someone calls it, the escrow just
+                sits there. This console does not trigger refunds.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={() => {
+                setStatusFilter("expired");
+                setFilter("");
+              }}
+            >
+              View expired sessions
+              <ArrowRight aria-hidden="true" className="size-3" />
+            </Button>
+          </div>
+        </Card>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        {/* ---- sessions ---- */}
-        <Card>
-          <CardHeader className="flex-wrap gap-2">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+        {/* ---- level 3: sessions, the dominant surface ----
+            `min-w-0`: a grid item sizes to its content by default, so the
+            table's minimum width would widen the whole page instead of
+            scrolling inside `TableWrap`. */}
+        <Card className="min-w-0">
+          <CardHeader className="flex-wrap gap-3">
             <div>
               <CardTitle>Sessions</CardTitle>
               <CardDescription>High-water mark against escrowed allowance</CardDescription>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Segmented
-                value={statusFilter}
-                onChange={setStatusFilter}
-                options={[
-                  { value: "all", label: "All", count: counts.all },
-                  { value: "active", label: "Accepting", count: counts.active },
-                  { value: "expired", label: "Expired", count: counts.expired },
-                  { value: "settled", label: "Settled", count: counts.settled },
-                ]}
-              />
-              <Input
-                placeholder="Filter by pubkey…"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                className="h-8 w-[160px] font-mono text-xs"
-              />
+            <div className="flex items-baseline gap-3">
+              <span className="t-label">Total</span>
+              <span className="tnum text-sm font-semibold text-[var(--color-fg)]">
+                {counts.all}
+              </span>
             </div>
           </CardHeader>
+
+          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] px-4 py-2.5">
+            <Segmented
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { value: "all", label: "All", count: counts.all },
+                { value: "active", label: "Active", count: counts.active },
+                { value: "expired", label: "Expired", count: counts.expired },
+                { value: "settled", label: "Settled", count: counts.settled },
+              ]}
+            />
+            <SearchInput
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter by agent pubkey, session…"
+              aria-label="Filter sessions by agent pubkey or session address"
+              className="ml-auto w-full sm:w-64"
+            />
+          </div>
+
           <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-left text-xs">
-                <thead className="border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                  <tr>
+            <TableWrap aria-label="Sessions">
+              {/* Below this width the columns start crushing each other and
+                  the bar becomes unreadable. Scrolling the table inside its
+                  own card is better than shrinking the numbers. */}
+              <Table className="min-w-[46rem]">
+                <THead>
+                  <TR>
                     <SortHeader
                       label="Session"
                       active={sortKey === "created"}
                       dir={sortDir}
                       onClick={() => toggleSort("created")}
-                      className="px-4 py-2"
                     />
-                    <th className="px-4 py-2 font-medium">Agent</th>
+                    <TH>Agent</TH>
                     <SortHeader
                       label="High-water mark"
                       active={sortKey === "consumed"}
                       dir={sortDir}
                       onClick={() => toggleSort("consumed")}
-                      className="w-[190px] px-4 py-2"
                     />
-                    <th className="px-4 py-2 font-medium">Expiry</th>
-                    <th className="px-4 py-2 font-medium">Status</th>
+                    <TH>Expiry</TH>
+                    <TH>Status</TH>
                     <SortHeader
                       label="Evidence"
+                      numeric
                       active={sortKey === "evidence"}
                       dir={sortDir}
                       onClick={() => toggleSort("evidence")}
-                      className="px-4 py-2 text-right"
                     />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--color-border)]">
-                  {rows.map(({ s, st }) => {
-                    const { label, expired, urgent } = expiryCountdown(s.expires_at);
-                    return (
-                      <tr key={s.session} className="group hover:bg-[var(--color-surface-2)]">
-                        <td className="px-4 py-2.5">
-                          <Link
-                            href={`/session/${s.session}`}
-                            className="font-mono text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-cyan)] hover:underline"
-                            title={s.session}
-                          >
-                            {s.session.slice(0, 6)}…{s.session.slice(-6)}
-                          </Link>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <MonoKey value={s.agent} head={4} tail={4} />
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <HighWaterMark s={s} />
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span
-                            className={
-                              st.status === "settled"
-                                ? "text-[10px] text-[var(--color-fg-dim)]"
-                                : expired
-                                ? "tnum font-mono text-[11px] text-[var(--color-fg-dim)]"
-                                : urgent
-                                ? "tnum font-mono text-[11px] text-[var(--color-warn)]"
-                                : "tnum font-mono text-[11px] text-[var(--color-fg-muted)]"
-                            }
-                          >
-                            {st.status === "settled" ? "—" : label}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span
-                            title={
-                              st.reasonIfRefused
-                                ? `A claim now would return ${st.reasonIfRefused}`
-                                : "Accepting claims"
-                            }
-                          >
-                            <Badge variant={st.tone}>{st.label}</Badge>
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          {s.evidence_count > 0 ? (
+                    <TH numeric>Actions</TH>
+                  </TR>
+                </THead>
+
+                {!loaded ? (
+                  <TableSkeleton rows={6} cols={7} />
+                ) : (
+                  <TBody>
+                    {rows.map(({ s, st }) => {
+                      const { label, expired, urgent } = expiryCountdown(s.expires_at);
+                      return (
+                        <TR key={s.session} interactive>
+                          <TD className="whitespace-nowrap">
                             <Link
-                              href={`/verifier?session=${s.session}`}
-                              className="tnum inline-flex items-center gap-1 text-[11px] text-[var(--color-cyan)] hover:underline"
+                              href={`/session/${s.session}`}
+                              className="t-mono text-[var(--color-fg-muted)] hover:text-[var(--color-cyan)] hover:underline"
+                              title={s.session}
                             >
-                              {s.evidence_count}
-                              <ShieldAlert className="size-3" />
+                              {s.session.slice(0, 6)}…{s.session.slice(-6)}
                             </Link>
-                          ) : (
-                            <span className="text-[10px] text-[var(--color-fg-dim)]">none</span>
+                          </TD>
+                          <TD>
+                            <MonoKey value={s.agent} head={4} tail={4} />
+                          </TD>
+                          <TD>
+                            <HighWaterMark s={s} />
+                          </TD>
+                          <TD>
+                            <span
+                              className={
+                                st.status === "settled"
+                                  ? "t-support"
+                                  : expired
+                                  ? "t-mono text-[var(--color-fg-dim)]"
+                                  : urgent
+                                  ? "t-mono text-[var(--color-warn)]"
+                                  : "t-mono text-[var(--color-fg-muted)]"
+                              }
+                            >
+                              {st.status === "settled" ? "—" : label}
+                            </span>
+                          </TD>
+                          <TD>
+                            <span
+                              title={
+                                st.reasonIfRefused
+                                  ? `A claim now would return ${st.reasonIfRefused}`
+                                  : "Accepting claims"
+                              }
+                            >
+                              <Badge variant={st.tone}>{st.label}</Badge>
+                            </span>
+                          </TD>
+                          <TD numeric>
+                            {s.evidence_count > 0 ? (
+                              <Link
+                                href={`/verifier?session=${s.session}`}
+                                className="tnum inline-flex items-center gap-1 text-[11px] text-[var(--color-cyan)] hover:underline"
+                                title={`${s.evidence_count} recorded decisions — open in the verifier`}
+                              >
+                                {s.evidence_count}
+                                <ShieldCheck aria-hidden="true" className="size-3" />
+                              </Link>
+                            ) : (
+                              <span className="t-support">none</span>
+                            )}
+                          </TD>
+                          <TD numeric>
+                            <Button asChild variant="ghost" size="sm">
+                              <Link href={`/session/${s.session}`}>View</Link>
+                            </Button>
+                          </TD>
+                        </TR>
+                      );
+                    })}
+
+                    {rows.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-14 text-center">
+                          <p className="text-xs text-[var(--color-fg-muted)]">
+                            {showingFiltered
+                              ? "No sessions match this filter."
+                              : "No sessions tracked yet."}
+                          </p>
+                          <p className="t-support mx-auto mt-1 max-w-sm">
+                            {showingFiltered ? (
+                              "Clear the filter to see every session the gateway knows about."
+                            ) : (
+                              <>
+                                A session appears once an escrow is opened on chain and registered
+                                with the gateway. Run{" "}
+                                <code className="font-mono text-[var(--color-cyan)]">
+                                  npm run sdk-demo
+                                </code>{" "}
+                                to create one.
+                              </>
+                            )}
+                          </p>
+                          {showingFiltered && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="mt-3"
+                              onClick={() => {
+                                setFilter("");
+                                setStatusFilter("all");
+                              }}
+                            >
+                              Clear filter
+                            </Button>
                           )}
                         </td>
                       </tr>
-                    );
-                  })}
-
-                  {loaded && rows.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-12 text-center">
-                        <p className="text-xs text-[var(--color-fg-muted)]">
-                          {filter || statusFilter !== "all"
-                            ? "No sessions match this filter."
-                            : "No sessions tracked yet."}
-                        </p>
-                        {!filter && statusFilter === "all" && (
-                          <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
-                            Run{" "}
-                            <code className="font-mono text-[var(--color-cyan)]">npm run demo</code>{" "}
-                            to generate traffic.
-                          </p>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-
-                  {!loaded &&
-                    Array.from({ length: 5 }).map((_, i) => (
-                      <tr key={i}>
-                        <td colSpan={6} className="px-4 py-3">
-                          <div className="h-4 w-full animate-pulse rounded bg-[var(--color-surface-2)]" />
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
+                    )}
+                  </TBody>
+                )}
+              </Table>
+            </TableWrap>
           </CardContent>
         </Card>
 
-        {/* ---- feed ---- */}
-        <Card>
-          <CardHeader className="flex-wrap gap-2">
-            <div>
-              <CardTitle>Claim feed</CardTitle>
-              <CardDescription>Signed Ed25519 claims, newest first</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Segmented
-                value={feedFilter}
-                onChange={setFeedFilter}
-                options={[
-                  { value: "all", label: "All" },
-                  { value: "allowed", label: "Allowed" },
-                  { value: "denied", label: "Denied", count: denials },
-                ]}
-              />
-              {live === true && (
-                <span className="relative inline-flex size-2 rounded-full bg-[var(--color-accent)]">
-                  <span className="live-dot absolute inset-0" />
+        {/* ---- level 3/4: what happened, and where to investigate ---- */}
+        <div className="space-y-4">
+          {/* Escrow summary. No single "escrow wallet" exists — every session
+              has its own vault PDA — so this summarises rather than pretending
+              to be one address, and links to the filter instead of a refund
+              control the gateway does not expose. */}
+          <Card accent={stranded.length > 0 ? "warn" : "agent"}>
+            <CardHeader>
+              <div>
+                <CardTitle>Escrow</CardTitle>
+                <CardDescription>One vault per session, held by the program</CardDescription>
+              </div>
+              <Wallet aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
+            </CardHeader>
+            <CardContent className="space-y-2.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="t-label">Live, confirmed</span>
+                <span className="tnum font-mono text-sm text-[var(--color-agent)]">
+                  {formatUsdcCompact(escrowedLive)}
                 </span>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="max-h-[620px] space-y-1.5 overflow-y-auto p-2">
-            {feed.map((d) => {
-              // Anything older than an hour is history, not live traffic.
-              const stale = Date.now() - Date.parse(d.created_at) > 3_600_000;
-              return (
-                <div
-                  key={`${d.session}-${d.sequence_id}-${d.entry_hash}`}
-                  className={`animate-in-row rounded-md border p-2.5 ${
-                    d.allowed
-                      ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
-                      : "border-[var(--color-warn-dim)] bg-[#f59e0b0d]"
-                  } ${stale ? "opacity-60" : ""}`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span title={DECISION_WHY[d.decision] ?? d.decision}>
-                      <Badge variant={d.allowed ? "allowed" : "denied"}>
-                        {DECISION_LABEL[d.decision] ?? d.decision.replace(/^ERR_/, "")}
-                      </Badge>
-                    </span>
-                    <span className="text-[10px] text-[var(--color-fg-dim)]">
-                      {timeAgo(d.created_at)}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-baseline justify-between gap-2">
-                    <span className="tnum font-mono text-sm text-[var(--color-fg)]">
-                      {formatUsdc(d.cumulative_amount)}
-                    </span>
-                    <span className="tnum font-mono text-[10px] text-[var(--color-fg-dim)]">
-                      seq {d.sequence_id} · nonce {d.nonce}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 flex items-center justify-between gap-2">
-                    <Link
-                      href={`/session/${d.session}`}
-                      className="font-mono text-[11px] text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
-                      title={d.session}
-                    >
-                      {d.session.slice(0, 4)}…{d.session.slice(-4)}
-                    </Link>
-                    <Link
-                      href={`/verifier?session=${d.session}`}
-                      className="font-mono text-[9px] text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
-                      title={`${d.entry_hash} — click to verify`}
-                    >
-                      {d.entry_hash.slice(0, 10)}…
-                    </Link>
-                  </div>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="t-label">Claimed</span>
+                <span className="tnum font-mono text-sm text-[var(--color-cyan)]">
+                  {formatUsdcCompact(committed)}
+                </span>
+              </div>
+              {stranded.length > 0 && (
+                <div className="flex items-baseline justify-between gap-2 border-t border-[var(--color-border)] pt-2.5">
+                  <span className="t-label">Past expiry</span>
+                  <span className="tnum font-mono text-sm text-[var(--color-warn)]">
+                    {formatUsdcCompact(strandedTotal)}
+                  </span>
                 </div>
-              );
-            })}
+              )}
+            </CardContent>
+          </Card>
 
-            {feed.length === 0 && loaded && (
-              <p className="py-12 text-center text-xs text-[var(--color-fg-dim)]">
-                {feedFilter === "denied"
-                  ? "No denials recorded — nothing has been refused yet."
-                  : "No decisions recorded yet."}
-              </p>
-            )}
-          </CardContent>
-        </Card>
+          <Card>
+            <CardHeader className="flex-wrap gap-2">
+              <div>
+                <CardTitle>Recent decisions</CardTitle>
+                <CardDescription>Signed Ed25519 claims, newest first</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Segmented
+                  value={feedFilter}
+                  onChange={setFeedFilter}
+                  options={[
+                    { value: "all", label: "All" },
+                    { value: "allowed", label: "Allowed" },
+                    { value: "denied", label: "Denied", count: denials },
+                  ]}
+                />
+                {live === true && (
+                  <span
+                    title="Live — polling the gateway"
+                    className="relative inline-flex size-2 rounded-full bg-[var(--color-accent)]"
+                  >
+                    <span className="live-dot absolute inset-0" />
+                  </span>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="max-h-[520px] space-y-1.5 overflow-y-auto p-2">
+              {feed.map((d) => {
+                // Anything older than an hour is history, not live traffic.
+                const stale = Date.now() - Date.parse(d.created_at) > 3_600_000;
+                // Amber for a decision, red only for a forged claim or a
+                // failed dependency. See `variantForReason`.
+                const tone = variantForReason(d.allowed ? "ALLOWED" : d.decision);
+                const edge =
+                  tone === "allowed"
+                    ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+                    : tone === "danger"
+                    ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
+                    : "border-[var(--color-warn-dim)] bg-[#f59e0b0d]";
+                return (
+                  <div
+                    key={`${d.session}-${d.sequence_id}-${d.entry_hash}`}
+                    className={`animate-in-row rounded-md border p-2.5 ${edge} ${
+                      stale ? "opacity-60" : ""
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span title={DECISION_WHY[d.decision] ?? d.decision}>
+                        <Badge variant={tone}>
+                          {DECISION_LABEL[d.decision] ?? d.decision.replace(/^ERR_/, "")}
+                        </Badge>
+                      </span>
+                      <time
+                        dateTime={d.created_at}
+                        className="t-support"
+                        title={new Date(d.created_at).toLocaleString()}
+                      >
+                        {timeAgo(d.created_at)}
+                      </time>
+                    </div>
+                    <div className="mt-2 flex items-baseline justify-between gap-2">
+                      <span className="tnum font-mono text-sm text-[var(--color-fg)]">
+                        {formatUsdc(d.cumulative_amount)}
+                      </span>
+                      <span className="t-mono text-[var(--color-fg-dim)]">
+                        seq {d.sequence_id} · nonce {d.nonce}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <Link
+                        href={`/session/${d.session}`}
+                        className="t-mono text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
+                        title={d.session}
+                      >
+                        {d.session.slice(0, 4)}…{d.session.slice(-4)}
+                      </Link>
+                      <Link
+                        href={`/verifier?session=${d.session}`}
+                        className="t-mono text-[9px] text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
+                        title={`${d.entry_hash} — open in the verifier`}
+                      >
+                        {d.entry_hash.slice(0, 10)}…
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {!loaded &&
+                Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="skeleton h-[4.5rem] rounded-md" />
+                ))}
+
+              {feed.length === 0 && loaded && (
+                <div className="py-12 text-center">
+                  <p className="text-xs text-[var(--color-fg-muted)]">
+                    {feedFilter === "denied"
+                      ? "Nothing has been refused yet."
+                      : "No decisions recorded yet."}
+                  </p>
+                  <p className="t-support mx-auto mt-1 max-w-[16rem]">
+                    {feedFilter === "denied"
+                      ? "Every claim the gateway has seen was within its agent's envelope."
+                      : "Decisions appear here as agents present signed claims."}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Quick actions</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-2 p-2">
+              {QUICK_ACTIONS.map(({ href, label, hint, icon: Icon }) => (
+                <Link
+                  key={href}
+                  href={href}
+                  className="interactive flex items-start gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 hover:border-[var(--color-border-bright)]"
+                >
+                  <Icon aria-hidden="true" className="mt-0.5 size-3.5 text-[var(--color-fg-dim)]" />
+                  <span className="min-w-0">
+                    <span className="block text-[11px] font-medium text-[var(--color-fg)]">
+                      {label}
+                    </span>
+                    <span className="t-support block truncate">{hint}</span>
+                  </span>
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
