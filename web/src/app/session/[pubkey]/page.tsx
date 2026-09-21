@@ -312,10 +312,27 @@ export default function SessionDetailPage() {
                   <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-cyan)]">
                     {evidence.merkle_root}
                   </code>
+                  {/* This page never reads the chain — `is_settled` comes from
+                      the gateway's own database. Saying the root is "committed
+                      on chain" would assert something nobody here checked, so
+                      it says what it actually knows and sends the reader
+                      somewhere that does look. */}
                   <p className="t-support mt-1">
-                    {st.status === "settled"
-                      ? "Committed on chain by the settlement transaction."
-                      : "Will be committed on chain when this session settles."}
+                    {st.status === "settled" ? (
+                      <>
+                        The gateway records this session as settled. This page has not read the
+                        chain —{" "}
+                        <Link
+                          href={`/verifier?session=${pubkey}`}
+                          className="text-[var(--color-cyan)] hover:underline"
+                        >
+                          check the committed root in the Verifier
+                        </Link>
+                        .
+                      </>
+                    ) : (
+                      "Will be committed on chain when this session settles."
+                    )}
                   </p>
                 </div>
               )}
