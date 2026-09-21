@@ -1,15 +1,34 @@
 "use client";
 
 import * as React from "react";
-import { ExternalLink, Landmark, Loader2, TriangleAlert } from "lucide-react";
+import {
+  ArrowRight,
+  Coins,
+  ExternalLink,
+  Landmark,
+  Loader2,
+  ShieldCheck,
+  TriangleAlert,
+  Undo2,
+} from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { Stat } from "@/components/ui/stat";
 import { MonoKey } from "@/components/mono";
 import { useToast } from "@/components/toast";
 import { api, type SessionSummary } from "@/lib/api";
 import { sessionStatus } from "@/lib/session-status";
-import { explorerAddress, explorerTx, formatUsdc, truncateHash } from "@/lib/format";
+import {
+  consumedPercent,
+  explorerAddress,
+  explorerTx,
+  formatUsdc,
+  formatUsdcCompact,
+  truncateHash,
+  truncateKey,
+} from "@/lib/format";
 
 interface SettleResult {
   signature: string;
@@ -55,7 +74,7 @@ function recheckable(s: SessionSummary): boolean {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-[var(--color-border)] py-2 last:border-0">
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">{label}</span>
+      <span className="t-label">{label}</span>
       <span className="min-w-0 text-right">{children}</span>
     </div>
   );
@@ -146,215 +165,347 @@ export default function SettlePage() {
     ? (BigInt(selected.deposited_total) - BigInt(selected.cumulative_accepted)).toString()
     : "0";
 
+  // Totals across what is settleable right now. Derived from the same rows the
+  // list shows — nothing here is fetched separately, so the summary cannot
+  // disagree with the list beneath it.
+  const claimsTotal = sessions.reduce((a, s) => a + BigInt(s.cumulative_accepted), 0n);
+  const heldTotal = sessions.reduce((a, s) => a + BigInt(s.deposited_total), 0n);
+  const remainderTotal = heldTotal - claimsTotal;
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_1.1fr]">
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Settleable sessions</CardTitle>
-            <CardDescription>
-              Unsettled and still inside their expiry window
-            </CardDescription>
-          </div>
-          <Badge variant="neutral">{sessions.length}</Badge>
-        </CardHeader>
-        <CardContent className="max-h-[560px] space-y-1.5 overflow-y-auto p-2">
-          {sessions.map((s) => (
-            <button
-              key={s.session}
-              onClick={() => {
-                setSelected(s);
-                setResult(null);
-                setErr(null);
-              }}
-              className={`w-full rounded-md border p-2.5 text-left transition-colors ${
-                selected?.session === s.session
-                  ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
-                  : "border-[var(--color-border)] bg-[var(--color-surface-2)] hover:border-[var(--color-border-bright)]"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <MonoKey value={s.session} head={6} tail={6} />
-                <span className="tnum font-mono text-xs text-[var(--color-fg)]">
-                  {formatUsdc(s.cumulative_accepted)}
-                </span>
-              </div>
-              <p className="mt-1 text-[10px] text-[var(--color-fg-dim)]">
-                {s.evidence_count} evidence entries · deposit {formatUsdc(s.deposited_total)}
-              </p>
-            </button>
-          ))}
-          {sessions.length === 0 && (
-            <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-              No sessions can be settled right now.
-            </p>
-          )}
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="t-page">Settlement</h1>
+          <p className="t-body mt-1 max-w-2xl">
+            Pay a provider the highest claim its agent signed, and commit the evidence root that
+            justifies it — one transaction, once per session.
+          </p>
+        </div>
+        <Badge variant="info">Solana devnet</Badge>
+      </header>
 
-          {unverified.length > 0 && (
-            <div className="mt-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b1a] p-2.5">
-              <p className="text-[11px] font-semibold text-[var(--color-warn)]">
-                {unverified.length} session{unverified.length === 1 ? "" : "s"} not shown —
-                escrow never confirmed
-              </p>
-              <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
-                These were opened while{" "}
-                <code className="font-mono">AGENTPAY_TRUST_OPEN_REQUESTS=1</code> was set, so the
-                gateway never checked whether a vault exists. That is not the same as saying
-                there is none — nobody looked. Until one does,{" "}
-                <code className="font-mono">settle_session</code> could fail, so they are not
-                offered here.
-              </p>
-              {recheckCount > 0 ? (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-2 w-full"
-                    onClick={recheck}
-                    disabled={checking}
-                  >
-                    {checking ? (
-                      <>
-                        <Loader2 className="size-3 animate-spin" /> Reading {recheckCount} account
-                        {recheckCount === 1 ? "" : "s"}…
-                      </>
-                    ) : (
-                      <>Check {recheckCount} against the chain</>
-                    )}
-                  </Button>
-                  <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
-                    Each stored record is re-verified field by field, so an invented session stays
-                    refused. The other {unverified.length - recheckCount} have expired — checking
-                    them changes nothing.
-                  </p>
-                </>
-              ) : (
-                <p className="mt-1.5 text-[10px] text-[var(--color-fg-dim)]">
-                  All of them have expired, so verifying would change nothing. For a fresh
-                  settleable session, see <code className="font-mono">npm run evidence-devnet</code>.
-                </p>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <section aria-label="Settleable totals" className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+        <Stat
+          label="Settleable now"
+          value={String(sessions.length)}
+          support="confirmed on chain, inside expiry"
+          icon={Landmark}
+          tone={sessions.length > 0 ? "accent" : "neutral"}
+        />
+        <Stat
+          label="Claims to settle"
+          value={formatUsdcCompact(claimsTotal)}
+          support="would move to providers"
+          icon={Coins}
+          tone="cyan"
+        />
+        <Stat
+          label="Remainder"
+          value={formatUsdcCompact(remainderTotal)}
+          support="stays in the vaults, refundable to agents"
+          icon={Undo2}
+          tone="agent"
+        />
+      </section>
 
-      <div className="space-y-4">
-        <Card glow={!!result}>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+        <Card className="min-w-0">
           <CardHeader>
             <div>
-              <CardTitle>Settlement breakdown</CardTitle>
-              <CardDescription>
-                One transaction settles the whole session — the deferred scheme
-              </CardDescription>
+              <CardTitle>Settleable sessions</CardTitle>
+              <CardDescription>Unsettled and still inside their expiry window</CardDescription>
             </div>
-            <Landmark className="size-4 text-[var(--color-fg-dim)]" />
+            <Badge variant="neutral">{sessions.length}</Badge>
           </CardHeader>
-          <CardContent>
-            {!selected && !result && (
-              <p className="py-10 text-center text-xs text-[var(--color-fg-dim)]">
-                Select a session to see its breakdown.
+          <CardContent className="max-h-[560px] space-y-1.5 overflow-y-auto p-2">
+            {sessions.map((s) => {
+              const active = selected?.session === s.session;
+              const pct = consumedPercent(s.cumulative_accepted, s.deposited_total);
+              return (
+                <button
+                  key={s.session}
+                  aria-pressed={active}
+                  onClick={() => {
+                    setSelected(s);
+                    setResult(null);
+                    setErr(null);
+                  }}
+                  className={`interactive w-full rounded-md border p-2.5 text-left ${
+                    active
+                      ? "border-[var(--color-accent-dim)] bg-[#10b9811a]"
+                      : "border-[var(--color-border)] bg-[var(--color-surface-2)] hover:border-[var(--color-border-bright)]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    {/* Plain text, not `MonoKey`: that component carries its
+                        own copy button, and a button inside this button is
+                        invalid HTML — React refuses to hydrate it. The full
+                        key stays copyable from the breakdown panel. */}
+                    <span className="t-mono text-[var(--color-fg-muted)]" title={s.session}>
+                      {truncateKey(s.session, 6, 6)}
+                    </span>
+                    <span className="tnum font-mono text-xs text-[var(--color-fg)]">
+                      {formatUsdc(s.cumulative_accepted)}
+                    </span>
+                  </div>
+                  <div className="mt-2">
+                    <Progress
+                      percent={pct}
+                      tone={active ? "accent" : "cyan"}
+                      label={`${pct.toFixed(1)}% of this escrow has been claimed`}
+                    />
+                  </div>
+                  <p className="t-support mt-1.5">
+                    {s.evidence_count} evidence entries · deposit {formatUsdc(s.deposited_total)}
+                  </p>
+                </button>
+              );
+            })}
+
+            {sessions.length === 0 && (
+              <p className="py-10 text-center text-xs text-[var(--color-fg-muted)]">
+                No sessions can be settled right now.
               </p>
             )}
 
-            {selected && !result && (
-              <>
-                <Row label="Session">
-                  <MonoKey value={selected.session} href={explorerAddress(selected.session)} />
-                </Row>
-                <Row label="Vault balance (deposit)">
-                  <span className="tnum font-mono text-xs">{formatUsdc(selected.deposited_total)}</span>
-                </Row>
-                <Row label="Cumulative claims">
-                  <span className="tnum font-mono text-xs text-[var(--color-accent)]">
-                    {formatUsdc(selected.cumulative_accepted)}
-                  </span>
-                </Row>
-                <Row label="Refundable to agent">
-                  <span className="tnum font-mono text-xs">{formatUsdc(refundable)}</span>
-                </Row>
-                <Row label="Evidence entries">
-                  <span className="tnum font-mono text-xs">{selected.evidence_count}</span>
-                </Row>
-
-                <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
-                  <p className="flex items-start gap-1.5 text-[10px] text-[var(--color-fg-dim)]">
-                    <TriangleAlert className="mt-px size-3 shrink-0 text-[var(--color-warn)]" />
-                    The Merkle root is computed from the evidence log at submission time and
-                    committed on-chain. Settlement is irreversible and can happen only once per
-                    session.
-                  </p>
-                </div>
-
-                {err && (
-                  <p className="mt-3 rounded border border-[#7f1d1d] bg-[#ef44441a] px-2.5 py-2 font-mono text-[11px] text-[var(--color-danger)]">
-                    {err}
+            {unverified.length > 0 && (
+              <div className="mt-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-2.5">
+                <p className="flex items-start gap-1.5 text-[11px] font-semibold text-[var(--color-warn)]">
+                  <TriangleAlert aria-hidden="true" className="mt-px size-3.5 shrink-0" />
+                  {unverified.length} session{unverified.length === 1 ? "" : "s"} not shown — escrow
+                  never confirmed
+                </p>
+                <p className="t-support mt-1.5">
+                  These were opened while{" "}
+                  <code className="font-mono">AGENTPAY_TRUST_OPEN_REQUESTS=1</code> was set, so the
+                  gateway never checked whether a vault exists. That is not the same as saying there
+                  is none — nobody looked. Until one does,{" "}
+                  <code className="font-mono">settle_session</code> could fail, so they are not
+                  offered here.
+                </p>
+                {recheckCount > 0 ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2 w-full"
+                      onClick={recheck}
+                      disabled={checking}
+                    >
+                      {checking ? (
+                        <>
+                          <Loader2 className="size-3 animate-spin" /> Reading {recheckCount} account
+                          {recheckCount === 1 ? "" : "s"}…
+                        </>
+                      ) : (
+                        <>Check {recheckCount} against the chain</>
+                      )}
+                    </Button>
+                    <p className="t-support mt-1.5">
+                      Each stored record is re-verified field by field, so an invented session stays
+                      refused. The other {unverified.length - recheckCount} have expired — checking
+                      them changes nothing.
+                    </p>
+                  </>
+                ) : (
+                  <p className="t-support mt-1.5">
+                    All of them have expired, so verifying would change nothing. For a fresh
+                    settleable session, see{" "}
+                    <code className="font-mono text-[var(--color-cyan)]">
+                      npm run evidence-devnet
+                    </code>
+                    .
                   </p>
                 )}
-
-                <Button className="mt-3 w-full" onClick={settle} disabled={busy}>
-                  {busy ? (
-                    <>
-                      <Loader2 className="animate-spin" /> Submitting to devnet…
-                    </>
-                  ) : (
-                    <>Settle on-chain</>
-                  )}
-                </Button>
-              </>
-            )}
-
-            {result && (
-              <>
-                <Row label="Status">
-                  <Badge variant="allowed">Confirmed</Badge>
-                </Row>
-                <Row label="Settled amount">
-                  <span className="tnum font-mono text-xs text-[var(--color-accent)]">
-                    {formatUsdc(result.cumulative_amount)}
-                  </span>
-                </Row>
-                <Row label="Evidence entries committed">
-                  <span className="tnum font-mono text-xs">{result.evidence_entries}</span>
-                </Row>
-                <Row label="Settlement record">
-                  <MonoKey
-                    value={result.settlement_record}
-                    href={explorerAddress(result.settlement_record)}
-                  />
-                </Row>
-
-                <div className="mt-3 space-y-2">
-                  <div className="rounded-md border border-[var(--color-accent-dim)] bg-[#10b9811a] p-2.5">
-                    <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                      merkle_root committed on-chain
-                    </p>
-                    <code className="break-all font-mono text-[11px] text-[var(--color-accent)]">
-                      {result.merkle_root}
-                    </code>
-                  </div>
-                  <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
-                    <p className="text-[10px] uppercase tracking-wider text-[var(--color-fg-dim)]">
-                      transaction signature
-                    </p>
-                    <code className="break-all font-mono text-[11px] text-[var(--color-fg-muted)]">
-                      {result.signature}
-                    </code>
-                  </div>
-                  <Button asChild variant="outline" className="w-full">
-                    <a href={explorerTx(result.signature)} target="_blank" rel="noreferrer">
-                      View on Solana Explorer <ExternalLink />
-                    </a>
-                  </Button>
-                  <p className="text-center text-[10px] text-[var(--color-fg-dim)]">
-                    Verify any decision against root {truncateHash(result.merkle_root, 8, 8)} in the
-                    Verifier.
-                  </p>
-                </div>
-              </>
+              </div>
             )}
           </CardContent>
         </Card>
+
+        <div className="min-w-0 space-y-4">
+          <Card glow={!!result} accent={result ? "accent" : undefined}>
+            <CardHeader>
+              <div>
+                <CardTitle>Settlement breakdown</CardTitle>
+                <CardDescription>
+                  One transaction settles the whole session — the deferred scheme
+                </CardDescription>
+              </div>
+              <Landmark aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
+            </CardHeader>
+            <CardContent>
+              {!selected && !result && (
+                <div className="py-12 text-center">
+                  <p className="text-xs text-[var(--color-fg-muted)]">
+                    Select a session to see its breakdown.
+                  </p>
+                  <p className="t-support mx-auto mt-1 max-w-xs">
+                    Nothing is submitted until you choose one and confirm.
+                  </p>
+                </div>
+              )}
+
+              {selected && !result && (
+                <>
+                  <Row label="Session">
+                    <MonoKey value={selected.session} href={explorerAddress(selected.session)} />
+                  </Row>
+                  <Row label="Vault balance (deposit)">
+                    <span className="tnum font-mono text-xs">
+                      {formatUsdc(selected.deposited_total)}
+                    </span>
+                  </Row>
+                  <Row label="Cumulative claims">
+                    <span className="tnum font-mono text-xs text-[var(--color-accent)]">
+                      {formatUsdc(selected.cumulative_accepted)}
+                    </span>
+                  </Row>
+                  <Row label="Refundable to agent">
+                    <span className="tnum font-mono text-xs text-[var(--color-agent)]">
+                      {formatUsdc(refundable)}
+                    </span>
+                  </Row>
+                  <Row label="Evidence entries">
+                    <span className="tnum font-mono text-xs">{selected.evidence_count}</span>
+                  </Row>
+
+                  {/* Where the money goes, in the order the program moves it.
+                      An operator about to sign an irreversible transfer should
+                      not have to reconstruct this from four rows of numbers. */}
+                  <div className="mt-3 flex items-stretch gap-2">
+                    <div className="flex-1 rounded-md border border-[var(--color-accent-dim)] bg-[#10b9810d] p-2.5">
+                      <p className="t-label">To provider, now</p>
+                      <p className="tnum mt-1 font-mono text-sm text-[var(--color-accent)]">
+                        {formatUsdc(selected.cumulative_accepted)}
+                      </p>
+                    </div>
+                    <ArrowRight
+                      aria-hidden="true"
+                      className="my-auto size-3.5 shrink-0 text-[var(--color-fg-dim)]"
+                    />
+                    <div className="flex-1 rounded-md border border-[var(--color-agent-dim)] bg-[#a78bfa0d] p-2.5">
+                      <p className="t-label">Left in vault</p>
+                      <p className="tnum mt-1 font-mono text-sm text-[var(--color-agent)]">
+                        {formatUsdc(refundable)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5">
+                    <p className="flex items-start gap-1.5 text-[10px] leading-relaxed text-[var(--color-fg-muted)]">
+                      <TriangleAlert
+                        aria-hidden="true"
+                        className="mt-px size-3 shrink-0 text-[var(--color-warn)]"
+                      />
+                      The Merkle root is computed from the evidence log at submission time and
+                      committed on-chain. Settlement is irreversible and can happen only once per
+                      session.
+                    </p>
+                  </div>
+
+                  {err && (
+                    <p className="mt-3 rounded border border-[var(--color-danger-dim)] bg-[#ef44441a] px-2.5 py-2 font-mono text-[11px] text-[var(--color-danger)]">
+                      {err}
+                    </p>
+                  )}
+
+                  <Button className="mt-3 w-full" onClick={settle} disabled={busy}>
+                    {busy ? (
+                      <>
+                        <Loader2 className="animate-spin" /> Submitting to devnet…
+                      </>
+                    ) : (
+                      <>Settle on-chain</>
+                    )}
+                  </Button>
+                </>
+              )}
+
+              {result && (
+                <>
+                  <Row label="Status">
+                    <Badge variant="allowed">Confirmed</Badge>
+                  </Row>
+                  <Row label="Settled amount">
+                    <span className="tnum font-mono text-xs text-[var(--color-accent)]">
+                      {formatUsdc(result.cumulative_amount)}
+                    </span>
+                  </Row>
+                  <Row label="Evidence entries committed">
+                    <span className="tnum font-mono text-xs">{result.evidence_entries}</span>
+                  </Row>
+                  <Row label="Settlement record">
+                    <MonoKey
+                      value={result.settlement_record}
+                      href={explorerAddress(result.settlement_record)}
+                    />
+                  </Row>
+
+                  <div className="mt-3 space-y-2">
+                    <div className="rounded-md border border-[var(--color-accent-dim)] bg-[#10b9811a] p-2.5">
+                      <p className="t-label">merkle_root committed on-chain</p>
+                      <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-accent)]">
+                        {result.merkle_root}
+                      </code>
+                    </div>
+                    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5">
+                      <p className="t-label">transaction signature</p>
+                      <code className="mt-1 block break-all font-mono text-[11px] text-[var(--color-fg-muted)]">
+                        {result.signature}
+                      </code>
+                    </div>
+                    <Button asChild variant="outline" className="w-full">
+                      <a href={explorerTx(result.signature)} target="_blank" rel="noreferrer">
+                        View on Solana Explorer <ExternalLink />
+                      </a>
+                    </Button>
+                    <p className="t-support text-center">
+                      Verify any decision against root {truncateHash(result.merkle_root, 8, 8)} in
+                      the Verifier.
+                    </p>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* What the instruction actually does, in the order it does it.
+              Every line here is what `settle_session` executes — the transfer
+              of the delta, the SettlementRecord write, the is_settled flag,
+              and the remainder that only `refund_session` can move. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>What this transaction does</CardTitle>
+              <ShieldCheck aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
+            </CardHeader>
+            <CardContent className="space-y-3 text-[11px] leading-relaxed text-[var(--color-fg-muted)]">
+              <p>
+                The program re-checks the claim before it moves anything: still inside expiry,
+                higher than what was already settled, no more than the deposit, and carrying a
+                valid Ed25519 signature from this session&apos;s agent. The gateway&apos;s opinion
+                does not enter into it.
+              </p>
+              <p>
+                It then transfers only the{" "}
+                <span className="font-semibold text-[var(--color-fg)]">difference</span> between
+                this claim and what was settled before. Claims are cumulative, so paying the
+                highest one pays for every call beneath it — one transfer, not one per request.
+              </p>
+              <p>
+                It writes a <code className="font-mono">SettlementRecord</code> holding the claim
+                hash, the Merkle root and the amount, and marks the session settled. That record is
+                what makes a decision provable to someone who was never given the log.
+              </p>
+              <p className="border-t border-[var(--color-border)] pt-2.5">
+                <span className="font-semibold text-[var(--color-fg)]">The remainder stays put.</span>{" "}
+                Settling does not return it — it sits in the vault until{" "}
+                <code className="font-mono">refund_session</code> runs, which after expiry anyone
+                can call, because those funds can only ever move to the agent.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
