@@ -418,6 +418,14 @@ impl SessionAccountFetcher for RpcSessionFetcher {
 pub async fn verify_on_chain_session(
     fetcher: &dyn SessionAccountFetcher,
     program_id: &Pubkey,
+    // The previous program, during a migration. A session it owns is a real
+    // session and must reconcile — refusing them would strand every escrow
+    // opened before the cutover.
+    //
+    // Passed explicitly rather than read from a global so that a caller cannot
+    // widen what counts as "our program" by accident. Only these two are ever
+    // accepted.
+    legacy_program_id: Option<&Pubkey>,
     session: &Pubkey,
     claimed: &ClaimedSession,
 ) -> Result<SessionAccount, SessionVerificationError> {
@@ -433,7 +441,11 @@ pub async fn verify_on_chain_session(
     // Without this, an attacker could deploy their own program, create an
     // account with a matching discriminator and any values they like, and have
     // the gateway treat it as a funded session.
-    if owner != *program_id {
+    //
+    // Exactly two programs are acceptable, and a migration does not relax that
+    // — it widens the set by one known id, not to "anything plausible".
+    let recognised = owner == *program_id || legacy_program_id == Some(&owner);
+    if !recognised {
         return Err(SessionVerificationError::WrongProgramOwner {
             expected: *program_id,
             actual: owner,
@@ -692,6 +704,25 @@ mod tests {
         verify_on_chain_session(
             &fetcher,
             &program_id(),
+            None,
+            &Pubkey::new_from_array([7u8; 32]),
+            &claimed,
+        )
+        .await
+    }
+
+    /// Same, but with a legacy program configured. Used to prove a migration
+    /// widens the accepted set by exactly one id and no further.
+    async fn verify_with_legacy(
+        data: Result<Option<(Pubkey, Vec<u8>)>, ()>,
+        legacy: &Pubkey,
+        claimed: ClaimedSession,
+    ) -> Result<SessionAccount, SessionVerificationError> {
+        let fetcher = MockFetcher { result: data };
+        verify_on_chain_session(
+            &fetcher,
+            &program_id(),
+            Some(legacy),
             &Pubkey::new_from_array([7u8; 32]),
             &claimed,
         )
@@ -711,6 +742,97 @@ mod tests {
     /// Arithmetic rather than eyeballing: a typo in a single constant would
     /// read a neighbouring field, and no test that only checks "it parses"
     /// would notice.
+    // ---- dual-program routing ---------------------------------------------
+
+    /// A session owned by the LEGACY program reconciles when a migration is
+    /// configured. Refusing it would strand every escrow opened before the
+    /// cutover — the sessions this whole migration exists to drain safely.
+    #[tokio::test]
+    async fn a_legacy_program_session_is_accepted_during_migration() {
+        let legacy = Pubkey::new_from_array([42u8; 32]);
+        // The captured account is a settled session; reconciliation refuses
+        // those on their own merits. Clear the flag so this test exercises the
+        // program-owner check and nothing else.
+        let mut data = real_account_bytes();
+        data[V1_OFF_IS_SETTLED] = 0;
+        let acct = SessionAccount::parse(&data).unwrap();
+
+        let ok = verify_with_legacy(
+            Ok(Some((legacy, data.clone()))),
+            &legacy,
+            ClaimedSession {
+                agent: acct.agent,
+                provider: acct.provider,
+                mint: acct.mint,
+                deposited_total: acct.deposited_total,
+                expires_at: acct.expires_at,
+            },
+        )
+        .await;
+        assert!(ok.is_ok(), "a legacy session was refused: {ok:?}");
+    }
+
+    /// The same session is REFUSED when no migration is configured.
+    ///
+    /// The pair with the test above is the point: accepting the legacy program
+    /// must be a deliberate configuration, not something the gateway does
+    /// because an account looked convincing.
+    #[tokio::test]
+    async fn the_same_session_is_refused_without_a_configured_legacy_program() {
+        let legacy = Pubkey::new_from_array([42u8; 32]);
+        let mut data = real_account_bytes();
+        data[V1_OFF_IS_SETTLED] = 0;
+        let acct = SessionAccount::parse(&data).unwrap();
+
+        let refused = verify_with(
+            Ok(Some((legacy, data))),
+            ClaimedSession {
+                agent: acct.agent,
+                provider: acct.provider,
+                mint: acct.mint,
+                deposited_total: acct.deposited_total,
+                expires_at: acct.expires_at,
+            },
+        )
+        .await;
+        assert!(matches!(
+            refused,
+            Err(SessionVerificationError::WrongProgramOwner { .. })
+        ));
+    }
+
+    /// A migration widens the accepted set by exactly ONE id.
+    ///
+    /// The failure this guards against is a check written as "is it one of the
+    /// programs we know about" drifting into "is it plausible". A third
+    /// program — an attacker's, with a matching discriminator and any values
+    /// it likes — must still be refused while a migration is in progress.
+    #[tokio::test]
+    async fn a_third_program_is_still_refused_during_a_migration() {
+        let legacy = Pubkey::new_from_array([42u8; 32]);
+        let attacker = Pubkey::new_from_array([99u8; 32]);
+        let mut data = real_account_bytes();
+        data[V1_OFF_IS_SETTLED] = 0;
+        let acct = SessionAccount::parse(&data).unwrap();
+
+        let refused = verify_with_legacy(
+            Ok(Some((attacker, data))),
+            &legacy,
+            ClaimedSession {
+                agent: acct.agent,
+                provider: acct.provider,
+                mint: acct.mint,
+                deposited_total: acct.deposited_total,
+                expires_at: acct.expires_at,
+            },
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(SessionVerificationError::WrongProgramOwner { .. })),
+            "an attacker's program was accepted during a migration"
+        );
+    }
+
     #[test]
     fn v2_offsets_are_v1_shifted_by_32() {
         assert_eq!(V2_OFF_SETTLEMENT_AUTHORITY, OFF_PROVIDER + 32);

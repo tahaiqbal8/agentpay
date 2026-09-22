@@ -37,7 +37,11 @@ pub struct AppState {
     pub db: Option<Arc<Database>>,
     /// False while running on the non-durable in-memory store.
     pub durable_state: bool,
+    /// Where NEW sessions are opened.
     pub program_id: Pubkey,
+    /// The previous program, if a migration is in progress. Sessions it owns
+    /// are read, reconciled and settled, but never created.
+    pub legacy_program_id: Option<Pubkey>,
     /// Injected so tests can drive expiry deterministically.
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// None when running verify-only with no signing key configured.
@@ -288,6 +292,7 @@ pub async fn open_session(
             let account = verify_on_chain_session(
                 fetcher.as_ref(),
                 &state.program_id,
+                state.legacy_program_id.as_ref(),
                 &session,
                 &claimed,
             )
@@ -876,7 +881,13 @@ pub async fn reconcile_session(
         expires_at: record.expires_at,
     };
 
-    let account = verify_on_chain_session(fetcher.as_ref(), &state.program_id, &session, &claimed)
+    let account = verify_on_chain_session(
+        fetcher.as_ref(),
+        &state.program_id,
+        state.legacy_program_id.as_ref(),
+        &session,
+        &claimed,
+    )
         .await
         .map_err(|e| {
             warn!(
@@ -1039,7 +1050,15 @@ pub async fn settle_session(
     //                 program requires `provider: Signer`. That legacy path
     //                 exists solely to drain sessions opened before the
     //                 cutover and retires with them.
-    let session_version = state
+    // Read the session once. Its OWNER is the program that must receive this
+    // settlement, and its LENGTH is the layout — both facts about the account
+    // itself rather than about how this gateway happens to be configured.
+    //
+    // Deriving the settlement-record PDA from `state.program_id` instead would
+    // be wrong during a migration: a legacy session's record lives under the
+    // legacy program, and the PDA derived under the new one simply does not
+    // exist.
+    let (owning_program, is_v2) = match state
         .session_fetcher
         .as_ref()
         .map(|f| f.fetch(&session))
@@ -1047,10 +1066,8 @@ pub async fn settle_session(
         .await
         .ok()
         .flatten()
-        .map(|(_, data)| data.len());
-
-    let is_v2 = match session_version {
-        Some(len) => len == crate::chain::SESSION_ACCOUNT_LEN_V2,
+    {
+        Some((owner, data)) => (owner, data.len() == crate::chain::SESSION_ACCOUNT_LEN_V2),
         // Fail closed. Guessing the version picks a signing key, and picking
         // the wrong one submits a transaction the program will refuse.
         None => {
@@ -1058,6 +1075,18 @@ pub async fn settle_session(
             return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
         }
     };
+
+    // Only the two programs this gateway knows. An account owned by anything
+    // else is not a session of ours, whatever it looks like.
+    if owning_program != state.program_id && Some(owning_program) != state.legacy_program_id {
+        error!(
+            request_id = %rid,
+            session = %session,
+            owner = %owning_program,
+            "session is owned by an unrecognised program"
+        );
+        return Err(Denial::new(ReasonCode::ERR_WRONG_PROGRAM_OWNER, &rid));
+    }
 
     let settler: &Keypair = if is_v2 {
         let Some(authority) = state.settlement_authority.as_ref() else {
@@ -1095,6 +1124,7 @@ pub async fn settle_session(
         session = %session,
         cumulative = highest.claim.cumulative_amount,
         nonce = highest.claim.nonce,
+        program = %owning_program,
         program_version = if is_v2 { "v2" } else { "v1 (legacy)" },
         settler = %settler.pubkey(),
         provider = %record.provider,
@@ -1103,7 +1133,9 @@ pub async fn settle_session(
 
     let outcome = submit_settlement(
         rpc,
-        &state.program_id,
+        // The program that OWNS this session, not the one configured for new
+        // ones. They differ for every legacy session during a migration.
+        &owning_program,
         settler,
         // The payee comes from the SESSION, never from the signer. Under v2
         // those are different keys.

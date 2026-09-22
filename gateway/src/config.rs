@@ -11,7 +11,24 @@ use solana_pubkey::Pubkey;
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub rpc_url: String,
+    /// The program NEW sessions are opened under.
+    ///
+    /// Set this to the v2 program to cut over. It is `AGENTPAY_PROGRAM_ID`, so
+    /// a deployment that does nothing keeps opening sessions exactly where it
+    /// did — the cutover is an explicit act, never a side effect of upgrading
+    /// the gateway.
     pub program_id: Pubkey,
+
+    /// The PREVIOUS program, still holding sessions opened before the cutover.
+    ///
+    /// Accepted for reading, reconciling and settling; never for opening. When
+    /// set, a session owned by EITHER program is recognised, and which one owns
+    /// it decides the account layout and which key may settle it.
+    ///
+    /// `None` means single-program operation — either a deployment that has
+    /// never cut over, or one whose migration has finished and whose legacy
+    /// sessions have all drained. See docs/MIGRATION_V1_V2.md.
+    pub legacy_program_id: Option<Pubkey>,
     /// Path to the provider's Solana keypair JSON.
     ///
     /// TRUST NOTE: `settle_session` requires the provider's signature, so the
@@ -139,6 +156,14 @@ impl Config {
             return Err(ConfigError::MainnetRefused(rpc_url));
         }
 
+        let legacy_program_id = match optional_env("AGENTPAY_LEGACY_PROGRAM_ID") {
+            Some(v) => Some(
+                v.parse::<Pubkey>()
+                    .map_err(|e| ConfigError::Invalid("AGENTPAY_LEGACY_PROGRAM_ID", e.to_string()))?,
+            ),
+            None => None,
+        };
+
         let program_id = require("AGENTPAY_PROGRAM_ID")?
             .parse::<Pubkey>()
             .map_err(|e| ConfigError::Invalid("AGENTPAY_PROGRAM_ID", e.to_string()))?;
@@ -201,6 +226,7 @@ impl Config {
             bind_addr,
             rpc_url,
             program_id,
+            legacy_program_id,
             provider_keypair_path,
             settlement_authority_keypair_path,
             admin_token,

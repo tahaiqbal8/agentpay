@@ -38,6 +38,11 @@ pub enum ReasonCode {
     // --- settlement ---
     ERR_NOTHING_TO_SETTLE,
     ERR_WRONG_PROVIDER_KEY,
+    /// The session account is owned by a program this gateway does not serve.
+    ///
+    /// Distinct from ERR_WRONG_PROVIDER_KEY: that is a misconfigured key for a
+    /// session we recognise; this is a session we do not recognise at all.
+    ERR_WRONG_PROGRAM_OWNER,
     ERR_SETTLEMENT_UNAVAILABLE,
     ERR_SETTLEMENT_FAILED,
 
@@ -98,6 +103,7 @@ impl ReasonCode {
             Self::ERR_INVALID_SIGNATURE => "ERR_INVALID_SIGNATURE",
             Self::ERR_NOTHING_TO_SETTLE => "ERR_NOTHING_TO_SETTLE",
             Self::ERR_WRONG_PROVIDER_KEY => "ERR_WRONG_PROVIDER_KEY",
+            Self::ERR_WRONG_PROGRAM_OWNER => "ERR_WRONG_PROGRAM_OWNER",
             Self::ERR_SETTLEMENT_UNAVAILABLE => "ERR_SETTLEMENT_UNAVAILABLE",
             Self::ERR_SETTLEMENT_FAILED => "ERR_SETTLEMENT_FAILED",
             Self::ERR_SESSION_ACCOUNT_NOT_FOUND => "ERR_SESSION_ACCOUNT_NOT_FOUND",
@@ -157,6 +163,9 @@ impl ReasonCode {
             }
             Self::ERR_WRONG_PROVIDER_KEY => {
                 "The configured provider key does not match this session's provider."
+            }
+            Self::ERR_WRONG_PROGRAM_OWNER => {
+                "This session is owned by a program this gateway does not serve."
             }
             Self::ERR_SETTLEMENT_UNAVAILABLE => {
                 "This gateway runs in verify-only mode and cannot submit settlements."
@@ -272,7 +281,8 @@ impl ReasonCode {
             | Self::ERR_NONCE_NOT_MONOTONIC
             | Self::ERR_CLAIM_EXCEEDS_DEPOSIT
             | Self::ERR_NOTHING_TO_SETTLE
-            | Self::ERR_WRONG_PROVIDER_KEY => StatusCode::FORBIDDEN,
+            | Self::ERR_WRONG_PROVIDER_KEY
+            | Self::ERR_WRONG_PROGRAM_OWNER => StatusCode::FORBIDDEN,
             // Configuration and chain trouble: the caller did nothing wrong.
             Self::ERR_SETTLEMENT_UNAVAILABLE
             | Self::ERR_SETTLEMENT_FAILED

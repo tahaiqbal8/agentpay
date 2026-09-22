@@ -16,7 +16,8 @@
     "reconcile-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/reconcile-devnet.ts",
     "stage-settleable": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/stage-settleable.ts",
     "demo": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-agent.ts",
-    "buy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-buy.ts"
+    "buy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-buy.ts",
+    "e2e-v2": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/e2e-v2-devnet.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

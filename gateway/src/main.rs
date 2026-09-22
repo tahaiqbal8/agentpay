@@ -176,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind = %config.bind_addr,
         rpc = %config.rpc_url,
         program_id = %config.program_id,
+        legacy_program_id = ?config.legacy_program_id,
         "starting agentpay-gateway"
     );
 
@@ -371,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: db_handle,
         durable_state: durable,
         program_id: config.program_id,
+        legacy_program_id: config.legacy_program_id,
         clock: Arc::new(system_clock),
         // Settlement additionally needs a signing key; without one it stays
         // verify-only even though the RPC client exists.

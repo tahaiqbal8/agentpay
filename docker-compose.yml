@@ -95,6 +95,16 @@ services:
       # No keypair  -> verify-only; /v1/session/settle returns
       #                ERR_SETTLEMENT_UNAVAILABLE. A valid deployment mode.
       AGENTPAY_PROVIDER_KEYPAIR: ${AGENTPAY_PROVIDER_KEYPAIR:-}
+      # The PREVIOUS program, during a migration. Sessions it owns are read,
+      # reconciled and settled — never created. Unset once they have drained.
+      AGENTPAY_LEGACY_PROGRAM_ID: ${AGENTPAY_LEGACY_PROGRAM_ID:-}
+      # AgentPay's OWN settlement key, for v2 sessions.
+      #
+      # Deliberately a different variable from AGENTPAY_PROVIDER_KEYPAIR above.
+      # Holding this is not custody: it can trigger a settlement and nothing
+      # else — the amount is fixed by the agent's signature and the destination
+      # by session.provider, both inside the program.
+      AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR: ${AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR:-}
       # DEVELOPMENT ONLY. Disables on-chain reconciliation, so a caller can
       # assert a deposit that was never escrowed. Required by `npm run demo`
       # because its sessions are synthetic. Never set this in production.
