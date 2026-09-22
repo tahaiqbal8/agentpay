@@ -75,6 +75,16 @@ interface SettleOpts {
   /** Where the money is asked to go. Defaults to the provider's own ATA. */
   providerTokenAccount?: PublicKey;
   merkleRoot?: number[];
+  /**
+   * Skips the public-RPC throttle before sending.
+   *
+   * Used by exactly one test: the concurrency case. `throttle` is a no-op on a
+   * local validator but enforces a 400ms gap on devnet, which would serialise
+   * two settlements that are supposed to race — the test would still pass and
+   * would prove nothing, because it would have become a sequential
+   * double-settle, which test 9 already covers.
+   */
+  skipThrottle?: boolean;
 }
 
 async function settle(f: Fixture, opts: SettleOpts): Promise<string> {
@@ -94,7 +104,7 @@ async function settle(f: Fixture, opts: SettleOpts): Promise<string> {
     message,
   });
 
-  await throttle(env.connection);
+  if (!opts.skipThrottle) await throttle(env.connection);
   return await program.methods
     .settleSession(
       new anchor.BN(opts.cumulative.toString()),
@@ -136,6 +146,25 @@ async function ataFor(owner: PublicKey): Promise<PublicKey> {
     });
   });
   return ata;
+}
+
+/**
+ * Waits until the session is genuinely past `expires_at` plus the program's
+ * clock-skew tolerance, judged by CHAIN time rather than wall time.
+ *
+ * A fixed `setTimeout` was wrong in two ways. It raced at the other end — a
+ * one-second expiry can already be in the past by the time `open_session`
+ * lands, which fails with ExpiryInPast and looks like a program bug — and it
+ * assumes the validator's clock tracks the test runner's, which on devnet it
+ * need not.
+ */
+async function waitUntilExpired(expiresAt: number): Promise<void> {
+  const deadline = expiresAt + 30 /* CLOCK_SKEW_TOLERANCE_SECS */ + 2;
+  for (;;) {
+    const t = await chainTime(env.connection);
+    if (t > deadline) return;
+    await new Promise((r) => setTimeout(r, Math.min(5000, (deadline - t) * 1000)));
+  }
 }
 
 describe("settlement custody (program v2)", function () {
@@ -399,9 +428,21 @@ describe("settlement custody (program v2)", function () {
     // Two settlements for the same cumulative, fired together. Solana
     // serialises writes to the session account, so exactly one can advance the
     // high-water mark; the other must find it already moved.
+    //
+    // The expiry is read ONCE and handed to both, and the throttle is skipped,
+    // so that nothing inside `settle` does an RPC round trip between them. On
+    // devnet the throttle would otherwise put 400ms between the two sends and
+    // this would quietly stop being a concurrency test.
+    const sharedExpiry = (await chainTime(env.connection)) + 600;
+    const race = {
+      cumulative: 500n,
+      nonce: 1n,
+      claimExpiresAt: sharedExpiry,
+      skipThrottle: true,
+    };
     const results = await Promise.allSettled([
-      settle(f, { cumulative: 500n, settler: gateway, nonce: 1n }),
-      settle(f, { cumulative: 500n, settler: f.provider, nonce: 1n }),
+      settle(f, { ...race, settler: gateway }),
+      settle(f, { ...race, settler: f.provider }),
     ]);
     const ok = results.filter((r) => r.status === "fulfilled").length;
 
@@ -415,12 +456,12 @@ describe("settlement custody (program v2)", function () {
 
   it("15. settlement after expiry is refused, for every settler", async () => {
     const f = await env.newFixture({
-      expiresInSecs: 1,
+      // Enough headroom that `open_session` cannot land after its own expiry.
+      expiresInSecs: 20,
       settlementAuthority: gateway.publicKey,
     });
     await env.openSession(f);
-    // Past expiry plus the clock-skew tolerance.
-    await new Promise((r) => setTimeout(r, 35_000));
+    await waitUntilExpired(f.expiresAt);
 
     await expectAnchorError(
       settle(f, { cumulative: ONE_USDC, settler: gateway }),
@@ -437,13 +478,13 @@ describe("settlement custody (program v2)", function () {
     const f = await env.newFixture({
       deposit: 1000n,
       agentBalance: 1000n,
-      expiresInSecs: 1,
+      expiresInSecs: 20,
       settlementAuthority: gateway.publicKey,
     });
     await env.openSession(f);
     await settle(f, { cumulative: 300n, settler: gateway, nonce: 1n });
 
-    await new Promise((r) => setTimeout(r, 35_000));
+    await waitUntilExpired(f.expiresAt);
 
     // Permissionless after expiry, and funds can only reach the agent.
     const rescuer = await env.newFundedKeypair();
