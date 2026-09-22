@@ -32,22 +32,59 @@ use solana_pubkey::Pubkey;
 /// is rejected rather than misread.
 pub const SESSION_DISCRIMINATOR: [u8; 8] = [243, 81, 72, 115, 214, 188, 72, 144];
 
-/// 8-byte discriminator plus the fields below.
-pub const SESSION_ACCOUNT_LEN: usize = 187;
+/// The v1 `Session`: the layout the ORIGINAL program
+/// `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` writes.
+pub const SESSION_ACCOUNT_LEN_V1: usize = 187;
 
-// Byte offsets into the account data, including the discriminator.
+/// The v2 `Session`: v1 plus `settlement_authority`, 32 bytes inserted after
+/// `provider`. Written by `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m`.
+pub const SESSION_ACCOUNT_LEN_V2: usize = 219;
+
+/// Kept as an alias so existing callers and tests keep compiling. It names the
+/// v1 length because that is what every account on devnet is today.
+pub const SESSION_ACCOUNT_LEN: usize = SESSION_ACCOUNT_LEN_V1;
+
+// ---------------------------------------------------------------------------
+// Byte offsets, including the discriminator.
+//
+// BOTH programs write the same 8-byte discriminator, because it is
+// `sha256("account:Session")[..8]` and the struct is still called `Session`.
+// So the discriminator CANNOT distinguish the versions and the length is what
+// does: 187 is v1, 219 is v2, anything else is refused.
+//
+// Getting this wrong is the failure mode this module's header warns about —
+// the wrong offsets do not error, they return plausible garbage. Every offset
+// after `provider` shifts by 32 between the versions, so they are spelled out
+// separately rather than computed, and `v2_offsets_are_v1_shifted_by_32` pins
+// the relationship.
+// ---------------------------------------------------------------------------
 const OFF_AGENT: usize = 8;
 const OFF_PROVIDER: usize = 40;
-const OFF_MINT: usize = 72;
-const OFF_VAULT: usize = 104;
-const OFF_DEPOSITED_TOTAL: usize = 136;
-const OFF_CUMULATIVE_SETTLED: usize = 144;
-const OFF_REFUNDED_TOTAL: usize = 152;
-const OFF_EXPIRES_AT: usize = 160;
-const OFF_SESSION_ID: usize = 168;
-const OFF_BUMP: usize = 184;
-const OFF_VAULT_BUMP: usize = 185;
-const OFF_IS_SETTLED: usize = 186;
+
+// v1: no settlement_authority.
+const V1_OFF_MINT: usize = 72;
+const V1_OFF_VAULT: usize = 104;
+const V1_OFF_DEPOSITED_TOTAL: usize = 136;
+const V1_OFF_CUMULATIVE_SETTLED: usize = 144;
+const V1_OFF_REFUNDED_TOTAL: usize = 152;
+const V1_OFF_EXPIRES_AT: usize = 160;
+const V1_OFF_SESSION_ID: usize = 168;
+const V1_OFF_BUMP: usize = 184;
+const V1_OFF_VAULT_BUMP: usize = 185;
+const V1_OFF_IS_SETTLED: usize = 186;
+
+// v2: settlement_authority at 72, everything after it shifted by 32.
+const V2_OFF_SETTLEMENT_AUTHORITY: usize = 72;
+const V2_OFF_MINT: usize = 104;
+const V2_OFF_VAULT: usize = 136;
+const V2_OFF_DEPOSITED_TOTAL: usize = 168;
+const V2_OFF_CUMULATIVE_SETTLED: usize = 176;
+const V2_OFF_REFUNDED_TOTAL: usize = 184;
+const V2_OFF_EXPIRES_AT: usize = 192;
+const V2_OFF_SESSION_ID: usize = 200;
+const V2_OFF_BUMP: usize = 216;
+const V2_OFF_VAULT_BUMP: usize = 217;
+const V2_OFF_IS_SETTLED: usize = 218;
 
 /// `sha256("account:SettlementRecord")[..8]`, checked against the real account
 /// `6hs7LfYXeh6TTgVytN4Wyvv71YHyKB1r9oNdX69hYxmU` on devnet.
@@ -69,12 +106,42 @@ const OFF_SR_SETTLED_AMOUNT: usize = 112;
 /// is the whole claim. Reading it back rather than echoing what the gateway
 /// said at settlement time is the point — a gateway that lied about the root
 /// it committed would be caught exactly here.
+///
+/// # The root is the LATEST, not the final
+///
+/// Under program v2 settlement is repeatable, so this account is created on
+/// the first settlement and advanced on every later one. `merkle_root` is
+/// therefore the root as of the most recent settlement — the evidence log is
+/// append-only, so a later settlement commits a root over more leaves.
+///
+/// The verifier stays correct because it fetches a fresh proof against the
+/// current log and compares it to the current on-chain root; both advance
+/// together. But a proof exported and published earlier will not verify
+/// against a later root, and nothing here may be described as permanently
+/// final. See docs/SETTLEMENT_CUSTODY.md §17.
+///
+/// The byte LAYOUT is unchanged between v1 and v2 — same fields, same sizes,
+/// same offsets — so no version check is needed here. Only the meaning of
+/// `settled_amount` changed, and that is documented on the field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementRecordAccount {
     pub session: Pubkey,
     pub claim_hash: [u8; 32],
     pub merkle_root: [u8; 32],
     pub settled_at: i64,
+    /// The CUMULATIVE total this session has settled, not the delta of the
+    /// most recent transaction.
+    ///
+    /// Program v1 wrote the delta, which was unambiguous because settlement
+    /// happened exactly once. Program v2 makes settlement repeatable, and a
+    /// per-transaction delta would then be actively misleading: the last
+    /// settlement of a session that paid 750 in two steps would read 650.
+    ///
+    /// The two programs therefore write different meanings into the same
+    /// bytes. A v1 record read today is still correct — a single settlement's
+    /// delta IS the cumulative — so no historical record is misinterpreted,
+    /// but do not reach for this field expecting "what moved in that one
+    /// transaction".
     pub settled_amount: u64,
 }
 
@@ -127,6 +194,14 @@ pub fn parse_settlement_record(
 pub struct SessionAccount {
     pub agent: Pubkey,
     pub provider: Pubkey,
+    /// Who, besides the provider, may trigger settlement.
+    ///
+    /// `None` means this is a v1 session from the original program, which has
+    /// no such field — NOT that the field is set to zero. The distinction
+    /// matters: a v1 session can only ever be settled by the provider's own
+    /// key, which is why the legacy settlement path has to stay until the last
+    /// of them drains.
+    pub settlement_authority: Option<Pubkey>,
     pub mint: Pubkey,
     pub vault: Pubkey,
     pub deposited_total: u64,
@@ -145,7 +220,10 @@ pub enum SessionVerificationError {
     AccountNotFound,
     #[error("account is owned by {actual}, not the AgentPay program {expected}")]
     WrongProgramOwner { expected: Pubkey, actual: Pubkey },
-    #[error("account data is {0} bytes, expected {SESSION_ACCOUNT_LEN}")]
+    #[error(
+        "account data is {0} bytes, expected {SESSION_ACCOUNT_LEN_V1} (v1) \
+         or {SESSION_ACCOUNT_LEN_V2} (v2)"
+    )]
     InvalidAccountData(usize),
     #[error("account discriminator is not a Session")]
     NotASessionAccount,
@@ -174,9 +252,18 @@ impl SessionAccount {
         }
         // Exact length, not a minimum: a short account would read past its end
         // and a long one is not the struct we think it is.
-        if data.len() != SESSION_ACCOUNT_LEN {
-            return Err(SessionVerificationError::InvalidAccountData(data.len()));
-        }
+        //
+        // The length is also the ONLY thing that tells the versions apart. Both
+        // programs write the same discriminator, so a v2 account parsed with v1
+        // offsets would not error — it would return a plausible-looking session
+        // with the mint where the settlement authority is. Refusing anything
+        // that is not exactly one of the two known lengths is what prevents
+        // that.
+        let v2 = match data.len() {
+            SESSION_ACCOUNT_LEN_V1 => false,
+            SESSION_ACCOUNT_LEN_V2 => true,
+            other => return Err(SessionVerificationError::InvalidAccountData(other)),
+        };
 
         let pubkey_at = |off: usize| -> Pubkey {
             let mut b = [0u8; 32];
@@ -194,24 +281,70 @@ impl SessionAccount {
             i64::from_le_bytes(b)
         };
 
+        // One table per version. Picked once, here, so no field below can be
+        // read with the wrong version's offset by accident.
+        let (
+            off_mint,
+            off_vault,
+            off_deposited,
+            off_cumulative,
+            off_refunded,
+            off_expires,
+            off_session_id,
+            off_bump,
+            off_vault_bump,
+            off_is_settled,
+        ) = if v2 {
+            (
+                V2_OFF_MINT,
+                V2_OFF_VAULT,
+                V2_OFF_DEPOSITED_TOTAL,
+                V2_OFF_CUMULATIVE_SETTLED,
+                V2_OFF_REFUNDED_TOTAL,
+                V2_OFF_EXPIRES_AT,
+                V2_OFF_SESSION_ID,
+                V2_OFF_BUMP,
+                V2_OFF_VAULT_BUMP,
+                V2_OFF_IS_SETTLED,
+            )
+        } else {
+            (
+                V1_OFF_MINT,
+                V1_OFF_VAULT,
+                V1_OFF_DEPOSITED_TOTAL,
+                V1_OFF_CUMULATIVE_SETTLED,
+                V1_OFF_REFUNDED_TOTAL,
+                V1_OFF_EXPIRES_AT,
+                V1_OFF_SESSION_ID,
+                V1_OFF_BUMP,
+                V1_OFF_VAULT_BUMP,
+                V1_OFF_IS_SETTLED,
+            )
+        };
+
         let mut session_id = [0u8; 16];
-        session_id.copy_from_slice(&data[OFF_SESSION_ID..OFF_SESSION_ID + 16]);
+        session_id.copy_from_slice(&data[off_session_id..off_session_id + 16]);
 
         Ok(Self {
             agent: pubkey_at(OFF_AGENT),
             provider: pubkey_at(OFF_PROVIDER),
-            mint: pubkey_at(OFF_MINT),
-            vault: pubkey_at(OFF_VAULT),
-            deposited_total: u64_at(OFF_DEPOSITED_TOTAL),
-            cumulative_settled: u64_at(OFF_CUMULATIVE_SETTLED),
-            refunded_total: u64_at(OFF_REFUNDED_TOTAL),
-            expires_at: i64_at(OFF_EXPIRES_AT),
+            // `None` for v1: the field does not exist there. Reading zeros and
+            // calling it "no authority" would be the same value with a
+            // different meaning, and the settlement path needs to tell a v1
+            // session from a v2 one that happens to have none.
+            settlement_authority: v2.then(|| pubkey_at(V2_OFF_SETTLEMENT_AUTHORITY)),
+            mint: pubkey_at(off_mint),
+            vault: pubkey_at(off_vault),
+            deposited_total: u64_at(off_deposited),
+            cumulative_settled: u64_at(off_cumulative),
+            refunded_total: u64_at(off_refunded),
+            expires_at: i64_at(off_expires),
             session_id,
-            bump: data[OFF_BUMP],
-            vault_bump: data[OFF_VAULT_BUMP],
+            bump: data[off_bump],
+            vault_bump: data[off_vault_bump],
             // Anchor encodes bool as a single 0/1 byte. Anything else means we
             // are not reading the field we think we are.
-            is_settled: match data[OFF_IS_SETTLED] {
+            is_settled: match data[off_is_settled] {
                 0 => false,
                 1 => true,
                 _ => return Err(SessionVerificationError::NotASessionAccount),
@@ -505,6 +638,7 @@ mod tests {
     /// Builds a synthetic but structurally valid account.
     fn account_bytes(f: impl FnOnce(&mut SessionAccount)) -> Vec<u8> {
         let mut acct = SessionAccount {
+            settlement_authority: None,
             agent: Pubkey::new_from_array([1u8; 32]),
             provider: Pubkey::new_from_array([2u8; 32]),
             mint: Pubkey::new_from_array([3u8; 32]),
@@ -524,19 +658,19 @@ mod tests {
         d[..8].copy_from_slice(&SESSION_DISCRIMINATOR);
         d[OFF_AGENT..OFF_AGENT + 32].copy_from_slice(acct.agent.as_ref());
         d[OFF_PROVIDER..OFF_PROVIDER + 32].copy_from_slice(acct.provider.as_ref());
-        d[OFF_MINT..OFF_MINT + 32].copy_from_slice(acct.mint.as_ref());
-        d[OFF_VAULT..OFF_VAULT + 32].copy_from_slice(acct.vault.as_ref());
-        d[OFF_DEPOSITED_TOTAL..OFF_DEPOSITED_TOTAL + 8]
+        d[V1_OFF_MINT..V1_OFF_MINT + 32].copy_from_slice(acct.mint.as_ref());
+        d[V1_OFF_VAULT..V1_OFF_VAULT + 32].copy_from_slice(acct.vault.as_ref());
+        d[V1_OFF_DEPOSITED_TOTAL..V1_OFF_DEPOSITED_TOTAL + 8]
             .copy_from_slice(&acct.deposited_total.to_le_bytes());
-        d[OFF_CUMULATIVE_SETTLED..OFF_CUMULATIVE_SETTLED + 8]
+        d[V1_OFF_CUMULATIVE_SETTLED..V1_OFF_CUMULATIVE_SETTLED + 8]
             .copy_from_slice(&acct.cumulative_settled.to_le_bytes());
-        d[OFF_REFUNDED_TOTAL..OFF_REFUNDED_TOTAL + 8]
+        d[V1_OFF_REFUNDED_TOTAL..V1_OFF_REFUNDED_TOTAL + 8]
             .copy_from_slice(&acct.refunded_total.to_le_bytes());
-        d[OFF_EXPIRES_AT..OFF_EXPIRES_AT + 8].copy_from_slice(&acct.expires_at.to_le_bytes());
-        d[OFF_SESSION_ID..OFF_SESSION_ID + 16].copy_from_slice(&acct.session_id);
-        d[OFF_BUMP] = acct.bump;
-        d[OFF_VAULT_BUMP] = acct.vault_bump;
-        d[OFF_IS_SETTLED] = acct.is_settled as u8;
+        d[V1_OFF_EXPIRES_AT..V1_OFF_EXPIRES_AT + 8].copy_from_slice(&acct.expires_at.to_le_bytes());
+        d[V1_OFF_SESSION_ID..V1_OFF_SESSION_ID + 16].copy_from_slice(&acct.session_id);
+        d[V1_OFF_BUMP] = acct.bump;
+        d[V1_OFF_VAULT_BUMP] = acct.vault_bump;
+        d[V1_OFF_IS_SETTLED] = acct.is_settled as u8;
         d
     }
 
@@ -569,6 +703,88 @@ mod tests {
     #[test]
     fn discriminator_matches_anchors_derivation() {
         assert_eq!(account_discriminator("Session"), SESSION_DISCRIMINATOR);
+    }
+
+    /// The v2 offsets must be the v1 offsets shifted by exactly 32 after
+    /// `provider`, because that is the one field that was inserted.
+    ///
+    /// Arithmetic rather than eyeballing: a typo in a single constant would
+    /// read a neighbouring field, and no test that only checks "it parses"
+    /// would notice.
+    #[test]
+    fn v2_offsets_are_v1_shifted_by_32() {
+        assert_eq!(V2_OFF_SETTLEMENT_AUTHORITY, OFF_PROVIDER + 32);
+        for (v1, v2) in [
+            (V1_OFF_MINT, V2_OFF_MINT),
+            (V1_OFF_VAULT, V2_OFF_VAULT),
+            (V1_OFF_DEPOSITED_TOTAL, V2_OFF_DEPOSITED_TOTAL),
+            (V1_OFF_CUMULATIVE_SETTLED, V2_OFF_CUMULATIVE_SETTLED),
+            (V1_OFF_REFUNDED_TOTAL, V2_OFF_REFUNDED_TOTAL),
+            (V1_OFF_EXPIRES_AT, V2_OFF_EXPIRES_AT),
+            (V1_OFF_SESSION_ID, V2_OFF_SESSION_ID),
+            (V1_OFF_BUMP, V2_OFF_BUMP),
+            (V1_OFF_VAULT_BUMP, V2_OFF_VAULT_BUMP),
+            (V1_OFF_IS_SETTLED, V2_OFF_IS_SETTLED),
+        ] {
+            assert_eq!(v2, v1 + 32, "v2 offset is not v1 + 32");
+        }
+        assert_eq!(SESSION_ACCOUNT_LEN_V2, SESSION_ACCOUNT_LEN_V1 + 32);
+        assert_eq!(V2_OFF_IS_SETTLED + 1, SESSION_ACCOUNT_LEN_V2, "v2 length");
+        assert_eq!(V1_OFF_IS_SETTLED + 1, SESSION_ACCOUNT_LEN_V1, "v1 length");
+    }
+
+    /// Builds a v2 account by splicing an authority into real v1 bytes, then
+    /// checks every field still reads correctly.
+    ///
+    /// This is the test that would have caught the whole class of bug: the
+    /// same bytes, read with the wrong table, return a session that looks fine.
+    #[test]
+    fn a_v2_account_parses_with_every_field_in_the_right_place() {
+        let v1 = real_account_bytes();
+        let authority = Pubkey::new_from_array([7u8; 32]);
+
+        let mut v2 = Vec::with_capacity(SESSION_ACCOUNT_LEN_V2);
+        v2.extend_from_slice(&v1[..OFF_PROVIDER + 32]); // through `provider`
+        v2.extend_from_slice(authority.as_ref()); // the new field
+        v2.extend_from_slice(&v1[OFF_PROVIDER + 32..]); // the rest, shifted
+        assert_eq!(v2.len(), SESSION_ACCOUNT_LEN_V2);
+
+        let a = SessionAccount::parse(&v2).expect("v2 account parses");
+        let b = SessionAccount::parse(&v1).expect("v1 account parses");
+
+        assert_eq!(a.settlement_authority, Some(authority));
+        assert_eq!(b.settlement_authority, None, "v1 has no authority field");
+
+        // Every other field must be identical across the two encodings.
+        assert_eq!(a.agent, b.agent);
+        assert_eq!(a.provider, b.provider);
+        assert_eq!(a.mint, b.mint);
+        assert_eq!(a.vault, b.vault);
+        assert_eq!(a.deposited_total, b.deposited_total);
+        assert_eq!(a.cumulative_settled, b.cumulative_settled);
+        assert_eq!(a.refunded_total, b.refunded_total);
+        assert_eq!(a.expires_at, b.expires_at);
+        assert_eq!(a.session_id, b.session_id);
+        assert_eq!(a.bump, b.bump);
+        assert_eq!(a.vault_bump, b.vault_bump);
+        assert_eq!(a.is_settled, b.is_settled);
+    }
+
+    /// A length that is neither version is refused rather than guessed at.
+    #[test]
+    fn an_unknown_session_length_is_refused() {
+        let v1 = real_account_bytes();
+        for len in [SESSION_ACCOUNT_LEN_V1 - 1, SESSION_ACCOUNT_LEN_V1 + 1, 218, 220] {
+            let mut data = v1.clone();
+            data.resize(len, 0);
+            assert!(
+                matches!(
+                    SessionAccount::parse(&data),
+                    Err(SessionVerificationError::InvalidAccountData(_))
+                ),
+                "a {len}-byte account was accepted"
+            );
+        }
     }
 
     #[test]
@@ -642,7 +858,7 @@ mod tests {
     #[test]
     fn rejects_a_non_boolean_is_settled_byte() {
         let mut d = account_bytes(|_| {});
-        d[OFF_IS_SETTLED] = 7;
+        d[V1_OFF_IS_SETTLED] = 7;
         assert_eq!(
             SessionAccount::parse(&d),
             Err(SessionVerificationError::NotASessionAccount)
@@ -772,7 +988,7 @@ mod tests {
         let mut d = account_bytes(|a| {
             a.cumulative_settled = u64::MAX;
         });
-        d[OFF_REFUNDED_TOTAL..OFF_REFUNDED_TOTAL + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        d[V1_OFF_REFUNDED_TOTAL..V1_OFF_REFUNDED_TOTAL + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         let acct = SessionAccount::parse(&d).unwrap();
         assert_eq!(acct.remaining(), 0);
     }

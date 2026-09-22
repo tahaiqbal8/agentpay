@@ -456,10 +456,23 @@ pub struct OnChainSettlementResponse {
     pub merkle_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_hash: Option<String>,
+    /// The CUMULATIVE total settled for this session, in micro-USDC.
+    ///
+    /// Not the delta of the latest settlement. Under program v2 settlement is
+    /// repeatable, so a delta would answer a question nobody asks. See
+    /// `chain::SettlementRecordAccount::settled_amount`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settled_amount: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settled_at: Option<i64>,
+    /// True when this root may still advance.
+    ///
+    /// Repeatable settlement means `merkle_root` is the root as of the most
+    /// recent settlement, not a permanently final one. A client that exports a
+    /// proof needs to know that, and inferring it from the program id would
+    /// push protocol knowledge into every consumer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_may_advance: Option<bool>,
 }
 
 fn to_hex(b: &[u8]) -> String {
@@ -502,8 +515,25 @@ pub async fn on_chain_settlement(
             merkle_root: None,
             claim_hash: None,
             settled_amount: None,
+            root_may_advance: None,
             settled_at: None,
         }));
+    };
+
+    // Which program wrote this session decides whether its root can still
+    // move. A v1 session settled exactly once, so its root is final; a v2
+    // session can settle again, so its root is only the latest.
+    //
+    // Read from the session account rather than inferred from configuration:
+    // the length IS the version, and the chain is the authority on it. One
+    // extra RPC on a read-only verification endpoint, never on the money path.
+    let root_may_advance: Option<bool> = match fetcher.fetch(&session).await {
+        Ok(Some((_, session_data))) => {
+            Some(session_data.len() != crate::chain::SESSION_ACCOUNT_LEN_V1)
+        }
+        // Unknown. `None` is the honest answer; asserting either would be a
+        // guess about whether a published proof can go stale.
+        _ => None,
     };
 
     let record = parse_settlement_record(&owner, &state.program_id, &data).map_err(|e| {
@@ -524,6 +554,9 @@ pub async fn on_chain_settlement(
         claim_hash: Some(to_hex(&record.claim_hash)),
         settled_amount: Some(record.settled_amount.to_string()),
         settled_at: Some(record.settled_at),
+        // Only a v2 session can settle again. A v1 session settled exactly
+        // once and can never settle a second time, so its root really is final.
+        root_may_advance,
     }))
 }
 
