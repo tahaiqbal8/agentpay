@@ -26,16 +26,26 @@ previous one's address or URL.
 
 ### Current state
 
-| | |
-|---|---|
-| Cluster | **devnet** |
-| Program ID | `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` |
-| Upgrade authority | `78Q6uycbMfTre1zRiyx6dQvUv1yWEjGzmvuj5Brd3VHc` |
-| Size | 243,560 bytes |
-| Rent locked | ~1.24 SOL |
+**Two programs are deployed on devnet at once.** New sessions open under v2;
+sessions opened under v1 settle and refund under v1 until they drain. See
+[MIGRATION_V1_V2.md](MIGRATION_V1_V2.md).
 
-It is **upgradeable** — the authority above can replace the bytecode in place,
-keeping the same program ID and all existing sessions.
+| | v2 — active | v1 — legacy |
+|---|---|---|
+| Cluster | **devnet** | **devnet** |
+| Program ID | `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` | `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` |
+| Upgrade authority | `78Q6uycbMfTre1zRiyx6dQvUv1yWEjGzmvuj5Brd3VHc` | `78Q6uycbMfTre1zRiyx6dQvUv1yWEjGzmvuj5Brd3VHc` |
+| Size | 262,032 bytes | 243,560 bytes |
+| `Session` account | 219 bytes | 187 bytes |
+| Who may settle | settlement authority **or** provider | the provider only |
+| Settlement | repeatable, monotonic | exactly once |
+
+v2 deployment transaction, slot, and the hash of the deployed bytes checked
+against the tested artifact: [RELEASE_V2.md](RELEASE_V2.md) §G.
+
+Both are **upgradeable** — the authority above can replace the bytecode in
+place, keeping the same program ID and all existing sessions. v1 must not be
+modified: it is live and holds real escrow.
 
 ### Redeploy after a code change
 
@@ -161,12 +171,15 @@ RestartSec=5
 
 Environment=AGENTPAY_BIND_ADDR=127.0.0.1:8080
 Environment=AGENTPAY_RPC_URL=https://api.devnet.solana.com
-Environment=AGENTPAY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
+Environment=AGENTPAY_PROGRAM_ID=ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
+Environment=AGENTPAY_LEGACY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
 Environment=AGENTPAY_LOG=info,tower_http=warn
 # Secrets come from a file that is NOT world-readable (chmod 600):
+# AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR  — AgentPay's own key, settles v2
+# AGENTPAY_PROVIDER_KEYPAIR              — legacy, settles v1 only
 EnvironmentFile=/etc/agentpay/secrets.env
 
-# The provider key is the one thing worth stealing here.
+# The settlement keys are the one thing worth stealing here.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

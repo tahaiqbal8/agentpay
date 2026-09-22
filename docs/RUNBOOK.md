@@ -47,14 +47,15 @@ anchor --version   # 1.2.0
 node --version     # 25.x
 ```
 
-You also need a devnet wallet with SOL, and a provider keypair:
+You also need a devnet wallet with SOL:
 
 ```bash
 solana-keygen new --no-bip39-passphrase -o ~/.config/solana/id.json
-solana-keygen new --no-bip39-passphrase -o ~/.config/solana/agentpay-provider.json
 solana airdrop 2 -u devnet
 solana balance -u devnet
 ```
+
+The settlement key is generated below, under "Optional: enable settlement".
 
 > If the airdrop is rate-limited, use <https://faucet.solana.com>. You need
 > roughly 0.5 SOL; each devnet script spends a few thousandths.
@@ -84,16 +85,37 @@ without one. That refusal is deliberate — see Part 7.
 
 ### Optional: enable settlement
 
-Without a provider key the gateway verifies claims but cannot settle.
+Without a settlement key the gateway verifies claims but cannot settle.
+
+**New sessions open under program v2 and settle with AgentPay's own key** —
+not the provider's. That key can trigger a settlement and nothing else: the
+amount is fixed by the agent's signature and the destination by
+`session.provider`, both enforced on chain.
 
 ```bash
 mkdir -p secrets
+solana-keygen new --no-bip39-passphrase -o secrets/settlement-authority.json
+chmod 600 secrets/settlement-authority.json
+solana airdrop 1 -u devnet $(solana-keygen pubkey secrets/settlement-authority.json)
+echo "AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR=/secrets/settlement-authority.json" >> .env
+```
+
+It needs a little devnet SOL of its own for fees and `SettlementRecord` rent —
+budget ~0.02 SOL per new settlement record.
+
+**Only if you also have v1 sessions to drain** — the old program requires the
+provider's own signature, so settling those needs a provider key as well:
+
+```bash
 cp ~/.config/solana/agentpay-provider.json secrets/provider.json
 chmod 600 secrets/provider.json
 echo "AGENTPAY_PROVIDER_KEYPAIR=/secrets/provider.json" >> .env
 ```
 
-`secrets/` is gitignored.
+A fresh install does not need this. See
+[MIGRATION_V1_V2.md](MIGRATION_V1_V2.md).
+
+`secrets/` is gitignored, and nothing in it is ever committed.
 
 ### Bring it up
 
@@ -508,8 +530,16 @@ audit trail depend on the party it exists to check.
 - No external audit.
 - Single gateway instance. The high-water mark is per-instance state with no
   leader election.
-- The gateway holds the provider's hot key in a file. No HSM, no KMS, no
-  rotation.
+- The gateway holds a hot settlement key in a file. No HSM, no KMS, no
+  rotation. For **v2** sessions this is AgentPay's own key, which cannot
+  redirect funds or change an amount; for **v1** sessions still draining it is
+  the provider's own key, which is the arrangement v2 exists to end.
+- The v2 Merkle root is the **latest** committed root, not a final one — a
+  later settlement commits a root over more leaves. Do not call a proof final.
+- Migration v1 → v2 is not finished. See
+  [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md).
+- A compromised control plane can change a provider's registered settlement
+  address for **future** sessions. Existing sessions are safe.
 - **No notification path.** The approvals page polls; nothing pages a human
   when a spend is waiting.
 - Anyone with the token can register a provider. No ownership, no verification
@@ -526,7 +556,7 @@ audit trail depend on the party it exists to check.
 | --- | --- | --- |
 | `401 ERR_UNAUTHORIZED` on a control endpoint | Token missing or wrong | `export TOKEN=$(grep '^AGENTPAY_ADMIN_TOKEN=' .env \| cut -d= -f2)` |
 | `429 ERR_RATE_LIMITED` | Hit the limit | Wait; `/v1/session/open` refills at 20/min |
-| `ERR_SETTLEMENT_UNAVAILABLE` | No provider keypair | Mount it (Part 2) and `--force-recreate gateway` |
+| `ERR_SETTLEMENT_UNAVAILABLE` | No settlement key for that session's program — v2 needs `AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR`, v1 needs `AGENTPAY_PROVIDER_KEYPAIR` | Mount the right one (Part 2) and `--force-recreate gateway` |
 | Settlement page empty | Sessions have no confirmed escrow | Press **Check against the chain**, or `npm run stage-settleable` |
 | `ERR_SESSION_ACCOUNT_NOT_FOUND` at open | No escrow on chain for that address | Open one first |
 | `ERR_CLAIM_NOT_MONOTONIC` | Client restarted its counters at zero | Use `AgentPayClient.resume()` |

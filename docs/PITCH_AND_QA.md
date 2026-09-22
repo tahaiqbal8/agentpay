@@ -303,7 +303,7 @@ Concretely, the blast radius is:
 | **Amount** | `cumulative <= deposited_total`, enforced on chain |
 | **Time** | Session `expires_at`, max 30 days by construction |
 | **Destination** | Funds move only to the **designated provider** |
-| **Frequency** | `init` on `SettlementRecord` → settles exactly once |
+| **Frequency** | v2: settlement is repeatable but **monotonic** — a cumulative amount lower than or equal to the one already settled is refused, so no settlement can be replayed for value. v1: `init` on `SettlementRecord` → exactly once |
 
 **What the attacker cannot do:** drain other sessions, redirect funds to
 themselves, or exceed the escrow. Compromising the agent key loses *that
@@ -312,15 +312,27 @@ construction.
 
 > **The related question: "What if the *gateway* is compromised?"**
 >
-> The gateway holds one key — the provider's, needed because `settle_session`
-> requires that signature. Three on-chain constraints bound it:
-> `provider_token_account.owner == provider` (cannot redirect), the Ed25519
-> precompile checking the **agent's** signature (cannot exceed what was
-> authorised), and `init` on `SettlementRecord` (cannot settle twice).
+> Under program **v2** the gateway holds its **own** settlement-authority key,
+> not the provider's. That key is a permission to *submit* a settlement and
+> nothing more. Three on-chain constraints bound it:
+> `provider_token_account.owner == session.provider` (cannot redirect — and
+> `provider` is in the session PDA's seeds, so it cannot be changed after the
+> session is opened), the Ed25519 precompile checking the **agent's** signature
+> (cannot exceed what was authorised), and monotonicity on the cumulative
+> amount (cannot replay a settlement for value).
 >
 > **So a compromised gateway can settle early or low — costing the provider
 > revenue — but cannot move money to an attacker.** The custody claim survives a
 > full compromise, which is the whole point of the trust boundary.
+>
+> Two honest qualifications. **First**, sessions still held by the older
+> program v1 do require the provider's own key, and the gateway still holds one
+> for them until they drain — see
+> [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md). **Second**, a compromised *control
+> plane* can change a provider's registered settlement address for **future**
+> sessions. Existing sessions are safe because their provider is in the PDA
+> seeds; this one cannot be fixed in the program and must be disclosed to
+> providers.
 
 ---
 

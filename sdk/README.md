@@ -132,8 +132,24 @@ cumulative, only the highest ever reaches the chain — the intermediate ones do
 not need to. The transaction also commits the Merkle root of every decision,
 refusals included, which is what makes a denial provable afterwards.
 
-Settlement is one-shot: the program's settlement PDA cannot be created twice,
-so a second attempt is refused by the chain itself, not merely by the gateway.
+Settlement is **repeatable and monotonic** under program v2: a later
+settlement may carry a higher cumulative amount, and the chain moves only the
+difference. What the chain refuses is going *backwards* — a cumulative amount
+lower than or equal to the one already settled is rejected, so a replayed
+settlement moves no money.
+
+Two consequences worth knowing before you rely on either value:
+
+- `settled.merkleRoot` is the **latest** committed root, not a final one. A
+  later settlement commits a root over more leaves, so a proof exported now
+  may not verify against a later root. Re-export proofs after the settlement
+  you intend to cite.
+- `settled.cumulativeAmount` is the session total, not that transaction's
+  delta.
+
+Under the older program v1 settlement really was one-shot — the settlement PDA
+was created with `init` and could not be created twice. Sessions still held by
+v1 keep that behaviour.
 
 ## Waiting for a human
 

@@ -197,6 +197,10 @@ solana-keygen new -o ~/.config/solana/id.json
 ```bash
 # /etc/agentpay/secrets.env   (chmod 600)
 DATABASE_URL=postgres://user:pass@host:5432/agentpay?sslmode=require
+# AgentPay's OWN key — settles v2 sessions (the current program).
+AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR=/etc/agentpay/settlement-authority.json
+# LEGACY — a provider's own key, settles v1 sessions only. Remove once the
+# last v1 session has drained. See docs/MIGRATION_V1_V2.md.
 AGENTPAY_PROVIDER_KEYPAIR=/etc/agentpay/provider.json
 ```
 
@@ -204,7 +208,9 @@ AGENTPAY_PROVIDER_KEYPAIR=/etc/agentpay/provider.json
 # non-secret, fine in the unit file
 AGENTPAY_BIND_ADDR=127.0.0.1:8080
 AGENTPAY_RPC_URL=https://api.devnet.solana.com
-AGENTPAY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
+# v2 opens new sessions; v1 stays reachable so its sessions can still settle.
+AGENTPAY_PROGRAM_ID=ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
+AGENTPAY_LEGACY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
 AGENTPAY_LOG=info,tower_http=warn
 ```
 
@@ -259,7 +265,8 @@ RestartSec=5
 
 Environment=AGENTPAY_BIND_ADDR=127.0.0.1:8080
 Environment=AGENTPAY_RPC_URL=https://api.devnet.solana.com
-Environment=AGENTPAY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
+Environment=AGENTPAY_PROGRAM_ID=ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
+Environment=AGENTPAY_LEGACY_PROGRAM_ID=3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U
 Environment=AGENTPAY_LOG=info,tower_http=warn
 EnvironmentFile=/etc/agentpay/secrets.env
 

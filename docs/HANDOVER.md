@@ -3,7 +3,17 @@
 2026-09-19
 
 A Solana enforcement and audit layer for autonomous agent payments.
-Devnet program `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`.
+
+> **Updated for the v2 release.** Two devnet programs are live at once:
+> **v2** `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` opens all new sessions,
+> and **v1** `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` keeps settling and
+> refunding the sessions it already holds. Where this document says "the
+> program" without qualification and describes provider-signed, one-shot
+> settlement, it is describing **v1**. The current custody model, the
+> settlement authority and the migration state are in
+> [RELEASE_V2.md](RELEASE_V2.md) and
+> [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md), which take precedence over this
+> document wherever they disagree.
 
 ---
 
@@ -309,8 +319,13 @@ payment code of any kind.
 
 ## 3. The on-chain program
 
-`programs/agentpay/src/lib.rs` — 617 lines, Anchor 1.2.0, deployed to devnet at
-`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`.
+`programs/agentpay/src/lib.rs` — Anchor 1.2.0. The source in the tree today is
+**v2**, deployed at `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m`. The
+description in this section was written against **v1**, still deployed at
+`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` and still serving the sessions
+it holds. What v2 changed — `settlement_authority`, a 219-byte `Session`, and
+repeatable monotonic settlement — is in
+[MIGRATION_V1_V2.md](MIGRATION_V1_V2.md).
 
 ### Three instructions
 
@@ -1452,8 +1467,10 @@ docs/                            decisions, deploy, docker, server setup, pitch
 
 ### Current devnet state, as verified
 
-Program `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`, upgrade authority
-`78Q6uycbMfTre1zRiyx6dQvUv1yWEjGzmvuj5Brd3VHc`.
+Program v1 `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`, upgrade authority
+`78Q6uycbMfTre1zRiyx6dQvUv1yWEjGzmvuj5Brd3VHc`. This records the state as
+verified at the time of writing; the v2 program's own devnet evidence is in
+[RELEASE_V2.md](RELEASE_V2.md) §G–H.
 
 Four sessions settled on-chain. Each was verified by reading the account
 directly rather than trusting the gateway:

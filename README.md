@@ -26,15 +26,36 @@ because it does not increase.
 
 ## Status
 
-Deployed and exercised on **Solana devnet**. **Not audited — not for mainnet.**
+Deployed and exercised on **Solana devnet**, frozen at tag
+`v2-devnet-verified`. **Not externally audited — not for mainnet.**
 See [DEPLOY.md](docs/DEPLOY.md) §0.
+
+Devnet verification means the program behaves as described on a public test
+cluster with throwaway value. It is not a security review and not production
+readiness.
+
+**Two programs are live at once.** New sessions open under v2; sessions opened
+under v1 keep settling and refunding under v1 until they drain. The gateway
+decides which is which by reading the session account's owner and length from
+the chain — never from configuration.
 
 | | |
 |---|---|
-| Program (devnet) | `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` |
+| Program v2 (devnet, active) | `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` |
+| Program v1 (devnet, legacy) | `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` |
+| Custody invariants (devnet) | 20 |
 | On-chain attack tests | 24 |
-| Gateway tests | 101 with Postgres · 83 hermetic |
+| Gateway tests | 178 with Postgres · 136 hermetic |
 | Real settlement | fee **0.00001 SOL** |
+
+**v2 custody, in one sentence:** AgentPay does not hold provider private keys
+for new v2 sessions — the settlement *amount* is fixed by the agent's Ed25519
+signature over the claim, and the *destination* is `session.provider`, which
+sits in the session PDA's seeds and cannot be changed after the session opens.
+A provider keeps its own wallet and can always settle for itself.
+
+Evidence: [RELEASE_V2.md](docs/RELEASE_V2.md) · migration state:
+[MIGRATION_V1_V2.md](docs/MIGRATION_V1_V2.md)
 
 ---
 
@@ -62,9 +83,14 @@ See [DEPLOY.md](docs/DEPLOY.md) §0.
 | **[DOCKER.md](docs/DOCKER.md)** | Docker Compose on Windows / macOS / Linux |
 | [SERVER_SETUP.md](docs/SERVER_SETUP.md) | Fresh machine → running stack, without Docker |
 | [DEPLOY.md](docs/DEPLOY.md) | Deploying each component; mainnet caveats |
+| **[RELEASE_V2.md](docs/RELEASE_V2.md)** | The v2 release record — devnet evidence, security results, limitations |
+| **[MIGRATION_V1_V2.md](docs/MIGRATION_V1_V2.md)** | Two live programs, how they are told apart, and what is left to drain |
+| [RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | Handover checklist for this release |
+| [SETTLEMENT_CUSTODY.md](docs/SETTLEMENT_CUSTODY.md) | Design record for the v2 custody model (options considered, one built) |
+| [SAAS_ARCHITECTURE.md](docs/SAAS_ARCHITECTURE.md) | Commercial architecture report — mostly not implemented, read the status ledger |
 | [HACKATHON_KT.md](docs/HACKATHON_KT.md) | How it works, end to end |
 | [PITCH_AND_QA.md](docs/PITCH_AND_QA.md) | Pitch + judge Q&A |
-| [decisions.md](docs/decisions.md) | D1–D20: every security decision and its rejected alternative |
+| [decisions.md](docs/decisions.md) | Every security decision and its rejected alternative |
 
 ---
 
@@ -135,14 +161,22 @@ and the Settle button is never seen working.
 | **Gateway** | availability, policy | **custody** |
 | Program | — | it *is* the authority |
 
-The gateway holds one key: the provider's, because `settle_session` needs that
-signature. Three on-chain constraints bound it — funds can only reach the
-provider's own account, the Ed25519 precompile checks the *agent's* signature so
-it cannot exceed what was authorised, and `init` on `SettlementRecord` means it
-cannot settle twice.
+For **v2** sessions the gateway holds its **own** settlement-authority key —
+not the provider's. It is a permission to submit a settlement, nothing else.
+Three on-chain constraints bound it: funds can only reach
+`session.provider`'s own account and that field is in the PDA seeds, the
+Ed25519 precompile checks the *agent's* signature so the amount cannot exceed
+what was authorised, and the cumulative amount is monotonic so a settlement
+cannot be replayed for value.
 
 **A fully compromised gateway can settle early or low, costing the provider
 revenue. It cannot move money to an attacker.**
+
+Two qualifications, stated rather than buried. **v1** sessions still require
+the provider's own key, and the gateway holds one for them until they drain.
+And a compromised **control plane** can change a provider's registered
+settlement address for *future* sessions — existing sessions are safe, this
+cannot be fixed in the program, and providers must be told.
 
 ---
 
@@ -150,11 +184,23 @@ revenue. It cannot move money to an attacker.**
 
 Stated up front rather than discovered later:
 
-- **No security audit.** The blocker for mainnet.
+- **No external security audit.** The blocker for mainnet. Neither program has
+  been reviewed by a third party.
+- **Devnet only.** Mainnet needs the audit first.
+- **The v2 Merkle root is the latest, not final.** Repeatable settlement is why:
+  a later settlement commits a root over more leaves, so a proof exported now
+  may not verify against a later root.
+- **Migration v1 → v2 is not finished.** `AGENTPAY_PROVIDER_KEYPAIR` is still
+  required for v1 sessions, so the gateway still holds a provider key for those.
+- **The provider still has a wallet.** It should keep its key as a fallback.
+  The claim is that AgentPay does not hold it, not that it does not exist.
+- **A compromised control plane can change a provider's registered settlement
+  address for future sessions.** Existing sessions are safe — their provider is
+  in the PDA seeds. Must be disclosed to providers.
 - **Token-2022 untested** — code path exists via `token_interface`, never executed.
 - **Single gateway instance** — row locks serialise per session; multi-instance is unproven.
+- **Rate limiting keys on the TCP peer**, so behind a load balancer every tenant shares a bucket.
 - **Evidence log is append-only by convention** — `REVOKE UPDATE, DELETE` is a documented deployment step, not a default.
-- **No SDK** — integration is ~50 hand-written lines, and the claim encoding fails silently at settlement if one byte is wrong.
 - **Not x402-compatible** — `/v1/buy` speaks its own `agentpay-deferred-v1` scheme. Interoperating with the x402 spec is separate work.
 
 ---

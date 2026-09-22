@@ -86,7 +86,8 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-agentpay}:${POSTGRES_PASSWORD:-agentpay}@postgres:5432/${POSTGRES_DB:-agentpay}
       AGENTPAY_RPC_URL: ${AGENTPAY_RPC_URL:-https://api.devnet.solana.com}
-      AGENTPAY_PROGRAM_ID: ${AGENTPAY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}
+      # v2 — the program NEW sessions are opened under.
+      AGENTPAY_PROGRAM_ID: ${AGENTPAY_PROGRAM_ID:-ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m}
       AGENTPAY_LOG: ${AGENTPAY_LOG:-info,tower_http=warn}
       # Both of these are empty unless you set them in .env. The gateway treats
       # an empty value as unset, because Compose interpolates an unset ${VAR}
@@ -95,9 +96,11 @@ services:
       # No keypair  -> verify-only; /v1/session/settle returns
       #                ERR_SETTLEMENT_UNAVAILABLE. A valid deployment mode.
       AGENTPAY_PROVIDER_KEYPAIR: ${AGENTPAY_PROVIDER_KEYPAIR:-}
-      # The PREVIOUS program, during a migration. Sessions it owns are read,
-      # reconciled and settled — never created. Unset once they have drained.
-      AGENTPAY_LEGACY_PROGRAM_ID: ${AGENTPAY_LEGACY_PROGRAM_ID:-}
+      # v1 — the PREVIOUS program, during the migration. Sessions it owns are
+      # read, reconciled and settled — never created. Settling one also needs
+      # AGENTPAY_PROVIDER_KEYPAIR, because the old program requires the
+      # provider's own signature. Unset both once they have drained.
+      AGENTPAY_LEGACY_PROGRAM_ID: ${AGENTPAY_LEGACY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}
       # AgentPay's OWN settlement key, for v2 sessions.
       #
       # Deliberately a different variable from AGENTPAY_PROVIDER_KEYPAIR above.

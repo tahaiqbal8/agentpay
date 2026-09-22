@@ -1,9 +1,19 @@
 # AgentPay — Settlement Custody Redesign
 
-**Status: proposal. No code has been written. No program has been changed.**
+**Status: IMPLEMENTED. Option C (§5) was built, deployed to devnet as program
+v2 `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m`, and verified there. See
+[RELEASE_V2.md](RELEASE_V2.md) for the evidence and
+[MIGRATION_V1_V2.md](MIGRATION_V1_V2.md) for the migration state.**
+
+**This document is kept as the design record, and is written in the present
+tense of the time it was produced.** Where it says "the program" without
+qualification, it describes **v1** — the program as it stood before the
+redesign. v1 is still deployed and still serves the sessions it already holds,
+so that description remains accurate for those sessions. Options A, B and D
+were considered and not built.
 
 Read-only analysis of the Anchor program at commit `09855df`, program id
-`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`.
+`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` (v1).
 
 Classification used throughout:
 `[NO CHANGE]` `[PROGRAM CHANGE]` `[GATEWAY CHANGE]` `[NEW SIGNING MESSAGE]`

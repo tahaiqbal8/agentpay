@@ -18,12 +18,16 @@ export PATH="$HOME/.cargo/bin:$PATH"
 PORT="${PORT:-8080}"
 export AGENTPAY_BIND_ADDR="${AGENTPAY_BIND_ADDR:-127.0.0.1:${PORT}}"
 export AGENTPAY_RPC_URL="${AGENTPAY_RPC_URL:-https://api.devnet.solana.com}"
-export AGENTPAY_PROGRAM_ID="${AGENTPAY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}"
+# v2 opens new sessions; v1 stays reachable so sessions it already holds can
+# still settle and refund. See docs/MIGRATION_V1_V2.md.
+export AGENTPAY_PROGRAM_ID="${AGENTPAY_PROGRAM_ID:-ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m}"
+export AGENTPAY_LEGACY_PROGRAM_ID="${AGENTPAY_LEGACY_PROGRAM_ID:-3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U}"
 export AGENTPAY_LOG="${AGENTPAY_LOG:-info,tower_http=debug}"
 
 echo "==> gateway    $AGENTPAY_BIND_ADDR"
 echo "==> rpc        $AGENTPAY_RPC_URL"
-echo "==> program    $AGENTPAY_PROGRAM_ID"
+echo "==> program    $AGENTPAY_PROGRAM_ID (v2)"
+echo "==> legacy     $AGENTPAY_LEGACY_PROGRAM_ID (v1, settle/refund only)"
 if [[ -n "${DATABASE_URL:-}" ]]; then
   # Host only; the URL carries a password.
   echo "==> database   ${DATABASE_URL##*@}"

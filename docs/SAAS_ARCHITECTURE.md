@@ -1,9 +1,21 @@
 # AgentPay — SaaS / Commercial Architecture Report
 
-**Status: proposal. No code has been written for any of this.**
+**Status: PARTLY IMPLEMENTED. Phases 1–3 of §P were built — the schema
+(workspaces, usage_records, subscriptions), usage metering at decision time,
+and workspace-scoped control-plane reads and writes. Phase 8 (settlement
+custody) was also built and shipped as program v2; see
+[SETTLEMENT_CUSTODY.md](SETTLEMENT_CUSTODY.md) and
+[RELEASE_V2.md](RELEASE_V2.md). Phases 4, 5, 6 and 7 — provider-facing
+endpoints and console pages, the billing abstraction, tenant-aware rate
+limiting, and multi-provider buy routing — are NOT built.**
+
+**Everything in the commercial argument remains unvalidated.** There is still
+no design partner, no pilot and no customer conversation; read the status
+ledger at the end before quoting any part of this document.
 
 This report is the output of a read-only audit of the repository at commit
-`09855df`. Everything below is classified:
+`09855df`, and is written in the present tense of that moment. Everything below
+is classified:
 
 | Tag | Meaning |
 | --- | --- |

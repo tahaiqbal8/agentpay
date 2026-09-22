@@ -2,7 +2,12 @@
 
 **Audience:** teammates and judges, technical and non-technical.
 **Repo root:** `~/Projects/AgentPay`
-**Program (devnet):** `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`
+**Program (devnet), v2 — active:** `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m`
+**Program (devnet), v1 — legacy:** `3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U`
+
+> This document was written against v1 and describes it. v2 changed who may
+> settle and made settlement repeatable; see
+> [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md) for what differs.
 
 ---
 
@@ -405,10 +410,17 @@ curl -s localhost:8080/v1/sessions | jq '.sessions[0]'
 
 | Suite | Count | Command |
 |---|--:|---|
-| Gateway (hermetic, no DB/cluster) | **83** | `cargo test --manifest-path gateway/Cargo.toml` |
-| Gateway + Postgres | **101** | `DATABASE_URL=… cargo test … -- --include-ignored` |
+| Gateway (hermetic, no DB/cluster) | **136** | `cargo test --manifest-path gateway/Cargo.toml` |
+| Gateway + Postgres | **178** | `TEST_DATABASE_URL=… cargo test … -- --include-ignored` |
 | Anchor attack suite | **24** | `./scripts/test-local.sh` |
-| Devnet end-to-end | — | `npm run evidence-devnet` |
+| Custody invariants (v2) | **20** | `npx ts-mocha -p ./tsconfig.json -t 1000000 tests/custody.ts` |
+| Devnet end-to-end (v2) | — | `npm run e2e-v2` |
+| Devnet custody evidence (v2) | — | `npx ts-node --compiler-options '{"module":"commonjs","esModuleInterop":true}' tests/devnet-evidence.ts` |
+
+The 42 tests between the two gateway rows are the ones needing a database.
+They are `#[ignore]`d when `TEST_DATABASE_URL` is unset, so a green hermetic
+run is not a full run. Note `TEST_DATABASE_URL`, deliberately **not**
+`DATABASE_URL` — the tests will not touch your development database.
 
 Every attack test is written as an attack that **must fail**, and asserts the
 **exact** error code — a test that fails for an unrelated reason proves nothing
