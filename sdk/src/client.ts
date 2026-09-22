@@ -106,14 +106,47 @@ export interface SessionState {
   evidenceCount: number;
 }
 
-/** The result of settling: one transaction for the whole session. */
+/**
+ * What a gateway advertises about itself.
+ *
+ * `programId` matters during the migration: a gateway may be running the
+ * original program or program v2, and a session opened against one cannot be
+ * settled through the other.
+ */
+export interface GatewayInfo {
+  programId: string;
+  stateBackend: string;
+  ephemeralState: boolean;
+  /**
+   * The key to bind as a session's settlement authority.
+   *
+   * `null` means this gateway cannot settle v2 sessions and the provider must
+   * settle its own.
+   */
+  settlementAuthority: string | null;
+}
+
+/** The result of settling: one transaction, for everything owed so far. */
 export interface Settlement {
   session: string;
   /** A real, confirmed devnet/mainnet signature. */
   signature: string;
-  /** Hex. The evidence root the program stored — allowed AND refused claims. */
+  /**
+   * Hex. The evidence root the program stored — allowed AND refused claims.
+   *
+   * The LATEST root, not a final one: under program v2 a later settlement
+   * commits a root over more leaves. Do not publish this as permanent.
+   */
   merkleRoot: string;
   evidenceEntries: number;
+  /**
+   * The CUMULATIVE total settled for this session, not the amount this
+   * transaction moved.
+   *
+   * Under repeatable settlement those differ: settling 100 and then 750 moves
+   * 650 in the second transaction and reports 750 here, because 750 is what
+   * the session has paid.
+   */
   cumulativeAmount: bigint;
   settlementRecord: string;
 }
@@ -439,6 +472,41 @@ export class AgentPayClient {
   }
 
   /**
+   * What this gateway is, and what an agent needs to know before opening a
+   * session against it.
+   *
+   * The reason this exists: program v2 records a `settlement_authority` on the
+   * session at `open_session`, and it is immutable afterwards. The agent
+   * therefore has to know AgentPay's key BEFORE it opens anything. Binding the
+   * wrong one produces a session this gateway can never settle — recoverable
+   * only by the provider settling itself, or by waiting for expiry and
+   * refunding.
+   *
+   * `settlementAuthority` is `null` on a gateway that has none configured,
+   * which is a legitimate verify-only deployment. An agent seeing `null`
+   * should bind the all-zero pubkey, which makes the session provider-only.
+   *
+   * It is a PUBLIC key. Reading it grants nothing.
+   */
+  async gatewayInfo(): Promise<GatewayInfo> {
+    const res = await this.doFetch(`${this.gateway}/health`, { method: "GET" });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw errorFrom(res.status, body);
+    const b = body as {
+      program_id: string;
+      state_backend: string;
+      ephemeral_state: boolean;
+      settlement_authority?: string;
+    };
+    return {
+      programId: b.program_id,
+      stateBackend: b.state_backend,
+      ephemeralState: b.ephemeral_state,
+      settlementAuthority: b.settlement_authority ?? null,
+    };
+  }
+
+  /**
    * Reads the session's state from the gateway.
    *
    * Use it to check remaining escrow before a large run, or to confirm the
@@ -483,9 +551,23 @@ export class AgentPayClient {
    * The transaction also commits the Merkle root of every decision, refusals
    * included. That is what makes a denial provable afterwards.
    *
-   * Settlement is final and one-shot: the program's settlement PDA cannot be
-   * created twice, so a second call is refused by the chain itself, not merely
-   * by the gateway.
+   * # Settlement is repeatable, and no longer one-shot
+   *
+   * This used to say that a second settlement was impossible because the
+   * program's settlement PDA could not be created twice. That is true of
+   * program v1 and FALSE of v2.
+   *
+   * Under v2 settlement is monotonic and repeatable: settling again at a
+   * HIGHER cumulative transfers only the difference, and settling at or below
+   * what is already settled is refused by the chain. The reason is a security
+   * one — under the old rule, whoever settled first fixed the payout forever,
+   * so a stale or hostile settler could permanently underpay the provider.
+   *
+   * The consequence for a caller: `merkleRoot` is the root as of THIS
+   * settlement, not a permanently final one. The evidence log is append-only,
+   * so a later settlement commits a root over more leaves. A proof exported
+   * now will not verify against a later root. See
+   * docs/SETTLEMENT_CUSTODY.md §17.
    */
   async settle(): Promise<Settlement> {
     const res = await this.doFetch(`${this.gateway}/v1/session/settle`, {

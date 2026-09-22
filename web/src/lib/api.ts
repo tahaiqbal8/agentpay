@@ -314,8 +314,18 @@ export const api = {
       settled: boolean;
       merkle_root?: string;
       claim_hash?: string;
+      /** The CUMULATIVE total settled, not this transaction's delta. */
       settled_amount?: string;
       settled_at?: number;
+      /**
+       * Whether this root can still change.
+       *
+       * Program v2 makes settlement repeatable, so a later settlement commits
+       * a root over more evidence entries. `true` means the root shown is the
+       * latest, not a final one — which matters to anyone about to export a
+       * proof. `undefined` when the gateway could not read the session to tell.
+       */
+      root_may_advance?: boolean;
     }>(`/v1/session/${session}/settlement`),
   /**
    * Re-checks a session against its on-chain escrow.

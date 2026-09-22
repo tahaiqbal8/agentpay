@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowDown,
   Binary,
   ChevronRight,
@@ -228,6 +229,7 @@ function VerifierInner() {
     settled: boolean;
     merkle_root?: string;
     settlement_record: string;
+    root_may_advance?: boolean;
   } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -595,13 +597,35 @@ function VerifierInner() {
                 </p>
 
                 {anchored && (
-                  <p className="t-support mt-2 flex flex-wrap items-center gap-1 border-t border-[var(--color-cyan-dim)] pt-2">
-                    <ShieldCheck aria-hidden="true" className="size-3 text-[var(--color-cyan)]" />
-                    Do not take this page&apos;s word for it:{" "}
-                    <code className="font-mono text-[var(--color-fg-muted)]">
-                      solana account {onChain?.settlement_record} -u devnet
-                    </code>
-                  </p>
+                  <>
+                    {/* Repeatable settlement means the committed root is the
+                        LATEST, not a permanently final one. Somebody about to
+                        export this proof needs to know it can go stale — and
+                        the honest place to say so is next to the proof, not in
+                        a document they will not read. */}
+                    {onChain?.root_may_advance && (
+                      <p className="t-support mt-2 flex flex-wrap items-start gap-1.5 border-t border-[var(--color-cyan-dim)] pt-2">
+                        <AlertTriangle
+                          aria-hidden="true"
+                          className="mt-px size-3 shrink-0 text-[var(--color-warn)]"
+                        />
+                        <span>
+                          This is the <strong className="text-[var(--color-fg)]">latest</strong>{" "}
+                          committed root, not a final one. Settlement is repeatable, so a later
+                          settlement commits a root over more evidence entries — a proof exported
+                          now will not verify against that one. Re-export after the session
+                          settles for the last time.
+                        </span>
+                      </p>
+                    )}
+                    <p className="t-support mt-2 flex flex-wrap items-center gap-1 border-t border-[var(--color-cyan-dim)] pt-2">
+                      <ShieldCheck aria-hidden="true" className="size-3 text-[var(--color-cyan)]" />
+                      Do not take this page&apos;s word for it:{" "}
+                      <code className="font-mono text-[var(--color-fg-muted)]">
+                        solana account {onChain?.settlement_record} -u devnet
+                      </code>
+                    </p>
+                  </>
                 )}
               </div>
             </CardContent>

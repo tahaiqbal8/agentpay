@@ -21,6 +21,7 @@ export type {
   SessionPlanOption,
   Settlement,
   RetryOptions,
+  GatewayInfo,
 } from "./client";
 
 export { AgentPayControl } from "./control";
