@@ -50,6 +50,7 @@ import {
   Fixture,
   makeProvider,
   ONE_USDC,
+  programFor,
   readSettlementRecord,
   throttle,
   withRpcRetry,
@@ -176,7 +177,9 @@ describe("settlement custody (program v2)", function () {
   before(async () => {
     const provider = makeProvider();
     anchor.setProvider(provider);
-    program = anchor.workspace.agentpay as Program<any>;
+    // v2 explicitly. These invariants describe the custody redesign and are
+    // meaningless against the original program.
+    program = programFor("v2", provider);
     env = await Env.create(program, provider);
     gateway = await env.newFundedKeypair();
     console.log(`    settlement authority (gateway): ${gateway.publicKey.toBase58()}`);

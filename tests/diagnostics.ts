@@ -82,7 +82,7 @@ before(async function () {
   this.timeout(300_000);
   const anchorProvider = makeProvider();
   anchor.setProvider(anchorProvider);
-  program = new anchor.Program(require("../target/idl/agentpay.json"), anchorProvider);
+  program = new anchor.Program(require("../idl/agentpay-v1.json"), anchorProvider);
   console.log(`    cluster: ${anchorProvider.connection.rpcEndpoint}`);
   env = await Env.create(program, anchorProvider);
 });

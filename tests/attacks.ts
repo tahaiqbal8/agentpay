@@ -167,7 +167,12 @@ before(async function () {
   this.timeout(300_000);
   const anchorProvider = makeProvider();
   anchor.setProvider(anchorProvider);
-  const idl = require("../target/idl/agentpay.json");
+  // The program under test. v2 by default, because that is what these attacks
+  // are now written against; AGENTPAY_TEST_PROGRAM=v1 runs them against the
+  // original, which is useful for confirming the old rules still hold.
+  const idl = require(
+    `../idl/agentpay-${process.env.AGENTPAY_TEST_PROGRAM ?? "v2"}.json`
+  );
   program = new anchor.Program(idl, anchorProvider);
   console.log(`    cluster: ${anchorProvider.connection.rpcEndpoint}`);
   env = await Env.create(program, anchorProvider);

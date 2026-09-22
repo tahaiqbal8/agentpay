@@ -1,0 +1,752 @@
+{
+  "address": "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U",
+  "metadata": {
+    "name": "agentpay",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "AgentPay escrow and settlement program"
+  },
+  "instructions": [
+    {
+      "name": "open_session",
+      "discriminator": [
+        130,
+        54,
+        124,
+        7,
+        236,
+        20,
+        104,
+        104
+      ],
+      "accounts": [
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "provider",
+          "docs": [
+            "signs here and is never read from, so no further validation is meaningful."
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              },
+              {
+                "kind": "account",
+                "path": "provider"
+              },
+              {
+                "kind": "arg",
+                "path": "session_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "session_id",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "deposit_amount",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "refund_session",
+      "discriminator": [
+        168,
+        87,
+        185,
+        45,
+        250,
+        170,
+        10,
+        85
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session.agent",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.provider",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.session_id",
+                "account": "Session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          },
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "agent_token_account",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "settle_session",
+      "discriminator": [
+        156,
+        20,
+        180,
+        117,
+        117,
+        85,
+        225,
+        128
+      ],
+      "accounts": [
+        {
+          "name": "provider",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session.agent",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.provider",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.session_id",
+                "account": "Session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settlement_record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  109,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          },
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "provider_token_account",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "checked `load_*` helpers."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cumulative_amount",
+          "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "claim_expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Session",
+      "discriminator": [
+        243,
+        81,
+        72,
+        115,
+        214,
+        188,
+        72,
+        144
+      ]
+    },
+    {
+      "name": "SettlementRecord",
+      "discriminator": [
+        172,
+        159,
+        67,
+        74,
+        96,
+        85,
+        37,
+        205
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "SessionOpened",
+      "discriminator": [
+        34,
+        79,
+        77,
+        95,
+        195,
+        207,
+        104,
+        223
+      ]
+    },
+    {
+      "name": "SessionRefunded",
+      "discriminator": [
+        176,
+        138,
+        119,
+        46,
+        99,
+        172,
+        75,
+        152
+      ]
+    },
+    {
+      "name": "SessionSettled",
+      "discriminator": [
+        127,
+        161,
+        59,
+        136,
+        23,
+        168,
+        191,
+        149
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "ZeroDeposit",
+      "msg": "ERR_ZERO_DEPOSIT: deposit must be greater than zero"
+    },
+    {
+      "code": 6001,
+      "name": "ExpiryInPast",
+      "msg": "ERR_EXPIRY_IN_PAST: session expiry must be in the future"
+    },
+    {
+      "code": 6002,
+      "name": "ExpiryTooDistant",
+      "msg": "ERR_EXPIRY_TOO_DISTANT: session expiry exceeds maximum session duration"
+    },
+    {
+      "code": 6003,
+      "name": "SessionExpired",
+      "msg": "ERR_SESSION_EXPIRED: session expired and can no longer settle"
+    },
+    {
+      "code": 6004,
+      "name": "ClaimExpired",
+      "msg": "ERR_CLAIM_EXPIRED: claim expiry has passed"
+    },
+    {
+      "code": 6005,
+      "name": "ClaimNotMonotonic",
+      "msg": "ERR_CLAIM_NOT_MONOTONIC: cumulative amount must exceed the settled amount"
+    },
+    {
+      "code": 6006,
+      "name": "ClaimExceedsDeposit",
+      "msg": "ERR_CLAIM_EXCEEDS_DEPOSIT: cumulative amount exceeds session deposit"
+    },
+    {
+      "code": 6007,
+      "name": "PayoutExceedsDeposit",
+      "msg": "ERR_PAYOUT_EXCEEDS_DEPOSIT: settled plus refunded would exceed deposit"
+    },
+    {
+      "code": 6008,
+      "name": "UnauthorizedSettler",
+      "msg": "ERR_UNAUTHORIZED_SETTLER: signer is not the designated provider"
+    },
+    {
+      "code": 6009,
+      "name": "UnauthorizedRefund",
+      "msg": "ERR_UNAUTHORIZED_REFUND: only the agent may refund before expiry"
+    },
+    {
+      "code": 6010,
+      "name": "SessionStillActive",
+      "msg": "ERR_SESSION_STILL_ACTIVE: session is unsettled and not yet expired"
+    },
+    {
+      "code": 6011,
+      "name": "NothingToRefund",
+      "msg": "ERR_NOTHING_TO_REFUND: no unspent balance remains"
+    },
+    {
+      "code": 6012,
+      "name": "MintMismatch",
+      "msg": "ERR_MINT_MISMATCH: token mint does not match the session mint"
+    },
+    {
+      "code": 6013,
+      "name": "VaultMismatch",
+      "msg": "ERR_VAULT_MISMATCH: vault does not match the session vault"
+    },
+    {
+      "code": 6014,
+      "name": "TokenAccountOwnerMismatch",
+      "msg": "ERR_TOKEN_ACCOUNT_OWNER_MISMATCH: token account owner is not the expected party"
+    },
+    {
+      "code": 6015,
+      "name": "MissingEd25519Instruction",
+      "msg": "ERR_MISSING_ED25519_INSTRUCTION: no preceding Ed25519 verify instruction found"
+    },
+    {
+      "code": 6016,
+      "name": "MalformedEd25519Instruction",
+      "msg": "ERR_MALFORMED_ED25519_INSTRUCTION: Ed25519 instruction data failed structural validation"
+    },
+    {
+      "code": 6017,
+      "name": "Ed25519IndirectReference",
+      "msg": "ERR_ED25519_INDIRECT_REFERENCE: Ed25519 instruction references data outside itself"
+    },
+    {
+      "code": 6018,
+      "name": "ClaimSignerMismatch",
+      "msg": "ERR_CLAIM_SIGNER_MISMATCH: claim was not signed by the session agent"
+    },
+    {
+      "code": 6019,
+      "name": "ClaimMessageMismatch",
+      "msg": "ERR_CLAIM_MESSAGE_MISMATCH: verified message does not match the claim"
+    },
+    {
+      "code": 6020,
+      "name": "ArithmeticOverflow",
+      "msg": "ERR_ARITHMETIC_OVERFLOW: checked arithmetic overflowed"
+    }
+  ],
+  "types": [
+    {
+      "name": "Session",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_total",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_settled",
+            "type": "u64"
+          },
+          {
+            "name": "refunded_total",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "session_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "is_settled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_total",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionRefunded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "permissionless",
+            "type": "bool"
+          },
+          {
+            "name": "refunded_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "cumulative_amount",
+            "type": "u64"
+          },
+          {
+            "name": "transferred",
+            "type": "u64"
+          },
+          {
+            "name": "merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "settled_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "claim_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "settled_at",
+            "type": "i64"
+          },
+          {
+            "name": "settled_amount",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -442,6 +442,39 @@ export function ensureDevnetEnv(): void {
  * produces spurious "Blockhash not found" failures — those would surface as
  * attack-test failures and obscure whether a defence actually held.
  */
+/**
+ * The two AgentPay programs, and how a caller says which one it means.
+ *
+ * During the migration BOTH are live: the original still holds every session
+ * opened before the cutover, and v2 takes the new ones. They have different
+ * addresses, different `open_session` signatures and a differently named
+ * settle signer, so a script that guesses will fail in a confusing way — as
+ * one did: pointing a devnet script at the v2 IDL made it try to talk to an
+ * undeployed program and report `Account 'agent' not provided`.
+ *
+ * Both IDLs are committed under `idl/` rather than read from `target/`, which
+ * is build output and holds only whichever version was last compiled.
+ */
+export type ProgramVersion = "v1" | "v2";
+
+export function idlFor(version: ProgramVersion): any {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require(`../idl/agentpay-${version}.json`);
+}
+
+/**
+ * Builds a client for one specific program version.
+ *
+ * `v1` is the program deployed on devnet today. `v2` is the custody redesign,
+ * which is only reachable on a local validator until it is deployed.
+ */
+export function programFor(
+  version: ProgramVersion,
+  provider: anchor.AnchorProvider
+): Program<any> {
+  return new anchor.Program(idlFor(version), provider) as Program<any>;
+}
+
 export function makeProvider(): anchor.AnchorProvider {
   ensureDevnetEnv();
   const base = anchor.AnchorProvider.env();

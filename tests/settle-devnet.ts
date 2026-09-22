@@ -77,7 +77,9 @@ function fail(msg: string): never {
 
   const anchorProvider = makeProvider();
   anchor.setProvider(anchorProvider);
-  const idl = require("../target/idl/agentpay.json");
+  const idl = // The DEPLOYED program is v1. `target/` holds whichever version was
+    // last compiled, which is not a statement about what is on devnet.
+    require("../idl/agentpay-v1.json");
   const program = new anchor.Program(idl, anchorProvider);
   const connection = anchorProvider.connection;
   const treasury = (anchorProvider.wallet as any).payer as Keypair;

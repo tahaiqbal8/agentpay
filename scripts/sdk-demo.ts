@@ -61,7 +61,9 @@ const usdc = (v: bigint) => (Number(v) / 1e6).toFixed(6);
   // ---- setup: a real escrow, exactly as a human would open one ------------
   const provider = makeProvider();
   anchor.setProvider(provider);
-  const program = new anchor.Program(require("../target/idl/agentpay.json"), provider);
+  const program = new anchor.Program(// The DEPLOYED program is v1. `target/` holds whichever version was
+    // last compiled, which is not a statement about what is on devnet.
+    require("../idl/agentpay-v1.json"), provider);
   const connection = provider.connection;
   const treasury = (provider.wallet as any).payer as Keypair;
   const providerKp = Keypair.fromSecretKey(

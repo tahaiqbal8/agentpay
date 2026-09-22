@@ -1,0 +1,777 @@
+{
+  "address": "ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m",
+  "metadata": {
+    "name": "agentpay",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "AgentPay escrow and settlement program"
+  },
+  "instructions": [
+    {
+      "name": "open_session",
+      "docs": [
+        "Opens an escrow session.",
+        "",
+        "`settlement_authority` names who, besides the provider, may later",
+        "trigger settlement. It is recorded immutably and confers no power over",
+        "the amount or the destination. Pass `Pubkey::default()` for",
+        "provider-only settlement, which is the behaviour this program had",
+        "before the field existed."
+      ],
+      "discriminator": [
+        130,
+        54,
+        124,
+        7,
+        236,
+        20,
+        104,
+        104
+      ],
+      "accounts": [
+        {
+          "name": "agent",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "provider",
+          "docs": [
+            "signs here and is never read from, so no further validation is meaningful."
+          ]
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent"
+              },
+              {
+                "kind": "account",
+                "path": "provider"
+              },
+              {
+                "kind": "arg",
+                "path": "session_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "session_id",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "deposit_amount",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "settlement_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "refund_session",
+      "discriminator": [
+        168,
+        87,
+        185,
+        45,
+        250,
+        170,
+        10,
+        85
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session.agent",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.provider",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.session_id",
+                "account": "Session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          },
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "agent_token_account",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "settle_session",
+      "discriminator": [
+        156,
+        20,
+        180,
+        117,
+        117,
+        85,
+        225,
+        128
+      ],
+      "accounts": [
+        {
+          "name": "settler",
+          "docs": [
+            "Whoever is submitting this settlement, and the rent payer.",
+            "",
+            "Formerly `provider: Signer`. The handler checks this key against the",
+            "session's `settlement_authority` OR its `provider`; being a signer here",
+            "grants nothing on its own.",
+            "",
+            "Note what this signature does NOT control: not the amount, which the",
+            "agent's Ed25519 signature fixes, and not the destination, which is",
+            "bound to `session.provider` below. A settler can only choose *when*,",
+            "and *which already-signed claim*."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "session",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session.agent",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.provider",
+                "account": "Session"
+              },
+              {
+                "kind": "account",
+                "path": "session.session_id",
+                "account": "Session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "settlement_record",
+          "docs": [
+            "The settlement receipt. Created on the first settlement, advanced on",
+            "every later one.",
+            "",
+            "`UncheckedAccount` rather than `Account` or `init_if_needed`, and this",
+            "is deliberate. `init_if_needed` re-runs the initializer against an",
+            "account that already exists, and repeatable settlement depends on NOT",
+            "resetting the state we are about to compare against. The handler does",
+            "the create-or-advance explicitly and checks the owner and the",
+            "discriminator itself.",
+            "",
+            "the Anchor discriminator are validated in the handler before any read",
+            "or write."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  109,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "session"
+              }
+            ]
+          },
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "provider_token_account",
+          "docs": [
+            "The ONLY account this session's funds can reach.",
+            "",
+            "Constrained against `session.provider` — the field baked into the",
+            "session PDA's own seeds — rather than against any account the caller",
+            "supplies. There is no input to this instruction that can redirect a",
+            "payment, which is the property the whole custody design rests on."
+          ],
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "session"
+          ]
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "checked `load_*` helpers."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "cumulative_amount",
+          "type": "u64"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "claim_expires_at",
+          "type": "i64"
+        },
+        {
+          "name": "merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Session",
+      "discriminator": [
+        243,
+        81,
+        72,
+        115,
+        214,
+        188,
+        72,
+        144
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "SessionOpened",
+      "discriminator": [
+        34,
+        79,
+        77,
+        95,
+        195,
+        207,
+        104,
+        223
+      ]
+    },
+    {
+      "name": "SessionRefunded",
+      "discriminator": [
+        176,
+        138,
+        119,
+        46,
+        99,
+        172,
+        75,
+        152
+      ]
+    },
+    {
+      "name": "SessionSettled",
+      "discriminator": [
+        127,
+        161,
+        59,
+        136,
+        23,
+        168,
+        191,
+        149
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "ZeroDeposit",
+      "msg": "ERR_ZERO_DEPOSIT: deposit must be greater than zero"
+    },
+    {
+      "code": 6001,
+      "name": "ExpiryInPast",
+      "msg": "ERR_EXPIRY_IN_PAST: session expiry must be in the future"
+    },
+    {
+      "code": 6002,
+      "name": "ExpiryTooDistant",
+      "msg": "ERR_EXPIRY_TOO_DISTANT: session expiry exceeds maximum session duration"
+    },
+    {
+      "code": 6003,
+      "name": "SessionExpired",
+      "msg": "ERR_SESSION_EXPIRED: session expired and can no longer settle"
+    },
+    {
+      "code": 6004,
+      "name": "ClaimExpired",
+      "msg": "ERR_CLAIM_EXPIRED: claim expiry has passed"
+    },
+    {
+      "code": 6005,
+      "name": "ClaimNotMonotonic",
+      "msg": "ERR_CLAIM_NOT_MONOTONIC: cumulative amount must exceed the settled amount"
+    },
+    {
+      "code": 6006,
+      "name": "ClaimExceedsDeposit",
+      "msg": "ERR_CLAIM_EXCEEDS_DEPOSIT: cumulative amount exceeds session deposit"
+    },
+    {
+      "code": 6007,
+      "name": "PayoutExceedsDeposit",
+      "msg": "ERR_PAYOUT_EXCEEDS_DEPOSIT: settled plus refunded would exceed deposit"
+    },
+    {
+      "code": 6008,
+      "name": "UnauthorizedSettler",
+      "msg": "ERR_UNAUTHORIZED_SETTLER: signer is neither the settlement authority nor the provider"
+    },
+    {
+      "code": 6009,
+      "name": "SettlementRecordInvalid",
+      "msg": "ERR_SETTLEMENT_RECORD_INVALID: settlement record is not a receipt for this session"
+    },
+    {
+      "code": 6010,
+      "name": "UnauthorizedRefund",
+      "msg": "ERR_UNAUTHORIZED_REFUND: only the agent may refund before expiry"
+    },
+    {
+      "code": 6011,
+      "name": "SessionStillActive",
+      "msg": "ERR_SESSION_STILL_ACTIVE: session is unsettled and not yet expired"
+    },
+    {
+      "code": 6012,
+      "name": "NothingToRefund",
+      "msg": "ERR_NOTHING_TO_REFUND: no unspent balance remains"
+    },
+    {
+      "code": 6013,
+      "name": "MintMismatch",
+      "msg": "ERR_MINT_MISMATCH: token mint does not match the session mint"
+    },
+    {
+      "code": 6014,
+      "name": "VaultMismatch",
+      "msg": "ERR_VAULT_MISMATCH: vault does not match the session vault"
+    },
+    {
+      "code": 6015,
+      "name": "TokenAccountOwnerMismatch",
+      "msg": "ERR_TOKEN_ACCOUNT_OWNER_MISMATCH: token account owner is not the expected party"
+    },
+    {
+      "code": 6016,
+      "name": "MissingEd25519Instruction",
+      "msg": "ERR_MISSING_ED25519_INSTRUCTION: no preceding Ed25519 verify instruction found"
+    },
+    {
+      "code": 6017,
+      "name": "MalformedEd25519Instruction",
+      "msg": "ERR_MALFORMED_ED25519_INSTRUCTION: Ed25519 instruction data failed structural validation"
+    },
+    {
+      "code": 6018,
+      "name": "Ed25519IndirectReference",
+      "msg": "ERR_ED25519_INDIRECT_REFERENCE: Ed25519 instruction references data outside itself"
+    },
+    {
+      "code": 6019,
+      "name": "ClaimSignerMismatch",
+      "msg": "ERR_CLAIM_SIGNER_MISMATCH: claim was not signed by the session agent"
+    },
+    {
+      "code": 6020,
+      "name": "ClaimMessageMismatch",
+      "msg": "ERR_CLAIM_MESSAGE_MISMATCH: verified message does not match the claim"
+    },
+    {
+      "code": 6021,
+      "name": "ArithmeticOverflow",
+      "msg": "ERR_ARITHMETIC_OVERFLOW: checked arithmetic overflowed"
+    }
+  ],
+  "types": [
+    {
+      "name": "Session",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "docs": [
+              "The payee, and the ONLY destination this session's funds can reach.",
+              "",
+              "Part of the session PDA seeds, so it cannot be changed after the session",
+              "is opened — not by the provider, not by the gateway, not by this",
+              "program. A provider rotating its wallet affects future sessions only."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "settlement_authority",
+            "docs": [
+              "Who else, besides the provider, may TRIGGER settlement.",
+              "",
+              "This is a permission to submit, not a permission to receive. It cannot",
+              "change the amount — that is fixed by the agent's Ed25519 signature over",
+              "the claim — and it cannot change the destination, which is bound to",
+              "`provider` above. A hosted gateway holds its OWN key here and therefore",
+              "never holds the provider's.",
+              "",
+              "`Pubkey::default()` (all zeros) disables the second settler: no keypair",
+              "corresponds to it, so only the provider can settle. That is the exact",
+              "behaviour of the program before this field existed, which makes it the",
+              "correct value for a caller that does not know what to pass.",
+              "",
+              "Immutable for the life of the session, like everything else here."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_total",
+            "type": "u64"
+          },
+          {
+            "name": "cumulative_settled",
+            "type": "u64"
+          },
+          {
+            "name": "refunded_total",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "session_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "is_settled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "settlement_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited_total",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionRefunded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "permissionless",
+            "type": "bool"
+          },
+          {
+            "name": "refunded_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SessionSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "session",
+            "type": "pubkey"
+          },
+          {
+            "name": "provider",
+            "type": "pubkey"
+          },
+          {
+            "name": "cumulative_amount",
+            "type": "u64"
+          },
+          {
+            "name": "transferred",
+            "type": "u64"
+          },
+          {
+            "name": "merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "settled_at",
+            "type": "i64"
+          }
+        ]
+      }
+    }
+  ]
+}
