@@ -30,6 +30,13 @@ pub struct AgentRecord {
     /// `None` until a human authorizes the agent. Without it the policy layer
     /// does not apply and only the on-chain escrow bounds the agent.
     pub policy: Option<AgentPolicy>,
+    /// The tenant this agent belongs to.
+    ///
+    /// `None` means the legacy single-tenant deployment: the agent predates
+    /// workspaces, or the gateway is running without them. Nothing in the
+    /// payment path reads this — it exists so a decision can be attributed to
+    /// a paying customer for metering.
+    pub workspace_id: Option<String>,
 }
 
 /// One proposed spend awaiting, or carrying, a human decision.
@@ -56,6 +63,12 @@ pub struct OperatorRecord {
     pub operator_id: String,
     pub label: String,
     pub role: String,
+    /// The tenant this credential may act within.
+    ///
+    /// `None` is the legacy unscoped admin: a credential that predates
+    /// workspaces and can still see every tenant. That is a deliberate
+    /// migration affordance, not a permission model — see `docs/`.
+    pub workspace_id: Option<String>,
     pub enabled: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -79,16 +92,30 @@ impl Database {
     // Providers
     // ---------------------------------------------------------------------
 
-    pub async fn upsert_provider(&self, p: &ProviderRecord) -> Result<(), DbError> {
+    /// Registers or updates a provider inside a tenant.
+    ///
+    /// As with agents, `workspace` comes from the caller's credential and never
+    /// from the request body.
+    pub async fn upsert_provider(
+        &self,
+        p: &ProviderRecord,
+        workspace: Option<&str>,
+    ) -> Result<(), DbError> {
         sqlx::query(
             r#"
-            INSERT INTO providers (provider_id, label, base_url, provider_pubkey, enabled)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO providers (provider_id, label, base_url, provider_pubkey, enabled, workspace_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (provider_id) DO UPDATE SET
                 label           = EXCLUDED.label,
                 base_url        = EXCLUDED.base_url,
                 provider_pubkey = EXCLUDED.provider_pubkey,
                 enabled         = EXCLUDED.enabled
+            -- The tenant guard. Without it a scoped caller could re-register
+            -- an id that belongs to somebody else and silently rewrite their
+            -- base_url — repointing another tenant's traffic at a host of the
+            -- attacker's choosing. `IS NOT DISTINCT FROM` rather than `=` so
+            -- that a legacy NULL-workspace row still matches a legacy caller.
+            WHERE providers.workspace_id IS NOT DISTINCT FROM EXCLUDED.workspace_id
             "#,
         )
         .bind(&p.provider_id)
@@ -96,18 +123,32 @@ impl Database {
         .bind(&p.base_url)
         .bind(&p.provider_pubkey)
         .bind(p.enabled)
+        .bind(workspace)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn list_providers(&self) -> Result<Vec<ProviderRecord>, DbError> {
-        let rows = sqlx::query(
-            "SELECT provider_id, label, base_url, provider_pubkey, enabled
-             FROM providers ORDER BY provider_id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+    /// Lists providers, confined to one tenant. `None` is the legacy admin.
+    pub async fn list_providers(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<ProviderRecord>, DbError> {
+        let sql = match workspace {
+            Some(_) => {
+                "SELECT provider_id, label, base_url, provider_pubkey, enabled
+                 FROM providers WHERE workspace_id = $1 ORDER BY provider_id"
+            }
+            None => {
+                "SELECT provider_id, label, base_url, provider_pubkey, enabled
+                 FROM providers ORDER BY provider_id"
+            }
+        };
+        let mut q = sqlx::query(sql);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
 
         rows.into_iter()
             .map(|r| {
@@ -122,11 +163,25 @@ impl Database {
             .collect()
     }
 
-    pub async fn delete_provider(&self, provider_id: &str) -> Result<bool, DbError> {
-        let done = sqlx::query("DELETE FROM providers WHERE provider_id = $1")
-            .bind(provider_id)
-            .execute(&self.pool)
-            .await?;
+    /// Removes a provider, confined to one tenant.
+    ///
+    /// A cross-tenant delete matches zero rows and returns `false`, which the
+    /// handler already renders as "no such provider". Deleting somebody else's
+    /// registration is therefore not merely forbidden — it is invisible.
+    pub async fn delete_provider(
+        &self,
+        provider_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<bool, DbError> {
+        let sql = match workspace {
+            Some(_) => "DELETE FROM providers WHERE provider_id = $1 AND workspace_id = $2",
+            None => "DELETE FROM providers WHERE provider_id = $1",
+        };
+        let mut q = sqlx::query(sql).bind(provider_id);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let done = q.execute(&self.pool).await?;
         Ok(done.rows_affected() > 0)
     }
 
@@ -139,6 +194,11 @@ impl Database {
     /// The pubkey uniqueness matters: two agent records sharing one key would
     /// make the policy applied to a claim ambiguous, and the gateway would have
     /// to pick one arbitrarily.
+    /// Creates an agent inside a tenant.
+    ///
+    /// `workspace` is whatever the CALLER is scoped to, never a value the
+    /// request body supplies. An agent whose tenant could be named by the
+    /// request would let anyone plant a row in somebody else's workspace.
     pub async fn create_agent(
         &self,
         agent_id: &str,
@@ -146,11 +206,12 @@ impl Database {
         agent_pubkey: &str,
         owner_pubkey: Option<&str>,
         mode: AgentMode,
+        workspace: Option<&str>,
     ) -> Result<bool, DbError> {
         let done = sqlx::query(
             r#"
-            INSERT INTO agents (agent_id, label, agent_pubkey, owner_pubkey, mode)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO agents (agent_id, label, agent_pubkey, owner_pubkey, mode, workspace_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT DO NOTHING
             "#,
         )
@@ -159,6 +220,7 @@ impl Database {
         .bind(agent_pubkey)
         .bind(owner_pubkey)
         .bind(mode.as_str())
+        .bind(workspace)
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected() > 0)
@@ -196,6 +258,7 @@ impl Database {
             // Both parse fail-closed: an unreadable mode reads as `human` and
             // an unreadable status as `suspended`.
             mode: AgentMode::from_str_or_human(&mode),
+            workspace_id: r.try_get("workspace_id")?,
             status: AgentStatus::from_str_or_suspended(&status),
             created_at: r.try_get("created_at")?,
             policy,
@@ -204,30 +267,66 @@ impl Database {
 
     const AGENT_SELECT: &'static str = r#"
         SELECT a.agent_id, a.label, a.agent_pubkey, a.owner_pubkey, a.mode,
-               a.status, a.created_at,
+               a.status, a.created_at, a.workspace_id,
                p.max_total, p.max_per_call, p.approval_threshold,
                p.allowed_resources, p.max_calls
         FROM agents a
         LEFT JOIN agent_policies p ON p.agent_id = a.agent_id
     "#;
 
-    pub async fn list_agents(&self) -> Result<Vec<AgentRecord>, DbError> {
-        let sql = format!("{} ORDER BY a.created_at DESC", Self::AGENT_SELECT);
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+    /// Lists agents, confined to one tenant.
+    ///
+    /// `workspace = None` is the legacy unscoped admin and sees everything.
+    /// Any `Some` value confines the caller absolutely: there is no value of
+    /// `workspace` that returns another tenant's rows.
+    pub async fn list_agents(&self, workspace: Option<&str>) -> Result<Vec<AgentRecord>, DbError> {
+        let sql = match workspace {
+            Some(_) => format!(
+                "{} WHERE a.workspace_id = $1 ORDER BY a.created_at DESC",
+                Self::AGENT_SELECT
+            ),
+            None => format!("{} ORDER BY a.created_at DESC", Self::AGENT_SELECT),
+        };
+        let mut q = sqlx::query(&sql);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
         rows.iter().map(Self::agent_from_row).collect()
     }
 
-    pub async fn get_agent(&self, agent_id: &str) -> Result<Option<AgentRecord>, DbError> {
-        let sql = format!("{} WHERE a.agent_id = $1", Self::AGENT_SELECT);
-        let row = sqlx::query(&sql)
-            .bind(agent_id)
-            .fetch_optional(&self.pool)
-            .await?;
+    /// One agent, confined to one tenant.
+    ///
+    /// A cross-tenant lookup returns `Ok(None)` — indistinguishable from an
+    /// agent that does not exist. That is deliberate: a 403 would confirm the
+    /// id is real, which is itself a disclosure.
+    pub async fn get_agent(
+        &self,
+        agent_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Option<AgentRecord>, DbError> {
+        let sql = match workspace {
+            Some(_) => format!(
+                "{} WHERE a.agent_id = $1 AND a.workspace_id = $2",
+                Self::AGENT_SELECT
+            ),
+            None => format!("{} WHERE a.agent_id = $1", Self::AGENT_SELECT),
+        };
+        let mut q = sqlx::query(&sql).bind(agent_id);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let row = q.fetch_optional(&self.pool).await?;
         row.as_ref().map(Self::agent_from_row).transpose()
     }
 
     /// The lookup the buy path uses: a claim carries a session, the session
     /// carries an agent pubkey, and the policy hangs off that.
+    ///
+    /// **Deliberately not tenant-filtered.** Enforcement must work regardless
+    /// of who is logged in: the caller here is an agent proving itself with a
+    /// signature, not an operator holding a token. Never expose this through a
+    /// control-plane endpoint.
     pub async fn get_agent_by_pubkey(
         &self,
         agent_pubkey: &str,
@@ -240,16 +339,33 @@ impl Database {
         row.as_ref().map(Self::agent_from_row).transpose()
     }
 
+    /// Suspends or reinstates an agent, confined to one tenant.
+    ///
+    /// The tenant predicate is on the UPDATE itself, not on a read that
+    /// happens afterwards. That distinction is the whole fix: this function
+    /// previously took no workspace, so a scoped caller's request suspended
+    /// the row first and only then failed a scoped read-back — returning 404
+    /// while the write had already landed. Any tenant could stop any other
+    /// tenant's agents from spending, and the 404 hid it.
+    ///
+    /// A cross-tenant attempt now matches zero rows and returns `false`, which
+    /// the handler renders as "no such agent" — the same answer as for an id
+    /// that never existed, and this time it is true.
     pub async fn set_agent_status(
         &self,
         agent_id: &str,
         status: AgentStatus,
+        workspace: Option<&str>,
     ) -> Result<bool, DbError> {
-        let done = sqlx::query("UPDATE agents SET status = $2 WHERE agent_id = $1")
-            .bind(agent_id)
-            .bind(status.as_str())
-            .execute(&self.pool)
-            .await?;
+        let sql = match workspace {
+            Some(_) => "UPDATE agents SET status = $2 WHERE agent_id = $1 AND workspace_id = $3",
+            None => "UPDATE agents SET status = $2 WHERE agent_id = $1",
+        };
+        let mut q = sqlx::query(sql).bind(agent_id).bind(status.as_str());
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let done = q.execute(&self.pool).await?;
         Ok(done.rows_affected() > 0)
     }
 
@@ -258,21 +374,33 @@ impl Database {
     // ---------------------------------------------------------------------
 
     /// Writes the permission envelope. Replaces any previous one.
+    /// Sets an agent's mode and spending envelope, confined to one tenant.
+    ///
+    /// The tenant predicate guards the FIRST statement in the transaction, so
+    /// a cross-tenant attempt rolls back before the policy upsert runs. Same
+    /// reasoning as `set_agent_status`: the write must be scoped, not the read
+    /// that follows it. Raising another tenant's `max_total` would be a
+    /// straightforward way to widen somebody else's spending limits.
     pub async fn set_policy(
         &self,
         agent_id: &str,
         mode: AgentMode,
         p: &AgentPolicy,
+        workspace: Option<&str>,
     ) -> Result<bool, DbError> {
         let mut tx = self.pool.begin().await?;
 
         // Mode lives on the agent, the envelope on the policy, but a human sets
         // both in one action — so they move together or not at all.
-        let touched = sqlx::query("UPDATE agents SET mode = $2 WHERE agent_id = $1")
-            .bind(agent_id)
-            .bind(mode.as_str())
-            .execute(&mut *tx)
-            .await?;
+        let sql = match workspace {
+            Some(_) => "UPDATE agents SET mode = $2 WHERE agent_id = $1 AND workspace_id = $3",
+            None => "UPDATE agents SET mode = $2 WHERE agent_id = $1",
+        };
+        let mut q = sqlx::query(sql).bind(agent_id).bind(mode.as_str());
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let touched = q.execute(&mut *tx).await?;
         if touched.rows_affected() == 0 {
             tx.rollback().await?;
             return Ok(false);
@@ -399,7 +527,7 @@ impl Database {
         token_hash: &str,
     ) -> Result<Option<OperatorRecord>, DbError> {
         let row = sqlx::query(
-            "SELECT operator_id, label, role, enabled, created_at, last_used_at
+            "SELECT operator_id, label, role, workspace_id, enabled, created_at, last_used_at
              FROM operators WHERE token_hash = $1 AND enabled = true",
         )
         .bind(token_hash)
@@ -413,6 +541,7 @@ impl Database {
             operator_id: r.try_get("operator_id")?,
             label: r.try_get("label")?,
             role: r.try_get("role")?,
+            workspace_id: r.try_get("workspace_id")?,
             enabled: r.try_get("enabled")?,
             created_at: r.try_get("created_at")?,
             last_used_at: r.try_get("last_used_at")?,
@@ -422,7 +551,7 @@ impl Database {
     /// Never returns a token or a hash. There is nothing here worth stealing.
     pub async fn list_operators(&self) -> Result<Vec<OperatorRecord>, DbError> {
         let rows = sqlx::query(
-            "SELECT operator_id, label, role, enabled, created_at, last_used_at
+            "SELECT operator_id, label, role, workspace_id, enabled, created_at, last_used_at
              FROM operators ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
@@ -531,15 +660,40 @@ impl Database {
         })
     }
 
-    pub async fn list_approvals(&self, limit: i64) -> Result<Vec<ApprovalRecord>, DbError> {
-        let rows = sqlx::query(
-            "SELECT approval_id, agent_id, session_pubkey, resource, price, calls,
-                    state, reason, created_at, decided_at,
-                    decided_by, decided_by_label
-             FROM approvals ORDER BY created_at DESC LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
+    /// Lists approvals, confined to one tenant.
+    ///
+    /// `approvals` carries no workspace column of its own. It hangs off an
+    /// agent, and the agent carries the tenant — so this joins rather than
+    /// denormalising, keeping one source of truth for which tenant an agent
+    /// belongs to. A denormalised copy could drift, and a drifted tenant id is
+    /// a cross-tenant disclosure.
+    pub async fn list_approvals(
+        &self,
+        limit: i64,
+        workspace: Option<&str>,
+    ) -> Result<Vec<ApprovalRecord>, DbError> {
+        let sql = match workspace {
+            Some(_) => {
+                "SELECT ap.approval_id, ap.agent_id, ap.session_pubkey, ap.resource,
+                        ap.price, ap.calls, ap.state, ap.reason, ap.created_at,
+                        ap.decided_at, ap.decided_by, ap.decided_by_label
+                 FROM approvals ap
+                 JOIN agents a ON a.agent_id = ap.agent_id
+                 WHERE a.workspace_id = $2
+                 ORDER BY ap.created_at DESC LIMIT $1"
+            }
+            None => {
+                "SELECT approval_id, agent_id, session_pubkey, resource, price, calls,
+                        state, reason, created_at, decided_at,
+                        decided_by, decided_by_label
+                 FROM approvals ORDER BY created_at DESC LIMIT $1"
+            }
+        };
+        let mut q = sqlx::query(sql).bind(limit);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let rows = q.fetch_all(&self.pool)
         .await?;
         rows.iter().map(Self::approval_from_row).collect()
     }
@@ -678,6 +832,339 @@ mod pg_tests {
         }
     }
 
+    /// Creates a workspace and returns its id.
+    async fn workspace(db: &Database, label: &str) -> String {
+        let id = random_id("ws");
+        sqlx::query("INSERT INTO workspaces (workspace_id, name) VALUES ($1, $2)")
+            .bind(&id)
+            .bind(label)
+            .execute(&db.pool)
+            .await
+            .expect("workspace created");
+        id
+    }
+
+    // -----------------------------------------------------------------------
+    // Tenant isolation.
+    //
+    // This is a SECURITY BOUNDARY, not a display filter, so it is tested as
+    // one: two real workspaces with real rows, and every assertion is that B's
+    // data is *absent* from A's view rather than merely ordered after it.
+    //
+    // Absence is tested two ways on purpose — direct lookup and list — because
+    // they fail differently. A direct lookup that leaks returns somebody
+    // else's record; a list that leaks buries it among the caller's own, where
+    // a careless test would never notice.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_read_anothers_agent_directly() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+
+        // B sees it.
+        assert!(db.get_agent(&b_agent, Some(&b)).await.unwrap().is_some());
+
+        // A does not — and gets `None`, the same answer as for an id that was
+        // never created. The handler turns that into 404. A 403 would confirm
+        // the id is real, which is itself a disclosure.
+        assert!(
+            db.get_agent(&b_agent, Some(&a)).await.unwrap().is_none(),
+            "tenant A read tenant B's agent by id"
+        );
+
+        // Indistinguishable from a genuine miss.
+        let never_existed = random_id("agt");
+        assert!(db.get_agent(&never_existed, Some(&a)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_enumerate_anothers_agents() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let a_agent = random_id("agt");
+        db.create_agent(&a_agent, "A's agent", &random_key(), None, AgentMode::Human, Some(&a))
+            .await
+            .unwrap();
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+
+        let seen: Vec<String> = db
+            .list_agents(Some(&a))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.agent_id)
+            .collect();
+
+        assert!(seen.contains(&a_agent), "tenant A cannot see its own agent");
+        assert!(
+            !seen.contains(&b_agent),
+            "tenant B's agent leaked into tenant A's listing"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_delete_or_enumerate_anothers_provider() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_provider = random_id("prv");
+        db.upsert_provider(
+            &crate::registry::ProviderRecord {
+                provider_id: b_provider.clone(),
+                label: "B's API".into(),
+                base_url: "http://b.example".into(),
+                provider_pubkey: None,
+                enabled: true,
+            },
+            Some(&b),
+        )
+        .await
+        .unwrap();
+
+        // Not visible to A.
+        let seen: Vec<String> = db
+            .list_providers(Some(&a))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.provider_id)
+            .collect();
+        assert!(!seen.contains(&b_provider), "tenant B's provider leaked to A");
+
+        // Not deletable by A — and the failure is silent, matching "no such
+        // provider" rather than announcing that it exists.
+        assert!(
+            !db.delete_provider(&b_provider, Some(&a)).await.unwrap(),
+            "tenant A deleted tenant B's provider"
+        );
+        assert!(
+            db.list_providers(Some(&b)).await.unwrap().iter().any(|p| p.provider_id == b_provider),
+            "the provider should still exist after A's attempt"
+        );
+
+        // B can delete its own.
+        assert!(db.delete_provider(&b_provider, Some(&b)).await.unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn a_cross_tenant_reregistration_cannot_rewrite_a_providers_url() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let id = random_id("prv");
+        db.upsert_provider(
+            &crate::registry::ProviderRecord {
+                provider_id: id.clone(),
+                label: "B's API".into(),
+                base_url: "http://b.example".into(),
+                provider_pubkey: None,
+                enabled: true,
+            },
+            Some(&b),
+        )
+        .await
+        .unwrap();
+
+        // A re-registers the same id, pointing it at a host it controls. The
+        // ON CONFLICT guard must refuse to touch the row: otherwise A could
+        // silently repoint B's traffic.
+        db.upsert_provider(
+            &crate::registry::ProviderRecord {
+                provider_id: id.clone(),
+                label: "hijacked".into(),
+                base_url: "http://attacker.example".into(),
+                provider_pubkey: None,
+                enabled: true,
+            },
+            Some(&a),
+        )
+        .await
+        .unwrap();
+
+        let still = db.list_providers(Some(&b)).await.unwrap();
+        let row = still.iter().find(|p| p.provider_id == id).expect("B still owns it");
+        assert_eq!(row.base_url, "http://b.example", "tenant A rewrote B's base_url");
+        assert_eq!(row.label, "B's API");
+
+        db.delete_provider(&id, Some(&b)).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_see_anothers_approvals() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+
+        let approval = random_id("apr");
+        db.create_approval(&approval, &b_agent, None, "/weather", 1_000, 1)
+            .await
+            .unwrap();
+
+        let a_sees: Vec<String> = db
+            .list_approvals(200, Some(&a))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.approval_id)
+            .collect();
+        assert!(!a_sees.contains(&approval), "tenant B's approval leaked to A");
+
+        let b_sees: Vec<String> = db
+            .list_approvals(200, Some(&b))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.approval_id)
+            .collect();
+        assert!(b_sees.contains(&approval), "tenant B cannot see its own approval");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn the_legacy_unscoped_admin_still_sees_everything() {
+        let db = connect().await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+
+        // `None` is the legacy single-tenant deployment. It must keep working
+        // through the migration, which is the entire reason the columns are
+        // nullable.
+        assert!(db.get_agent(&b_agent, None).await.unwrap().is_some());
+        let all: Vec<String> = db
+            .list_agents(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.agent_id)
+            .collect();
+        assert!(all.contains(&b_agent));
+    }
+
+    /// Regression: a cross-tenant MUTATION must not land.
+    ///
+    /// This bug shipped and was caught in manual HTTP testing, not by the
+    /// first round of isolation tests — because those only covered reads.
+    /// `set_agent_status` ran an unscoped UPDATE and only afterwards did a
+    /// scoped read-back, so the handler returned 404 while the write had
+    /// already succeeded. Any tenant could suspend any other tenant's agents
+    /// and the 404 made it look like nothing had happened.
+    ///
+    /// The lesson generalises: a scoped read placed after an unscoped write is
+    /// not isolation, it is a cover-up. Every mutation is tested here.
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_suspend_anothers_agent() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+
+        // A tries to suspend it. The UPDATE itself must match zero rows.
+        assert!(
+            !db.set_agent_status(&b_agent, AgentStatus::Suspended, Some(&a))
+                .await
+                .unwrap(),
+            "tenant A's suspend reported success against tenant B's agent"
+        );
+
+        // And — the assertion that the original bug would have failed — the
+        // row is untouched.
+        let rec = db.get_agent(&b_agent, Some(&b)).await.unwrap().unwrap();
+        assert_eq!(
+            rec.status,
+            AgentStatus::Active,
+            "tenant A suspended tenant B's agent; the write landed despite the 404"
+        );
+
+        // B can still suspend its own.
+        assert!(db
+            .set_agent_status(&b_agent, AgentStatus::Suspended, Some(&b))
+            .await
+            .unwrap());
+    }
+
+    /// The same class of bug on the envelope: raising another tenant's
+    /// `max_total` would widen somebody else's spending limits.
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn one_workspace_cannot_rewrite_anothers_policy() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let b = workspace(&db, "tenant B").await;
+
+        let b_agent = random_id("agt");
+        db.create_agent(&b_agent, "B's agent", &random_key(), None, AgentMode::Human, Some(&b))
+            .await
+            .unwrap();
+        db.set_policy(&b_agent, AgentMode::Human, &policy(), Some(&b))
+            .await
+            .unwrap();
+
+        let widened = AgentPolicy {
+            max_total: 999_999_999,
+            max_per_call: 999_999_999,
+            approval_threshold: None,
+            allowed_resources: None,
+            max_calls: None,
+        };
+        assert!(
+            !db.set_policy(&b_agent, AgentMode::Autonomous, &widened, Some(&a))
+                .await
+                .unwrap(),
+            "tenant A rewrote tenant B's envelope"
+        );
+
+        let rec = db.get_agent(&b_agent, Some(&b)).await.unwrap().unwrap();
+        let pol = rec.policy.expect("B still has its policy");
+        assert_eq!(pol.max_total, 1_000_000, "tenant B's budget was widened by tenant A");
+        assert_eq!(rec.mode, AgentMode::Human, "tenant B's agent was made autonomous by tenant A");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL"]
+    async fn an_agent_created_by_a_tenant_belongs_to_that_tenant() {
+        let db = connect().await;
+        let a = workspace(&db, "tenant A").await;
+        let id = random_id("agt");
+        db.create_agent(&id, "A's agent", &random_key(), None, AgentMode::Human, Some(&a))
+            .await
+            .unwrap();
+        let rec = db.get_agent(&id, Some(&a)).await.unwrap().unwrap();
+        assert_eq!(rec.workspace_id.as_deref(), Some(a.as_str()));
+    }
+
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL"]
     async fn an_agent_round_trips_with_its_policy() {
@@ -686,21 +1173,21 @@ mod pg_tests {
         let key = random_key();
 
         assert!(db
-            .create_agent(&id, "Research bot", &key, None, AgentMode::Human)
+            .create_agent(&id, "Research bot", &key, None, AgentMode::Human, None)
             .await
             .unwrap());
 
-        let before = db.get_agent(&id).await.unwrap().unwrap();
+        let before = db.get_agent(&id, None).await.unwrap().unwrap();
         assert!(before.policy.is_none(), "an agent starts unauthorized");
         assert_eq!(before.mode, AgentMode::Human);
         assert_eq!(before.status, AgentStatus::Active);
 
         assert!(db
-            .set_policy(&id, AgentMode::Autonomous, &policy())
+            .set_policy(&id, AgentMode::Autonomous, &policy(), None)
             .await
             .unwrap());
 
-        let after = db.get_agent(&id).await.unwrap().unwrap();
+        let after = db.get_agent(&id, None).await.unwrap().unwrap();
         let p = after.policy.expect("policy present");
         assert_eq!(p.max_total, 1_000_000);
         assert_eq!(p.max_per_call, 25_000);
@@ -724,11 +1211,11 @@ mod pg_tests {
         let key = random_key();
 
         assert!(db
-            .create_agent(&random_id("agt"), "first", &key, None, AgentMode::Human)
+            .create_agent(&random_id("agt"), "first", &key, None, AgentMode::Human, None)
             .await
             .unwrap());
         assert!(
-            !db.create_agent(&random_id("agt"), "second", &key, None, AgentMode::Human)
+            !db.create_agent(&random_id("agt"), "second", &key, None, AgentMode::Human, None)
                 .await
                 .unwrap(),
             "the second agent on the same pubkey must be refused"
@@ -740,26 +1227,26 @@ mod pg_tests {
     async fn suspending_an_agent_persists() {
         let db = connect().await;
         let id = random_id("agt");
-        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Autonomous)
+        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Autonomous, None)
             .await
             .unwrap();
 
-        assert!(db.set_agent_status(&id, AgentStatus::Suspended).await.unwrap());
+        assert!(db.set_agent_status(&id, AgentStatus::Suspended, None).await.unwrap());
         assert_eq!(
-            db.get_agent(&id).await.unwrap().unwrap().status,
+            db.get_agent(&id, None).await.unwrap().unwrap().status,
             AgentStatus::Suspended
         );
 
-        assert!(db.set_agent_status(&id, AgentStatus::Active).await.unwrap());
+        assert!(db.set_agent_status(&id, AgentStatus::Active, None).await.unwrap());
         assert_eq!(
-            db.get_agent(&id).await.unwrap().unwrap().status,
+            db.get_agent(&id, None).await.unwrap().unwrap().status,
             AgentStatus::Active
         );
 
         // An agent that does not exist cannot be suspended, and saying it was
         // would tell an operator they had revoked something they had not.
         assert!(!db
-            .set_agent_status("agt_nope", AgentStatus::Suspended)
+            .set_agent_status("agt_nope", AgentStatus::Suspended, None)
             .await
             .unwrap());
     }
@@ -772,7 +1259,7 @@ mod pg_tests {
         // authorise an unbounded number of purchases.
         let db = connect().await;
         let id = random_id("agt");
-        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human)
+        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human, None)
             .await
             .unwrap();
 
@@ -805,7 +1292,7 @@ mod pg_tests {
         // expensive one, including after a provider changes its catalogue.
         let db = connect().await;
         let id = random_id("agt");
-        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human)
+        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human, None)
             .await
             .unwrap();
 
@@ -959,7 +1446,7 @@ mod pg_tests {
     async fn a_decision_records_who_made_it_and_survives_their_deletion() {
         let db = connect().await;
         let agent = random_id("agt");
-        db.create_agent(&agent, "bot", &random_key(), None, AgentMode::Human)
+        db.create_agent(&agent, "bot", &random_key(), None, AgentMode::Human, None)
             .await
             .unwrap();
 
@@ -978,7 +1465,7 @@ mod pg_tests {
             .await
             .unwrap());
 
-        let listed = db.list_approvals(50).await.unwrap();
+        let listed = db.list_approvals(50, None).await.unwrap();
         let mine = listed
             .iter()
             .find(|a| a.approval_id == approval)
@@ -996,7 +1483,7 @@ mod pg_tests {
             .await
             .unwrap();
 
-        let again = db.list_approvals(50).await.unwrap();
+        let again = db.list_approvals(50, None).await.unwrap();
         let still = again.iter().find(|a| a.approval_id == approval).unwrap();
         assert_eq!(
             still.decided_by_label.as_deref(),
@@ -1010,7 +1497,7 @@ mod pg_tests {
     async fn a_rejected_approval_cannot_be_flipped_or_spent() {
         let db = connect().await;
         let id = random_id("agt");
-        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human)
+        db.create_agent(&id, "bot", &random_key(), None, AgentMode::Human, None)
             .await
             .unwrap();
 
@@ -1030,7 +1517,7 @@ mod pg_tests {
         );
         assert!(!db.consume_approval(&id, "/analyse", 25_000).await.unwrap());
 
-        let listed = db.list_approvals(50).await.unwrap();
+        let listed = db.list_approvals(50, None).await.unwrap();
         let mine = listed
             .iter()
             .find(|a| a.approval_id == approval)
@@ -1062,10 +1549,10 @@ mod pg_tests {
             provider_pubkey: None,
             enabled: true,
         };
-        db.upsert_provider(&rec).await.unwrap();
+        db.upsert_provider(&rec, None).await.unwrap();
 
         let found = db
-            .list_providers()
+            .list_providers(None)
             .await
             .unwrap()
             .into_iter()
@@ -1078,9 +1565,9 @@ mod pg_tests {
         let mut updated = rec.clone();
         updated.label = "Weather Co (EU)".into();
         updated.enabled = false;
-        db.upsert_provider(&updated).await.unwrap();
+        db.upsert_provider(&updated, None).await.unwrap();
         let again = db
-            .list_providers()
+            .list_providers(None)
             .await
             .unwrap()
             .into_iter()
@@ -1090,7 +1577,7 @@ mod pg_tests {
         assert_eq!(again[0].label, "Weather Co (EU)");
         assert!(!again[0].enabled);
 
-        assert!(db.delete_provider(&id).await.unwrap());
-        assert!(!db.delete_provider(&id).await.unwrap());
+        assert!(db.delete_provider(&id, None).await.unwrap());
+        assert!(!db.delete_provider(&id, None).await.unwrap());
     }
 }

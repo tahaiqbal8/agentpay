@@ -92,6 +92,47 @@ pub fn token_hash(token: &str) -> String {
 pub struct Operator {
     pub operator_id: String,
     pub label: String,
+    /// The tenant this caller may act within.
+    ///
+    /// `None` means **unscoped legacy admin** — the shared `AGENTPAY_ADMIN_TOKEN`,
+    /// or a per-operator credential created before workspaces existed. Such a
+    /// caller sees every tenant.
+    ///
+    /// That is a migration affordance with a real cost, and it is stated here
+    /// rather than buried: while any unscoped credential exists, the tenant
+    /// boundary is only as strong as the handling of that credential. It is
+    /// break-glass, and it should be retired once every operator has been
+    /// assigned to a workspace.
+    pub workspace_id: Option<String>,
+    /// `owner` may invite members and change the plan. `member` does everything
+    /// else. Legacy rows carry `operator`, which is treated as `owner`.
+    ///
+    /// Stored and resolved in Phase 3; enforced in Phase 4, when the endpoints
+    /// that distinguish the two roles exist.
+    #[allow(dead_code)]
+    pub role: String,
+}
+
+// `role`, `is_scoped` and `is_owner` are resolved and carried now but not yet
+// enforced anywhere: the endpoints that need them — inviting a member, changing
+// a plan — are Phase 4, which is deliberately not built yet. Kept rather than
+// deleted so that the credential a Phase 3 deployment mints already carries the
+// right role, and Phase 4 does not need a second migration to backfill one.
+#[allow(dead_code)]
+impl Operator {
+    /// True when this caller is confined to one tenant.
+    ///
+    /// The inverse — an unscoped caller — is what legacy deployments rely on,
+    /// so it is named rather than implied by a bare `is_none()` at each call
+    /// site.
+    pub fn is_scoped(&self) -> bool {
+        self.workspace_id.is_some()
+    }
+
+    /// True when the caller may manage members and the subscription.
+    pub fn is_owner(&self) -> bool {
+        self.role == "owner" || self.role == "operator"
+    }
 }
 
 /// The id used when the shared `AGENTPAY_ADMIN_TOKEN` authenticated a request.
@@ -135,6 +176,8 @@ pub async fn require_admin(
         req.extensions_mut().insert(Operator {
             operator_id: SHARED_TOKEN_OPERATOR.to_string(),
             label: "Unauthenticated (loopback)".to_string(),
+            workspace_id: None,
+            role: "owner".to_string(),
         });
         return Ok(next.run(req).await);
     }
@@ -151,6 +194,11 @@ pub async fn require_admin(
             req.extensions_mut().insert(Operator {
                 operator_id: SHARED_TOKEN_OPERATOR.to_string(),
                 label: "Shared admin token".to_string(),
+                // The shared token is deliberately unscoped: it is the
+                // break-glass credential, and an incident is the worst moment
+                // to discover it cannot see the tenant that is on fire.
+                workspace_id: None,
+                role: "owner".to_string(),
             });
             return Ok(next.run(req).await);
         }
@@ -176,6 +224,8 @@ pub async fn require_admin(
             req.extensions_mut().insert(Operator {
                 operator_id: op.operator_id,
                 label: op.label,
+                workspace_id: op.workspace_id,
+                role: op.role,
             });
             Ok(next.run(req).await)
         }

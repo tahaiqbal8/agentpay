@@ -252,8 +252,27 @@ impl Database {
     ///
     /// `LEFT JOIN` plus `COUNT` rather than N+1 queries: the monitor polls this
     /// on an interval, so it must stay one round trip regardless of session count.
-    pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionSummary>, DbError> {
-        let rows = sqlx::query(
+    /// Lists sessions, confined to one tenant.
+    ///
+    /// `sessions` carries no workspace column. A session belongs to the tenant
+    /// that owns its AGENT, so this joins `agents` on the wallet rather than
+    /// denormalising a tenant id onto a table the money path writes to. The
+    /// money path must never have to know what a workspace is.
+    ///
+    /// An INNER JOIN in the scoped branch, deliberately: a session whose agent
+    /// is not registered in any workspace belongs to no tenant and must not
+    /// surface in a tenant's list.
+    pub async fn list_sessions(
+        &self,
+        limit: i64,
+        workspace: Option<&str>,
+    ) -> Result<Vec<SessionSummary>, DbError> {
+        let scope = match workspace {
+            Some(_) => "JOIN agents ag ON ag.agent_pubkey = s.agent_pubkey \
+                        AND ag.workspace_id = $2",
+            None => "",
+        };
+        let sql = format!(
             r#"
             SELECT s.session_pubkey, s.agent_pubkey, s.provider_pubkey, s.mint_pubkey,
                    s.deposited_total, s.expires_at, s.settled_at, s.created_at,
@@ -262,6 +281,7 @@ impl Database {
                    c.nonce AS last_nonce,
                    COALESCE(e.entry_count, 0)       AS evidence_count
             FROM sessions s
+            {scope}
             LEFT JOIN claim_tickets c ON c.session_pubkey = s.session_pubkey
             LEFT JOIN (
                 SELECT session_pubkey, COUNT(*) AS entry_count
@@ -269,11 +289,13 @@ impl Database {
             ) e ON e.session_pubkey = s.session_pubkey
             ORDER BY s.created_at DESC
             LIMIT $1
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            "#
+        );
+        let mut q = sqlx::query(&sql).bind(limit);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
 
         rows.into_iter()
             .map(|row| {
@@ -301,19 +323,44 @@ impl Database {
     }
 
     /// Most recent decisions across every session, for the live feed.
-    pub async fn recent_decisions(&self, limit: i64) -> Result<Vec<RecentDecision>, DbError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT session_pubkey, sequence_id, decision, cumulative_amount,
-                   nonce, entry_hash, created_at
-            FROM evidence_log
-            ORDER BY created_at DESC, id DESC
-            LIMIT $1
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+    /// The decision feed, confined to one tenant.
+    ///
+    /// Same join reasoning as `list_sessions`. Note this is the OPERATOR feed:
+    /// the public per-session evidence endpoint is deliberately unscoped, so a
+    /// third party can still verify a decision without an account.
+    pub async fn recent_decisions(
+        &self,
+        limit: i64,
+        workspace: Option<&str>,
+    ) -> Result<Vec<RecentDecision>, DbError> {
+        let sql = match workspace {
+            Some(_) => {
+                r#"
+                SELECT el.session_pubkey, el.sequence_id, el.decision,
+                       el.cumulative_amount, el.nonce, el.entry_hash, el.created_at
+                FROM evidence_log el
+                JOIN sessions s ON s.session_pubkey = el.session_pubkey
+                JOIN agents ag ON ag.agent_pubkey = s.agent_pubkey
+                                AND ag.workspace_id = $2
+                ORDER BY el.created_at DESC, el.id DESC
+                LIMIT $1
+                "#
+            }
+            None => {
+                r#"
+                SELECT session_pubkey, sequence_id, decision, cumulative_amount,
+                       nonce, entry_hash, created_at
+                FROM evidence_log
+                ORDER BY created_at DESC, id DESC
+                LIMIT $1
+                "#
+            }
+        };
+        let mut q = sqlx::query(sql).bind(limit);
+        if let Some(w) = workspace {
+            q = q.bind(w);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
 
         rows.into_iter()
             .map(|row| {

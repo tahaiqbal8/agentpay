@@ -543,13 +543,55 @@ pub async fn on_chain_settlement(
 /// traffic that used to pass. `AGENTPAY_REQUIRE_AGENT_POLICY=1` flips that to a
 /// refusal for operators who want every session to belong to an authorized
 /// agent.
+/// Who the metered decision belongs to commercially.
+///
+/// Returned by `enforce_agent_policy` so the buy handler can attribute a
+/// decision to a paying tenant without a second database round trip on the hot
+/// path. `None` throughout means the agent is not registered in the control
+/// plane, which is legal — the escrow still bounds it.
+#[derive(Debug, Clone, Default)]
+pub struct AgentIdentity {
+    pub agent_id: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+/// Meters one decision. Best effort, and deliberately not awaited for its
+/// result: see `crate::usage`.
+async fn meter(
+    state: &AppState,
+    identity: &AgentIdentity,
+    session: Option<&Pubkey>,
+    resource: &str,
+    price: u64,
+    decision: &str,
+) {
+    let session = session.map(|s| s.to_string());
+    crate::usage::record(
+        state.db.as_deref(),
+        crate::usage::UsageEvent {
+            workspace_id: identity.workspace_id.as_deref(),
+            // The buy path serves exactly one upstream, entered in the registry
+            // under the reserved id `default`. When multi-provider routing
+            // lands this becomes the resolved provider.
+            provider_id: Some(crate::registry::DEFAULT_PROVIDER_ID),
+            agent_id: identity.agent_id.as_deref(),
+            session_pubkey: session.as_deref(),
+            resource,
+            price,
+            decision,
+        },
+    )
+    .await;
+}
+
 async fn enforce_agent_policy(
     state: &AppState,
     agent: &Pubkey,
+    session: &Pubkey,
     resource: &str,
     price: u64,
     rid: &str,
-) -> Result<(), Denial> {
+) -> Result<AgentIdentity, Denial> {
     use crate::policy::{evaluate, PolicyDecision};
 
     let Some(db) = state.db.as_ref() else {
@@ -559,7 +601,7 @@ async fn enforce_agent_policy(
         if state.require_agent_policy {
             return Err(Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, rid));
         }
-        return Ok(());
+        return Ok(AgentIdentity::default());
     };
 
     let agent_str = agent.to_string();
@@ -583,13 +625,27 @@ async fn enforce_agent_policy(
             );
             return Err(Denial::new(ReasonCode::ERR_AGENT_POLICY_REQUIRED, rid));
         }
-        return Ok(());
+        return Ok(AgentIdentity::default());
     };
 
     // Suspension binds even without an envelope: revocation must work on an
     // agent nobody ever got round to authorizing.
+    let identity = AgentIdentity {
+        agent_id: Some(record.agent_id.clone()),
+        workspace_id: record.workspace_id.clone(),
+    };
+
     if record.status != crate::policy::AgentStatus::Active {
         warn!(request_id = %rid, agent_id = %record.agent_id, "suspended agent refused");
+        meter(
+            state,
+            &identity,
+            Some(session),
+            resource,
+            price,
+            ReasonCode::ERR_AGENT_SUSPENDED.as_str(),
+        )
+        .await;
         return Err(Denial::new(ReasonCode::ERR_AGENT_SUSPENDED, rid));
     }
 
@@ -597,7 +653,7 @@ async fn enforce_agent_policy(
         if state.require_agent_policy {
             return Err(Denial::new(ReasonCode::ERR_AGENT_POLICY_REQUIRED, rid));
         }
-        return Ok(());
+        return Ok(identity);
     };
 
     let spend = db.agent_spend(&agent_str).await.map_err(|e| {
@@ -606,7 +662,7 @@ async fn enforce_agent_policy(
     })?;
 
     match evaluate(record.status, record.mode, policy, resource, price, spend) {
-        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Allow => Ok(identity),
 
         PolicyDecision::Refuse(r) => {
             warn!(
@@ -617,7 +673,9 @@ async fn enforce_agent_policy(
                 rule = r.as_str(),
                 "policy refused the purchase"
             );
-            Err(Denial::new(policy_denial(r), rid))
+            let code = policy_denial(r);
+            meter(state, &identity, Some(session), resource, price, code.as_str()).await;
+            Err(Denial::new(code, rid))
         }
 
         PolicyDecision::NeedsApproval => {
@@ -633,7 +691,7 @@ async fn enforce_agent_policy(
                         price,
                         "approval consumed"
                     );
-                    return Ok(());
+                    return Ok(identity);
                 }
                 Ok(false) => {}
                 Err(e) => {
@@ -671,6 +729,15 @@ async fn enforce_agent_policy(
                 Err(e) => warn!(request_id = %rid, error = %e, "pending approval lookup failed"),
             }
 
+            meter(
+                state,
+                &identity,
+                Some(session),
+                resource,
+                price,
+                ReasonCode::ERR_APPROVAL_REQUIRED.as_str(),
+            )
+            .await;
             Err(Denial::new(ReasonCode::ERR_APPROVAL_REQUIRED, rid))
         }
     }
@@ -1215,7 +1282,15 @@ pub async fn get_session(
         return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
     };
 
-    let rows = db.list_sessions(500).await.map_err(|e| {
+    let rows = db
+        .list_sessions(
+            500,
+            // Unscoped on purpose: this is the PUBLIC per-session lookup.
+            // Knowing a session address is not a secret, and the evidence
+            // behind it is published so a third party can verify it.
+            None,
+        )
+        .await.map_err(|e| {
         error!(request_id = %rid, error = %e, "could not read session");
         Denial::new(ReasonCode::ERR_STORE_UNAVAILABLE, &rid)
     })?;
@@ -1247,13 +1322,16 @@ pub async fn get_session(
 
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
 ) -> Result<Json<SessionListResponse>, Denial> {
     let rid = request_id();
     let Some(db) = &state.db else {
         return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
     };
 
-    let rows = db.list_sessions(200).await.map_err(|e| {
+    let rows = db
+        .list_sessions(200, operator.workspace_id.as_deref())
+        .await.map_err(|e| {
         error!(request_id = %rid, error = %e, "could not list sessions");
         Denial::new(ReasonCode::ERR_STORE_UNAVAILABLE, &rid)
     })?;
@@ -1310,13 +1388,16 @@ pub struct RecentDecisionsResponse {
 
 pub async fn recent_decisions(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
 ) -> Result<Json<RecentDecisionsResponse>, Denial> {
     let rid = request_id();
     let Some(db) = &state.db else {
         return Err(Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid));
     };
 
-    let rows = db.recent_decisions(60).await.map_err(|e| {
+    let rows = db
+        .recent_decisions(60, operator.workspace_id.as_deref())
+        .await.map_err(|e| {
         error!(request_id = %rid, error = %e, "could not load recent decisions");
         Denial::new(ReasonCode::ERR_EVIDENCE_UNAVAILABLE, &rid)
     })?;
@@ -1490,7 +1571,9 @@ pub async fn buy(
     //
     // This is the narrower, off-chain bound. The escrow deposit is still the
     // absolute one and is enforced independently, below and on-chain.
-    enforce_agent_policy(&state, &record.agent, &resource_path, price, &rid).await?;
+    let identity =
+        enforce_agent_policy(&state, &record.agent, &claim.session, &resource_path, price, &rid)
+            .await?;
 
     // ---- enforce; only an accepted claim may proceed -----------------------
     let outcome = state
@@ -1515,6 +1598,18 @@ pub async fn buy(
                 reason_code = code.as_str(),
                 "buy: DENIED — upstream not contacted"
             );
+            // Metered after the decision, never before it, and its result is
+            // never inspected: billing cannot change what the gateway already
+            // refused.
+            meter(
+                &state,
+                &identity,
+                Some(&claim.session),
+                &resource_path,
+                price,
+                code.as_str(),
+            )
+            .await;
             // Return here, before any forward. This early return is the whole
             // security property of this handler.
             return Err(Denial::new(code, &rid));
@@ -1522,6 +1617,21 @@ pub async fn buy(
     };
 
     // ---- paid: now, and only now, fetch the goods --------------------------
+    //
+    // Metered here rather than after the forward, because the charge happens
+    // at admission: a provider that answers 404 has still cost the agent
+    // money, which is exactly why `upstream_status` is reported separately.
+    // Billing what was admitted keeps the meter and the escrow in agreement.
+    meter(
+        &state,
+        &identity,
+        Some(&claim.session),
+        &resource_path,
+        price,
+        "ALLOWED",
+    )
+    .await;
+
     let res = upstream
         .forward(&resource_path, &query)
         .await

@@ -175,6 +175,7 @@ pub struct CreateAgentRequest {
 /// POST /v1/agents — stages 1 and 2: create an agent and bind it to a wallet.
 pub async fn create_agent(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Json(req): Json<CreateAgentRequest>,
 ) -> Result<Json<AgentView>, Denial> {
     let rid = request_id();
@@ -202,7 +203,14 @@ pub async fn create_agent(
         .filter(|o| !o.trim().is_empty());
 
     let created = db
-        .create_agent(&agent_id, req.label.trim(), &req.agent_pubkey, owner, mode)
+        .create_agent(
+            &agent_id,
+            req.label.trim(),
+            &req.agent_pubkey,
+            owner,
+            mode,
+            operator.workspace_id.as_deref(),
+        )
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
 
@@ -215,7 +223,7 @@ pub async fn create_agent(
     info!(request_id = %rid, agent_id = %agent_id, pubkey = %req.agent_pubkey, "agent created");
 
     let record = db
-        .get_agent(&agent_id)
+        .get_agent(&agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -231,12 +239,13 @@ pub struct AgentsResponse {
 /// GET /v1/agents
 pub async fn list_agents(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
 ) -> Result<Json<AgentsResponse>, Denial> {
     let rid = request_id();
     let db = db(&state, &rid)?;
 
     let records = db
-        .list_agents()
+        .list_agents(operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
 
@@ -254,13 +263,14 @@ pub async fn list_agents(
 /// GET /v1/agents/{agent_id}
 pub async fn get_agent(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentView>, Denial> {
     let rid = request_id();
     let db = db(&state, &rid)?;
 
     let record = db
-        .get_agent(&agent_id)
+        .get_agent(&agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -295,6 +305,7 @@ pub struct AuthorizeRequest {
 /// endpoint can only narrow what the escrow already permits.
 pub async fn authorize_agent(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Path(agent_id): Path<String>,
     Json(req): Json<AuthorizeRequest>,
 ) -> Result<Json<AgentView>, Denial> {
@@ -327,7 +338,7 @@ pub async fn authorize_agent(
     };
 
     let existing = db
-        .get_agent(&agent_id)
+        .get_agent(&agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -342,7 +353,7 @@ pub async fn authorize_agent(
     let mode = req.mode.unwrap_or(existing.mode);
 
     let ok = db
-        .set_policy(&agent_id, mode, &policy)
+        .set_policy(&agent_id, mode, &policy, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
     if !ok {
@@ -359,7 +370,7 @@ pub async fn authorize_agent(
     );
 
     let record = db
-        .get_agent(&agent_id)
+        .get_agent(&agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -388,6 +399,7 @@ pub struct StatusRequest {
 /// flight is not recalled.
 pub async fn set_agent_status(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Path(agent_id): Path<String>,
     Json(req): Json<StatusRequest>,
 ) -> Result<Json<AgentView>, Denial> {
@@ -395,7 +407,7 @@ pub async fn set_agent_status(
     let db = db(&state, &rid)?;
 
     let ok = db
-        .set_agent_status(&agent_id, req.status)
+        .set_agent_status(&agent_id, req.status, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
     if !ok {
@@ -410,7 +422,7 @@ pub async fn set_agent_status(
     );
 
     let record = db
-        .get_agent(&agent_id)
+        .get_agent(&agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -453,6 +465,7 @@ pub struct ProvidersResponse {
 /// goods, and a provider could not change a price without asking us.
 pub async fn register_provider(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Json(req): Json<RegisterProviderRequest>,
 ) -> Result<Json<ProvidersResponse>, Denial> {
     let rid = request_id();
@@ -483,7 +496,7 @@ pub async fn register_provider(
         enabled: req.enabled,
     };
 
-    db.upsert_provider(&record)
+    db.upsert_provider(&record, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
     state.registry.upsert(record).await;
@@ -497,7 +510,19 @@ pub async fn register_provider(
 /// GET /v1/providers
 pub async fn list_providers(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
 ) -> Json<ProvidersResponse> {
+    // The in-memory registry is GLOBAL: it is loaded once at boot and backs the
+    // public catalogue, so it knows nothing about tenants. Serving it directly
+    // to a scoped caller would list every tenant's providers.
+    //
+    // So a scoped caller is answered from the database, which does know. An
+    // unscoped legacy admin keeps the registry view, which additionally
+    // includes the boot-time upstream entry that may not have a row.
+    if let (Some(ws), Some(db)) = (operator.workspace_id.as_deref(), state.db.as_ref()) {
+        let providers = db.list_providers(Some(ws)).await.unwrap_or_default();
+        return Json(ProvidersResponse { providers });
+    }
     Json(ProvidersResponse {
         providers: state.registry.list().await,
     })
@@ -506,13 +531,14 @@ pub async fn list_providers(
 /// DELETE /v1/providers/{provider_id}
 pub async fn delete_provider(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Path(provider_id): Path<String>,
 ) -> Result<Json<ProvidersResponse>, Denial> {
     let rid = request_id();
     let db = db(&state, &rid)?;
 
     let removed = db
-        .delete_provider(&provider_id)
+        .delete_provider(&provider_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
     state.registry.remove(&provider_id).await;
@@ -700,6 +726,7 @@ async fn plan_options(
 
 pub async fn plan(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Json(req): Json<PlanRequest>,
 ) -> Result<Json<PlanResponse>, Denial> {
     let rid = request_id();
@@ -710,7 +737,7 @@ pub async fn plan(
     }
 
     let agent = db
-        .get_agent(&req.agent_id)
+        .get_agent(&req.agent_id, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?
         .ok_or_else(|| Denial::new(ReasonCode::ERR_AGENT_NOT_FOUND, &rid))?;
@@ -1143,12 +1170,13 @@ pub struct ApprovalsResponse {
 /// GET /v1/approvals
 pub async fn list_approvals(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
 ) -> Result<Json<ApprovalsResponse>, Denial> {
     let rid = request_id();
     let db = db(&state, &rid)?;
 
     let records = db
-        .list_approvals(200)
+        .list_approvals(200, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
 
@@ -1170,11 +1198,11 @@ pub struct DecideRequest {
 /// rejection into an approval, and an approval already spent stays spent.
 pub async fn decide_approval(
     State(state): State<Arc<AppState>>,
+    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Path(approval_id): Path<String>,
     // Inserted by `auth::require_admin`, which resolved the token to whoever
     // presented it. A decision that cannot name its decider is a workflow, not
     // an audit trail.
-    axum::Extension(operator): axum::Extension<crate::auth::Operator>,
     Json(req): Json<DecideRequest>,
 ) -> Result<Json<ApprovalsResponse>, Denial> {
     let rid = request_id();
@@ -1206,7 +1234,7 @@ pub async fn decide_approval(
     );
 
     let records = db
-        .list_approvals(200)
+        .list_approvals(200, operator.workspace_id.as_deref())
         .await
         .map_err(|_| Denial::new(ReasonCode::ERR_CONTROL_PLANE_UNAVAILABLE, &rid))?;
     Ok(Json(ApprovalsResponse {

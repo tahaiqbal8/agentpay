@@ -24,6 +24,7 @@ mod registry;
 mod routes;
 mod settle;
 mod state;
+mod usage;
 mod verify;
 
 use std::sync::Arc;
@@ -274,7 +275,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `default`, so /v1/buy resolves to exactly the upstream it always did.
     let registry = Arc::new(registry::Registry::new());
     if let Some(db) = &db_handle {
-        match db.list_providers().await {
+        match db.list_providers(
+                    // Unscoped: the registry is loaded once at boot and backs
+                    // the PUBLIC catalogue, which has no caller to scope to.
+                    // Per-tenant registries arrive with multi-provider routing.
+                    None,
+                ).await {
             Ok(rows) => {
                 for r in rows {
                     registry.upsert(r).await;
@@ -311,7 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     base_url: url.clone(),
                     provider_pubkey: provider_keypair.as_ref().map(|k| k.pubkey().to_string()),
                     enabled: true,
-                })
+                }, None)
                 .await;
         }
     }
