@@ -513,10 +513,19 @@ append-only, so a later settlement commits a root over more leaves.
   pasted into a report — will no longer verify against the new root.
 
 Today roots are final because settlement happens once. That is a real property
-being traded away for the ability to recover from a stale settlement. If
-finality of the published root matters more than recoverability, keep
-settlement once-only and accept the §5 under-payment risk instead. **This is a
-genuine trade-off and the choice belongs to the business, not to me.**
+being traded away for the ability to recover from a stale settlement.
+
+**DECIDED: recoverability wins.** Settlement is monotonic and repeatable, and
+`SettlementRecord.merkle_root` is the LATEST committed root rather than a
+permanently final one. The trade was accepted knowingly because a stale
+settlement that permanently underpays a provider has no recovery at all, while
+a stale exported proof can simply be re-exported.
+
+Carried through to: the program (`settled_amount` is cumulative), the gateway
+(`root_may_advance` on `/v1/session/{s}/settlement`), the SDK (`settle()` and
+`Settlement.merkleRoot`), and the console (the Verifier warns beside the proof
+when the root can still move). Nothing in the product describes the root as
+final.
 
 ---
 
