@@ -7,7 +7,18 @@ use anchor_spl::token_interface::{
 use solana_instructions_sysvar::{load_current_index_checked, load_instruction_at_checked};
 use solana_sdk_ids::{ed25519_program, sysvar::instructions as instructions_sysvar_id};
 
-declare_id!("3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U");
+// A NEW program id, deliberately.
+//
+// `Session` gained `settlement_authority`, which grows the account by 32
+// bytes. Accounts already allocated on devnet were sized without it, so
+// deserialising one with this struct fails — the data is simply too short, and
+// no upgrade can retroactively enlarge an account somebody else paid rent for.
+//
+// The old program therefore keeps running for the sessions it already holds.
+// New sessions open here. Old sessions drain by settling or, after expiry, by
+// the permissionless refund — so nothing can get stuck. See
+// docs/SETTLEMENT_CUSTODY.md §16.
+declare_id!("ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m");
 
 /// Domain separation prefix for claim signatures.
 ///
@@ -33,11 +44,19 @@ pub const SETTLEMENT_SEED: &[u8] = b"settlement";
 pub mod agentpay {
     use super::*;
 
+    /// Opens an escrow session.
+    ///
+    /// `settlement_authority` names who, besides the provider, may later
+    /// trigger settlement. It is recorded immutably and confers no power over
+    /// the amount or the destination. Pass `Pubkey::default()` for
+    /// provider-only settlement, which is the behaviour this program had
+    /// before the field existed.
     pub fn open_session(
         ctx: Context<OpenSession>,
         session_id: [u8; 16],
         deposit_amount: u64,
         expires_at: i64,
+        settlement_authority: Pubkey,
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
 
@@ -54,6 +73,9 @@ pub mod agentpay {
         let session = &mut ctx.accounts.session;
         session.agent = ctx.accounts.agent.key();
         session.provider = ctx.accounts.provider.key();
+        // Written once, here, and never assigned again anywhere in this
+        // program. Grep for `settlement_authority =` to confirm.
+        session.settlement_authority = settlement_authority;
         session.mint = ctx.accounts.mint.key();
         session.vault = ctx.accounts.vault.key();
         session.deposited_total = deposit_amount;
@@ -83,6 +105,7 @@ pub mod agentpay {
             session: session.key(),
             agent: session.agent,
             provider: session.provider,
+            settlement_authority,
             mint: session.mint,
             deposited_total: deposit_amount,
             expires_at,
@@ -100,6 +123,25 @@ pub mod agentpay {
     ) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let session_key = ctx.accounts.session.key();
+
+        // ---- who may trigger this -----------------------------------------
+        //
+        // Either the session's designated settlement authority — a hosted
+        // gateway's OWN key, never the provider's — or the provider itself.
+        //
+        // The provider branch is the fallback that makes the hosted model
+        // safe to depend on: if the gateway is compromised, unavailable, or
+        // simply fired, the provider can still collect what it is owed using
+        // the wallet it already controls, with no service to run.
+        //
+        // A default (all-zero) authority matches no keypair, so a session
+        // opened without one is provider-only — exactly the old behaviour.
+        let settler = ctx.accounts.settler.key();
+        require!(
+            settler == ctx.accounts.session.settlement_authority
+                || settler == ctx.accounts.session.provider,
+            AgentPayError::UnauthorizedSettler
+        );
 
         // Cheap checks first: a forged claim should be rejected before we pay the
         // compute cost of sysvar introspection and byte comparison.
@@ -177,13 +219,90 @@ pub mod agentpay {
         session.cumulative_settled = cumulative_amount;
         session.is_settled = true;
 
-        let record = &mut ctx.accounts.settlement_record;
-        record.session = session_key;
+        // ---- the receipt: create on the first settlement, advance after ----
+        //
+        // Done by hand rather than with `init_if_needed`, which would re-run
+        // the initializer over an existing account. Everything protective here
+        // is a check that could be skipped by accident with that macro:
+        //
+        //   * the address is the right PDA           — seeds on the account
+        //   * a fresh account is owned by the system program, and empty
+        //   * an existing account is owned by THIS program
+        //   * an existing account carries the SettlementRecord discriminator
+        //     (`try_deserialize` refuses anything else)
+        //   * an existing account belongs to THIS session
+        //
+        // Note that nothing below decides whether money moves. The transfer
+        // has already happened, gated by checks that do not involve this
+        // account at all. This is bookkeeping, and it is written last.
+        let record_info = ctx.accounts.settlement_record.to_account_info();
+        let record_is_new = record_info.owner == &anchor_lang::system_program::ID;
+
+        if record_is_new {
+            let space = 8 + SettlementRecord::INIT_SPACE;
+            let lamports = Rent::get()?.minimum_balance(space);
+            let bump = [ctx.bumps.settlement_record];
+            let seeds: &[&[u8]] = &[SETTLEMENT_SEED, session_key.as_ref(), &bump];
+            anchor_lang::system_program::create_account(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.key(),
+                    anchor_lang::system_program::CreateAccount {
+                        from: ctx.accounts.settler.to_account_info(),
+                        to: record_info.clone(),
+                    },
+                    &[seeds],
+                ),
+                lamports,
+                space as u64,
+                &crate::ID,
+            )?;
+        } else {
+            // Not ours, not empty: refuse rather than write through it.
+            require_keys_eq!(
+                *record_info.owner,
+                crate::ID,
+                AgentPayError::SettlementRecordInvalid
+            );
+        }
+
+        let mut record = if record_is_new {
+            SettlementRecord {
+                session: session_key,
+                claim_hash: [0u8; 32],
+                merkle_root: [0u8; 32],
+                settled_at: 0,
+                settled_amount: 0,
+                bump: ctx.bumps.settlement_record,
+            }
+        } else {
+            // Checks the Anchor discriminator. An account of some other type
+            // at this address cannot be mistaken for a receipt.
+            let data = record_info.try_borrow_data()?;
+            let existing = SettlementRecord::try_deserialize(&mut &data[..])
+                .map_err(|_| error!(AgentPayError::SettlementRecordInvalid))?;
+            require_keys_eq!(
+                existing.session,
+                session_key,
+                AgentPayError::SettlementRecordInvalid
+            );
+            existing
+        };
+
         record.claim_hash = solana_sha256_hasher::hash(&expected).to_bytes();
         record.merkle_root = merkle_root;
         record.settled_at = now;
-        record.settled_amount = delta;
+        // CUMULATIVE, not the delta of this transaction.
+        //
+        // Under repeatable settlement a per-transaction delta would be
+        // meaningless to a reader: the last one would say 650 for a session
+        // that paid out 750. This field answers "how much has this session
+        // paid in total", which is the question anybody asking has.
+        record.settled_amount = cumulative_amount;
         record.bump = ctx.bumps.settlement_record;
+
+        let mut out = record_info.try_borrow_mut_data()?;
+        record.try_serialize(&mut &mut out[..])?;
+        drop(out);
 
         emit!(SessionSettled {
             session: session_key,
@@ -381,7 +500,27 @@ fn verify_ed25519_claim(
 #[derive(InitSpace)]
 pub struct Session {
     pub agent: Pubkey,
+    /// The payee, and the ONLY destination this session's funds can reach.
+    ///
+    /// Part of the session PDA seeds, so it cannot be changed after the session
+    /// is opened — not by the provider, not by the gateway, not by this
+    /// program. A provider rotating its wallet affects future sessions only.
     pub provider: Pubkey,
+    /// Who else, besides the provider, may TRIGGER settlement.
+    ///
+    /// This is a permission to submit, not a permission to receive. It cannot
+    /// change the amount — that is fixed by the agent's Ed25519 signature over
+    /// the claim — and it cannot change the destination, which is bound to
+    /// `provider` above. A hosted gateway holds its OWN key here and therefore
+    /// never holds the provider's.
+    ///
+    /// `Pubkey::default()` (all zeros) disables the second settler: no keypair
+    /// corresponds to it, so only the provider can settle. That is the exact
+    /// behaviour of the program before this field existed, which makes it the
+    /// correct value for a caller that does not know what to pass.
+    ///
+    /// Immutable for the life of the session, like everything else here.
+    pub settlement_authority: Pubkey,
     pub mint: Pubkey,
     pub vault: Pubkey,
     pub deposited_total: u64,
@@ -450,8 +589,18 @@ pub struct OpenSession<'info> {
 
 #[derive(Accounts)]
 pub struct SettleSession<'info> {
+    /// Whoever is submitting this settlement, and the rent payer.
+    ///
+    /// Formerly `provider: Signer`. The handler checks this key against the
+    /// session's `settlement_authority` OR its `provider`; being a signer here
+    /// grants nothing on its own.
+    ///
+    /// Note what this signature does NOT control: not the amount, which the
+    /// agent's Ed25519 signature fixes, and not the destination, which is
+    /// bound to `session.provider` below. A settler can only choose *when*,
+    /// and *which already-signed claim*.
     #[account(mut)]
-    pub provider: Signer<'info>,
+    pub settler: Signer<'info>,
 
     #[account(
         mut,
@@ -462,22 +611,30 @@ pub struct SettleSession<'info> {
             session.session_id.as_ref(),
         ],
         bump = session.bump,
-        has_one = provider @ AgentPayError::UnauthorizedSettler,
         has_one = mint @ AgentPayError::MintMismatch,
         has_one = vault @ AgentPayError::VaultMismatch,
     )]
     pub session: Account<'info, Session>,
 
-    // `init` is the double-settle defence: the second attempt fails at account
-    // creation because this PDA already exists.
+    /// The settlement receipt. Created on the first settlement, advanced on
+    /// every later one.
+    ///
+    /// `UncheckedAccount` rather than `Account` or `init_if_needed`, and this
+    /// is deliberate. `init_if_needed` re-runs the initializer against an
+    /// account that already exists, and repeatable settlement depends on NOT
+    /// resetting the state we are about to compare against. The handler does
+    /// the create-or-advance explicitly and checks the owner and the
+    /// discriminator itself.
+    ///
+    /// CHECK: constrained to the correct PDA by the seeds below; ownership and
+    /// the Anchor discriminator are validated in the handler before any read
+    /// or write.
     #[account(
-        init,
-        payer = provider,
-        space = 8 + SettlementRecord::INIT_SPACE,
+        mut,
         seeds = [SETTLEMENT_SEED, session.key().as_ref()],
         bump,
     )]
-    pub settlement_record: Account<'info, SettlementRecord>,
+    pub settlement_record: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -486,10 +643,16 @@ pub struct SettleSession<'info> {
     )]
     pub vault: InterfaceAccount<'info, TokenAccount>,
 
+    /// The ONLY account this session's funds can reach.
+    ///
+    /// Constrained against `session.provider` — the field baked into the
+    /// session PDA's own seeds — rather than against any account the caller
+    /// supplies. There is no input to this instruction that can redirect a
+    /// payment, which is the property the whole custody design rests on.
     #[account(
         mut,
         constraint = provider_token_account.mint == mint.key() @ AgentPayError::MintMismatch,
-        constraint = provider_token_account.owner == provider.key() @ AgentPayError::TokenAccountOwnerMismatch,
+        constraint = provider_token_account.owner == session.provider @ AgentPayError::TokenAccountOwnerMismatch,
     )]
     pub provider_token_account: InterfaceAccount<'info, TokenAccount>,
 
@@ -546,6 +709,7 @@ pub struct SessionOpened {
     pub session: Pubkey,
     pub agent: Pubkey,
     pub provider: Pubkey,
+    pub settlement_authority: Pubkey,
     pub mint: Pubkey,
     pub deposited_total: u64,
     pub expires_at: i64,
@@ -588,8 +752,10 @@ pub enum AgentPayError {
     ClaimExceedsDeposit,
     #[msg("ERR_PAYOUT_EXCEEDS_DEPOSIT: settled plus refunded would exceed deposit")]
     PayoutExceedsDeposit,
-    #[msg("ERR_UNAUTHORIZED_SETTLER: signer is not the designated provider")]
+    #[msg("ERR_UNAUTHORIZED_SETTLER: signer is neither the settlement authority nor the provider")]
     UnauthorizedSettler,
+    #[msg("ERR_SETTLEMENT_RECORD_INVALID: settlement record is not a receipt for this session")]
+    SettlementRecordInvalid,
     #[msg("ERR_UNAUTHORIZED_REFUND: only the agent may refund before expiry")]
     UnauthorizedRefund,
     #[msg("ERR_SESSION_STILL_ACTIVE: session is unsettled and not yet expired")]

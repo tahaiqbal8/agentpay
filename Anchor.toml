@@ -5,10 +5,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-agentpay = "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U"
+agentpay = "ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m"
 
 [programs.devnet]
-agentpay = "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U"
+agentpay = "ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m"
 
 [provider]
 cluster = "localnet"
