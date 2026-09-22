@@ -210,6 +210,46 @@ export async function expectRawError(
   );
 }
 
+/**
+ * Reads a SettlementRecord straight off the account data.
+ *
+ * Not via the IDL, and that is a consequence of program v2 worth knowing:
+ * `settlement_record` is an `UncheckedAccount` now, because the create-or-
+ * advance lifecycle cannot be expressed with a typed `Account`. Anchor only
+ * emits account types it sees used typed, so `SettlementRecord` no longer
+ * appears in the IDL and `program.account.settlementRecord` does not exist.
+ *
+ * Nothing in the product depended on that: the gateway has always decoded this
+ * account by offset. These are the same offsets `gateway/src/chain.rs` uses.
+ */
+export async function readSettlementRecord(
+  connection: Connection,
+  address: PublicKey
+): Promise<{
+  session: PublicKey;
+  claimHash: Buffer;
+  merkleRoot: number[];
+  settledAt: bigint;
+  settledAmount: bigint;
+  bump: number;
+}> {
+  const info = await connection.getAccountInfo(address, "confirmed");
+  if (!info) throw new Error(`settlement record ${address.toBase58()} does not exist`);
+  const d = info.data;
+  const expected = 8 + 32 + 32 + 32 + 8 + 8 + 1;
+  if (d.length !== expected) {
+    throw new Error(`settlement record is ${d.length} bytes, expected ${expected}`);
+  }
+  return {
+    session: new PublicKey(d.subarray(8, 40)),
+    claimHash: Buffer.from(d.subarray(40, 72)),
+    merkleRoot: Array.from(d.subarray(72, 104)),
+    settledAt: d.readBigInt64LE(104),
+    settledAmount: d.readBigUInt64LE(112),
+    bump: d[120],
+  };
+}
+
 export function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -418,6 +458,8 @@ export function makeProvider(): anchor.AnchorProvider {
 export interface Fixture {
   agent: Keypair;
   provider: Keypair;
+  /** Recorded immutably on the session. See `newFixture`. */
+  settlementAuthority: PublicKey;
   sessionId: Buffer;
   session: PublicKey;
   vault: PublicKey;
@@ -500,6 +542,15 @@ export class Env {
     deposit?: bigint;
     agentBalance?: bigint;
     expiresInSecs?: number;
+    /**
+     * Who — besides the provider — may trigger settlement for this session.
+     *
+     * Omitted means `PublicKey.default` (all zeros), which matches no keypair
+     * and therefore makes the session provider-only. That is the program's
+     * behaviour before the field existed, so an un-updated caller gets the
+     * strictest option rather than a surprise.
+     */
+    settlementAuthority?: PublicKey;
   }): Promise<Fixture> {
     const deposit = opts?.deposit ?? 5n * ONE_USDC;
     const agentBalance = opts?.agentBalance ?? deposit;
@@ -595,6 +646,7 @@ export class Env {
     return {
       agent,
       provider,
+      settlementAuthority: opts?.settlementAuthority ?? PublicKey.default,
       sessionId,
       session,
       vault: deriveVault(this.programId, session),
@@ -653,7 +705,8 @@ export class Env {
       .openSession(
         Array.from(f.sessionId),
         new anchor.BN(f.deposit.toString()),
-        new anchor.BN(f.expiresAt)
+        new anchor.BN(f.expiresAt),
+        f.settlementAuthority
       )
       .accountsPartial({
         agent: f.agent.publicKey,

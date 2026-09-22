@@ -24,6 +24,7 @@ import {
   isLocalCluster,
   makeProvider,
   ONE_USDC,
+  readSettlementRecord,
   sleep,
   throttle,
   USDC_DECIMALS,
@@ -115,7 +116,10 @@ async function settleOnce(f: Fixture, opts: SettleOpts): Promise<string> {
       opts.merkleRoot ?? DEMO_ROOT
     )
     .accountsPartial({
-      provider: settler.publicKey,
+      // Renamed from `provider` in program v2: being a signer here grants
+      // nothing on its own — the handler checks this key against the session's
+      // settlement_authority OR its provider.
+      settler: settler.publicKey,
       session: f.session,
       settlementRecord: opts.settlementRecord ?? f.settlementRecord,
       vault: opts.vault ?? f.vault,
@@ -235,9 +239,11 @@ describe("happy path", () => {
     assert.strictEqual(BigInt(sess.cumulativeSettled.toString()), used);
     assert.isTrue(sess.isSettled);
 
-    const rec = await acct.settlementRecord.fetch(f.settlementRecord);
-    assert.strictEqual(BigInt(rec.settledAmount.toString()), used);
-    assert.deepStrictEqual(Array.from(rec.merkleRoot), DEMO_ROOT);
+    // Decoded by offset: program v2 made this an UncheckedAccount, so it is no
+    // longer in the IDL. See `readSettlementRecord`.
+    const rec = await readSettlementRecord(env.connection, f.settlementRecord);
+    assert.strictEqual(rec.settledAmount, used);
+    assert.deepStrictEqual(rec.merkleRoot, DEMO_ROOT);
 
     await refund(f);
     assert.strictEqual(await env.tokenBalance(f.agentAta), 5n * ONE_USDC - used);
@@ -292,23 +298,47 @@ describe("settle_session attacks", () => {
     await settle(f, { cumulative: ONE_USDC });
 
     // Byte-identical resubmission of a claim that already settled.
-    await expectRawError(
+    //
+    // Program v2 changed WHICH defence catches this, not whether it is caught.
+    // It used to fail at account creation, because the receipt PDA already
+    // existed. Settlement is repeatable now, so the receipt is no longer the
+    // guard — the monotonic check is, and it is the stronger statement: the
+    // rule is "the cumulative must increase", not "this account is taken".
+    await expectAnchorError(
       settle(f, { cumulative: ONE_USDC }),
-      /already in use|custom program error: 0x0/i
+      "ClaimNotMonotonic"
     );
     assert.strictEqual(await env.tokenBalance(f.providerAta), ONE_USDC);
   });
 
-  it("rejects a second settle at a higher cumulative", async function () {
+  it("ALLOWS a second settle at a higher cumulative, and transfers only the delta", async function () {
     this.timeout(60_000);
+    // This test was inverted in program v2, deliberately.
+    //
+    // It used to assert that a second settlement was refused. That behaviour
+    // was the bug the custody redesign set out to fix: with a create-once
+    // receipt, whoever settled FIRST fixed the payout forever, so a stale or
+    // hostile settler could permanently underpay the provider and the
+    // remainder went back to the agent.
+    //
+    // Settlement is monotonic and repeatable now. Settling again at a higher
+    // cumulative moves the difference and nothing more. See
+    // docs/SETTLEMENT_CUSTODY.md §5 and tests/custody.ts 11, 20.
     const f = await env.newFixture();
     await env.openSession(f);
     await settle(f, { cumulative: ONE_USDC });
-    await expectRawError(
-      settle(f, { cumulative: 2n * ONE_USDC, nonce: 2n }),
-      /already in use|custom program error: 0x0/i
+    await settle(f, { cumulative: 2n * ONE_USDC, nonce: 2n });
+
+    assert.strictEqual(
+      await env.tokenBalance(f.providerAta),
+      2n * ONE_USDC,
+      "the second settlement must pay the delta, not the full amount again"
     );
-    assert.strictEqual(await env.tokenBalance(f.providerAta), ONE_USDC);
+    assert.strictEqual(
+      await env.tokenBalance(f.vault),
+      f.deposit - 2n * ONE_USDC,
+      "the vault must have given up exactly the delta"
+    );
   });
 
   it("rejects a non-monotonic (zero) cumulative", async function () {
@@ -415,20 +445,29 @@ describe("settle_session attacks", () => {
     );
   });
 
-  it("rejects settlement by a wallet that is not the designated provider", async function () {
+  it("rejects settlement by a wallet that is not an authorized settler", async function () {
     this.timeout(60_000);
     const f = await env.newFixture();
     await env.openSession(f);
     const attacker = await env.newFundedKeypair();
     const attackerAta = await env.createAta(attacker.publicKey);
+
+    // Two independent defences stop this, and which one speaks first is a
+    // matter of evaluation order, not of strength. Anchor evaluates ACCOUNT
+    // constraints before the handler body runs, so when the attacker also
+    // names their own token account the destination check fires first.
+    //
+    // `UnauthorizedSettler` is proven separately, with a correct destination,
+    // in tests/custody.ts 3 — where it is the only thing that can reject.
     await expectAnchorError(
       settle(f, {
         cumulative: ONE_USDC,
         settler: attacker,
         providerTokenAccount: attackerAta,
       }),
-      "UnauthorizedSettler"
+      "TokenAccountOwnerMismatch"
     );
+    assert.strictEqual(await env.tokenBalance(attackerAta), 0n);
   });
 
   it("rejects a substituted provider token account", async function () {
