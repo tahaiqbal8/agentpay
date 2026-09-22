@@ -126,9 +126,17 @@ pub fn build_ed25519_instruction(
 
 /// Account order must match the IDL exactly; Anchor matches positionally.
 #[allow(clippy::too_many_arguments)]
+/// Builds the `settle_session` instruction.
+///
+/// The account list is identical between program v1 and v2 — same accounts, in
+/// the same order. Only the FIRST one changed meaning: v1 required it to be the
+/// provider, v2 accepts either the session's settlement authority or the
+/// provider. Nothing about the encoding needs to branch on the version.
 pub fn build_settle_instruction(
     program_id: &Pubkey,
-    provider: &Pubkey,
+    // The transaction signer. The provider under v1; under v2 either the
+    // session's settlement authority or the provider.
+    settler: &Pubkey,
     session: &Pubkey,
     settlement_record: &Pubkey,
     vault: &Pubkey,
@@ -148,7 +156,7 @@ pub fn build_settle_instruction(
     Instruction {
         program_id: *program_id,
         accounts: vec![
-            AccountMeta::new(*provider, true),
+            AccountMeta::new(*settler, true),
             AccountMeta::new(*session, false),
             AccountMeta::new(*settlement_record, false),
             AccountMeta::new(*vault, false),
@@ -179,7 +187,18 @@ pub struct SettlementOutcome {
 pub async fn submit_settlement(
     rpc: &RpcClient,
     program_id: &Pubkey,
-    provider_keypair: &Keypair,
+    // Whoever signs and pays. Under v2 this is the gateway's own settlement
+    // authority and is NOT the provider.
+    settler: &Keypair,
+    // The session's immutable payee, read from the session account.
+    //
+    // Deliberately NOT derived from `settler`. It used to be, because under v1
+    // the two were the same key — under v2 that would send the money to the
+    // gateway's own token account. The program would refuse it
+    // (`provider_token_account.owner == session.provider`), so the mistake
+    // costs a failed transaction rather than funds, but the destination
+    // belongs to the session and is read from it.
+    provider: &Pubkey,
     session: &Pubkey,
     mint: &Pubkey,
     claim: &Claim,
@@ -195,9 +214,9 @@ pub async fn submit_settlement(
 
     let (vault, _) = derive_vault(program_id, session);
     let (settlement_record, _) = derive_settlement_record(program_id, session);
-    let provider = provider_keypair.pubkey();
+    let settler_key = settler.pubkey();
     let provider_token_account =
-        derive_associated_token_account(&provider, &token_program, mint);
+        derive_associated_token_account(provider, &token_program, mint);
 
     let message = claim.signing_bytes();
     debug_assert_eq!(message.len(), CLAIM_MESSAGE_LEN);
@@ -205,7 +224,7 @@ pub async fn submit_settlement(
     let ed25519_ix = build_ed25519_instruction(agent, signature, &message);
     let settle_ix = build_settle_instruction(
         program_id,
-        &provider,
+        &settler_key,
         session,
         &settlement_record,
         &vault,
@@ -224,8 +243,8 @@ pub async fn submit_settlement(
     // Order is load-bearing: the precompile must immediately precede settle.
     let tx = Transaction::new_signed_with_payer(
         &[ed25519_ix, settle_ix],
-        Some(&provider),
-        &[provider_keypair],
+        Some(&settler_key),
+        &[settler],
         blockhash,
     );
 
@@ -363,6 +382,55 @@ mod tests {
         }
         assert_eq!(ix.accounts[6].pubkey, instructions_sysvar::ID);
         assert_eq!(ix.accounts[8].pubkey, solana_sdk_ids::system_program::ID);
+    }
+
+    /// The settler and the payee are independent, and the instruction proves
+    /// it: a settlement signed by AgentPay's authority must still name the
+    /// PROVIDER's token account.
+    ///
+    /// This is the test behind the claim "AgentPay does not hold provider
+    /// private keys for new sessions". If the destination were ever derived
+    /// from the signer again — as it was under v1, where the two were the same
+    /// key — a v2 settlement would try to pay the gateway itself.
+    #[test]
+    fn the_destination_comes_from_the_provider_not_the_signer() {
+        let program_id = Pubkey::new_from_array([2u8; 32]);
+        let authority = Pubkey::new_from_array([9u8; 32]); // AgentPay's own key
+        let provider_ata = Pubkey::new_from_array([6u8; 32]); // the provider's
+
+        let ix = build_settle_instruction(
+            &program_id,
+            &authority,
+            &Pubkey::new_from_array([1u8; 32]),
+            &Pubkey::new_from_array([4u8; 32]),
+            &Pubkey::new_from_array([5u8; 32]),
+            &provider_ata,
+            &Pubkey::new_from_array([7u8; 32]),
+            &Pubkey::new_from_array([8u8; 32]),
+            &Claim {
+                session: Pubkey::new_from_array([1u8; 32]),
+                cumulative_amount: 1,
+                nonce: 1,
+                expires_at: 1,
+            },
+            &[0u8; 32],
+        );
+
+        // Account 0 is the signer, and it is AgentPay's authority.
+        assert_eq!(ix.accounts[0].pubkey, authority);
+        assert!(ix.accounts[0].is_signer);
+
+        // Account 4 is the destination, and it is the PROVIDER's — not the
+        // signer's, and not derived from it.
+        assert_eq!(ix.accounts[4].pubkey, provider_ata);
+        assert_ne!(
+            ix.accounts[4].pubkey, authority,
+            "the settlement is paying its own signer"
+        );
+
+        // And the authority appears exactly once: as the signer, nowhere else.
+        let appearances = ix.accounts.iter().filter(|a| a.pubkey == authority).count();
+        assert_eq!(appearances, 1, "the settler must not be any other account");
     }
 
     #[test]

@@ -22,7 +22,25 @@ pub struct Config {
     /// redirect funds anywhere except the provider's own account, and cannot
     /// exceed the agent's signed cumulative claim. It is optional so the
     /// gateway can run in verify-only mode with no signing key present at all.
+    /// LEGACY. The provider's own signing key.
+    ///
+    /// Required only to settle sessions opened under the ORIGINAL program,
+    /// which demands `provider: Signer`. A hosted deployment that holds this
+    /// is a custodian of somebody else's key — which is precisely what program
+    /// v2 removes — so it exists to drain the migration and retires with it.
+    ///
+    /// NOT reused for the new authority. A separate variable, deliberately: an
+    /// operator must never be able to point the hosted settlement authority at
+    /// a provider key by editing one line.
     pub provider_keypair_path: Option<String>,
+
+    /// AgentPay's OWN settlement-authority key.
+    ///
+    /// Signs settlements for v2 sessions. It is not, and must never be, a
+    /// provider key: it can only trigger a settlement, never choose the amount
+    /// (the agent's Ed25519 signature fixes that) and never choose the
+    /// destination (the program binds it to `session.provider`).
+    pub settlement_authority_keypair_path: Option<String>,
     /// Postgres connection string.
     ///
     /// When absent the gateway falls back to the in-memory store, which does
@@ -132,6 +150,8 @@ impl Config {
         // a keypair at path "" and exit at startup — a confusing failure for
         // something the operator deliberately left blank.
         let provider_keypair_path = optional_env("AGENTPAY_PROVIDER_KEYPAIR");
+        let settlement_authority_keypair_path =
+            optional_env("AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR");
         let database_url = optional_env("DATABASE_URL");
         let trust_open_requests =
             std::env::var("AGENTPAY_TRUST_OPEN_REQUESTS").is_ok_and(|v| v == "1");
@@ -182,6 +202,7 @@ impl Config {
             rpc_url,
             program_id,
             provider_keypair_path,
+            settlement_authority_keypair_path,
             admin_token,
             open_rate_limit,
             general_rate_limit,

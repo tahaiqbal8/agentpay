@@ -238,6 +238,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // AgentPay's OWN key. Not a provider key, and the two are read from
+    // different variables so that no edit can quietly turn one into the other.
+    let settlement_authority = match &config.settlement_authority_keypair_path {
+        Some(path) => {
+            let kp = load_keypair(path)?;
+            info!(
+                settlement_authority = %kp.pubkey(),
+                "v2 settlement enabled — AgentPay holds no provider key for these sessions"
+            );
+            Some(Arc::new(kp))
+        }
+        None => {
+            warn!(
+                "AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR is not set; v2 sessions cannot \
+                 be settled by this gateway. Providers can still settle their own."
+            );
+            None
+        }
+    };
+
     // One RPC client, shared. Previously this was created only when a provider
     // keypair existed, which tied reading the chain to being able to settle;
     // reconciliation needs to read regardless.
@@ -354,8 +374,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clock: Arc::new(system_clock),
         // Settlement additionally needs a signing key; without one it stays
         // verify-only even though the RPC client exists.
-        rpc: provider_keypair.as_ref().map(|_| Arc::clone(&rpc)),
+        // The RPC is needed to settle EITHER kind of session, so it is present
+        // when either key is. Previously it was tied to the provider key alone,
+        // which would have left a v2-only deployment unable to settle at all.
+        rpc: (provider_keypair.is_some() || settlement_authority.is_some())
+            .then(|| Arc::clone(&rpc)),
         provider_keypair,
+        settlement_authority,
         session_fetcher,
         upstream,
         network: config.network.clone(),

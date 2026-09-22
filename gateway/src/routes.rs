@@ -42,7 +42,14 @@ pub struct AppState {
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// None when running verify-only with no signing key configured.
     pub rpc: Option<Arc<RpcClient>>,
+    /// LEGACY: the provider's own key, for settling v1 sessions only.
     pub provider_keypair: Option<Arc<Keypair>>,
+    /// AgentPay's own settlement-authority key, for settling v2 sessions.
+    ///
+    /// Holding this is not custody of anything: it can trigger a settlement
+    /// and nothing else. The amount is fixed by the agent's signature and the
+    /// destination by `session.provider`, both inside the program.
+    pub settlement_authority: Option<Arc<Keypair>>,
     /// Reads `Session` accounts for `/v1/session/open` reconciliation.
     /// `None` only when reconciliation is explicitly disabled.
     pub session_fetcher: Option<Arc<dyn SessionAccountFetcher>>,
@@ -179,6 +186,22 @@ pub struct HealthResponse {
     pub ephemeral_state: bool,
     /// "POSTGRES" or "EPHEMERAL_IN_MEMORY".
     pub state_backend: &'static str,
+    /// The settlement authority an agent should bind when it opens a session.
+    ///
+    /// Published because the agent has to know it at `open_session` time, and
+    /// the alternative — pasting it into every client's configuration — is how
+    /// a wrong key ends up bound to a session that can then never be settled
+    /// by this gateway.
+    ///
+    /// A PUBLIC key. Publishing it grants nothing: holding the matching secret
+    /// only permits triggering a settlement, never choosing its amount or its
+    /// destination.
+    ///
+    /// `None` on a gateway with no authority configured, which is a legitimate
+    /// verify-only deployment. An agent seeing `None` should bind
+    /// `Pubkey::default()` and settle through its provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settlement_authority: Option<String>,
 }
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -191,6 +214,10 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
         } else {
             "EPHEMERAL_IN_MEMORY"
         },
+        settlement_authority: state
+            .settlement_authority
+            .as_ref()
+            .map(|k| k.pubkey().to_string()),
     })
 }
 
@@ -980,10 +1007,8 @@ pub async fn settle_session(
         }
     };
 
-    // Verify-only deployments have no signing key and cannot settle. Say so
-    // explicitly rather than failing somewhere deeper.
-    let (Some(rpc), Some(provider_keypair)) = (&state.rpc, &state.provider_keypair) else {
-        warn!(request_id = %rid, "settle requested but no provider keypair is configured");
+    let Some(rpc) = &state.rpc else {
+        warn!(request_id = %rid, "settle requested but no RPC is configured");
         return Err(Denial::new(ReasonCode::ERR_SETTLEMENT_UNAVAILABLE, &rid));
     };
 
@@ -999,28 +1024,90 @@ pub async fn settle_session(
     let Some(highest) = record.highest_claim else {
         return Err(Denial::new(ReasonCode::ERR_NOTHING_TO_SETTLE, &rid));
     };
-    if provider_keypair.pubkey() != record.provider {
-        error!(
-            request_id = %rid,
-            configured = %provider_keypair.pubkey(),
-            expected = %record.provider,
-            "configured provider key does not match the session's provider"
-        );
-        return Err(Denial::new(ReasonCode::ERR_WRONG_PROVIDER_KEY, &rid));
-    }
+
+    // ---- which key signs this settlement -----------------------------------
+    //
+    // Decided by asking the CHAIN what kind of session this is, not by reading
+    // configuration. The session account's length is its version and its owner
+    // is its program, and both are facts the gateway cannot get wrong by being
+    // misconfigured.
+    //
+    //   v2 session -> the gateway's OWN settlement authority signs. AgentPay
+    //                 holds no provider key, and cannot: the destination is
+    //                 bound to session.provider inside the program.
+    //   v1 session -> only the provider's key can settle, because the old
+    //                 program requires `provider: Signer`. That legacy path
+    //                 exists solely to drain sessions opened before the
+    //                 cutover and retires with them.
+    let session_version = state
+        .session_fetcher
+        .as_ref()
+        .map(|f| f.fetch(&session))
+        .ok_or_else(|| Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid))?
+        .await
+        .ok()
+        .flatten()
+        .map(|(_, data)| data.len());
+
+    let is_v2 = match session_version {
+        Some(len) => len == crate::chain::SESSION_ACCOUNT_LEN_V2,
+        // Fail closed. Guessing the version picks a signing key, and picking
+        // the wrong one submits a transaction the program will refuse.
+        None => {
+            warn!(request_id = %rid, session = %session, "cannot read the session account");
+            return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
+        }
+    };
+
+    let settler: &Keypair = if is_v2 {
+        let Some(authority) = state.settlement_authority.as_ref() else {
+            warn!(
+                request_id = %rid,
+                "a v2 session needs AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR, which is not set"
+            );
+            return Err(Denial::new(ReasonCode::ERR_SETTLEMENT_UNAVAILABLE, &rid));
+        };
+        authority
+    } else {
+        // LEGACY PATH. Only reachable for sessions opened under the old
+        // program, and only while any remain.
+        let Some(provider_keypair) = state.provider_keypair.as_ref() else {
+            warn!(
+                request_id = %rid,
+                "a v1 session needs the legacy AGENTPAY_PROVIDER_KEYPAIR, which is not set"
+            );
+            return Err(Denial::new(ReasonCode::ERR_SETTLEMENT_UNAVAILABLE, &rid));
+        };
+        if provider_keypair.pubkey() != record.provider {
+            error!(
+                request_id = %rid,
+                configured = %provider_keypair.pubkey(),
+                expected = %record.provider,
+                "configured provider key does not match the session's provider"
+            );
+            return Err(Denial::new(ReasonCode::ERR_WRONG_PROVIDER_KEY, &rid));
+        }
+        provider_keypair
+    };
 
     info!(
         request_id = %rid,
         session = %session,
         cumulative = highest.claim.cumulative_amount,
         nonce = highest.claim.nonce,
+        program_version = if is_v2 { "v2" } else { "v1 (legacy)" },
+        settler = %settler.pubkey(),
+        provider = %record.provider,
         "submitting settlement"
     );
 
     let outcome = submit_settlement(
         rpc,
         &state.program_id,
-        provider_keypair,
+        settler,
+        // The payee comes from the SESSION, never from the signer. Under v2
+        // those are different keys.
+        &record.provider,
         &session,
         &record.mint,
         &highest.claim,
