@@ -691,15 +691,27 @@ export class Env {
     };
   }
 
-  /** A funded keypair for tests that need an extra actor (attacker, rescuer). */
-  async newFundedKeypair(): Promise<Keypair> {
+  /**
+   * A funded keypair for tests that need an extra actor (attacker, rescuer).
+   *
+   * `publicClusterLamports` overrides the default on a PUBLIC cluster only.
+   * The default suits a keypair that signs once or twice; a keypair that pays
+   * rent repeatedly needs more, and on devnet it will otherwise run dry
+   * mid-suite. The failure is confusing when it happens — the program succeeds
+   * and the transaction still fails, because the signer itself drops below
+   * rent-exemption — so the amount is a parameter rather than something a
+   * caller has to discover.
+   *
+   * On a local validator the default is already 2 SOL and costs nothing.
+   */
+  async newFundedKeypair(publicClusterLamports?: number): Promise<Keypair> {
     const kp = Keypair.generate();
     await fundSol(
       this.connection,
       kp.publicKey,
       isLocalCluster(this.connection)
         ? 2 * LAMPORTS_PER_SOL
-        : LAMPORTS_PER_TEST_KEYPAIR,
+        : publicClusterLamports ?? LAMPORTS_PER_TEST_KEYPAIR,
       this.payer
     );
     return kp;

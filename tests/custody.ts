@@ -181,7 +181,13 @@ describe("settlement custody (program v2)", function () {
     // meaningless against the original program.
     program = programFor("v2", provider);
     env = await Env.create(program, provider);
-    gateway = await env.newFundedKeypair();
+    // The settlement authority signs most of the suite, and every FIRST
+    // settlement of a session makes it pay the SettlementRecord's rent. Across
+    // twenty tests that is well past the default test-keypair funding, and on
+    // devnet the shortfall surfaces as "insufficient funds for rent" AFTER the
+    // program has already succeeded — which reads like a program bug and is
+    // not one. 0.2 SOL is ample; on a local validator this argument is ignored.
+    gateway = await env.newFundedKeypair(0.2 * 1_000_000_000);
     console.log(`    settlement authority (gateway): ${gateway.publicKey.toBase58()}`);
     console.log(`    program: ${program.programId.toBase58()}`);
   });
