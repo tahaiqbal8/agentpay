@@ -9,7 +9,16 @@
 | **Network** | Solana Devnet |
 | **Protocol** | V2 |
 | **Program** | `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` |
-| **Console** | http://127.0.0.1:3100 |
+| **Deployed at** | https://13-200-171-103.sslip.io |
+
+```
+https://13-200-171-103.sslip.io
+```
+
+> **Live now.** A settled session is already verifiable there — judges need
+> nothing installed.
+
+To run the whole lifecycle again, in front of them:
 
 ```bash
 npm run demo:v2
@@ -191,35 +200,52 @@ The claim is admitted **before** the request is forwarded. That is why a refused
 
 ## 8. Live demo — exact commands
 
-```bash
-cd ~/Projects/AgentPay
-```
+AgentPay is deployed and running. Judges do not need anything installed — they
+open a URL.
+
+> ### THE URL
+>
+> ## https://13-200-171-103.sslip.io
+>
+> Real HTTPS, Let's Encrypt certificate. A session is already settled and
+> verifiable there right now.
+
+### Before the judges arrive — 30 seconds
 
 ```bash
-docker compose ps
+ssh ubuntu@13.200.171.103 'cd ~/AgentPay && sudo docker compose ps'
 ```
 
 *Expect four services — `gateway`, `postgres`, `provider`, `web` — all `running (healthy)`.*
 
 ```bash
-curl -s localhost:8080/health | python3 -m json.tool
+curl -s https://13-200-171-103.sslip.io/ -o /dev/null -w '%{http_code}\n'
 ```
 
-*Expect `"status": "ok"`, `"state_backend": "POSTGRES"`, and `program_id` ending `…bwe8hTx7TpS9m`.*
+*Expect `200`.*
 
----
+### To run a fresh lifecycle live
 
 > ## ONE COMMAND FOR THE JUDGE
 >
 > ```bash
-> npm run demo:v2
+> ssh ubuntu@13.200.171.103 'cd ~/AgentPay && npm run demo:v2'
 > ```
 >
-> Nothing else. Do not offer alternatives.
+> On the server itself it is simply `npm run demo:v2`. Nothing else. Do not
+> offer alternatives.
 
----
+Runtime is roughly two to three minutes against public devnet. It spends about
+0.02–0.05 devnet SOL in rent and fees. Each run creates its own agent, escrow
+and session — it never reuses the last one.
 
-Runtime is roughly two to three minutes against public devnet. It spends about 0.02–0.05 devnet SOL in rent and fees.
+### ⚠ Use the HTTPS URL, never the IP and port
+
+`http://13.200.171.103:3100` is closed at the firewall, deliberately. If the
+console is ever served over plain HTTP on an IP address, browsers withhold
+`crypto.subtle` — the page is not a *secure context* — and the Verifier cannot
+recompute anything. It then displays **"DOES NOT VERIFY"**, which looks like a
+failure and is not one. Section 11 explains this.
 
 ---
 
@@ -258,8 +284,8 @@ Runtime is roughly two to three minutes against public devnet. It spends about 0
 
 **What the judge sees:**
 ```
-session PDA                  6sTkEPT93VRGbLZhUXKGQdP8C9K5c1LRiwBpSFK2TvKQ
-settlement_authority (chain) DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s
+session PDA                  86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ
+settlement_authority (chain) 7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
 PASS  session account is 219 bytes     the v2 layout
 ```
 
@@ -332,7 +358,7 @@ PASS  hash chain intact
 ```
 provider balance after   0 -> 1500  (+1500)
 vault balance after      3000000 -> 2998500  (-1500)
-transaction signers      DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s
+transaction signers      7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
 PASS  the provider key never signed
 ```
 
@@ -352,13 +378,13 @@ PASS  the provider key never signed
 
 ## 10. Browser demo
 
-Console: **http://127.0.0.1:3100**
+Console: **https://13-200-171-103.sslip.io**
 
 | Route | Show | Priority |
 | --- | --- | --- |
 | `/` | Payment lifecycle strip, KPIs, Security controls panel | **High** |
-| `/session/6sTkEPT93VRGbLZhUXKGQdP8C9K5c1LRiwBpSFK2TvKQ` | Escrow figures, 9-of-9 lifecycle, claim activity | **High** |
-| `/verifier?session=6sTkEPT93VRGbLZhUXKGQdP8C9K5c1LRiwBpSFK2TvKQ` | Three-root verification | **Highest** |
+| `/session/86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ` | Escrow figures, 9-of-9 lifecycle, claim activity | **High** |
+| `/verifier?session=86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ` | Three-root verification | **Highest** |
 | `/settle` | Settlement flow and the latest committed root | **High** |
 | `/agents` | The envelope that bounds the agent | Medium |
 | `/approvals` | Per-purchase human control | Medium |
@@ -384,7 +410,7 @@ This is the screen that wins the room. Open it, click the red entry, stop talkin
         ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
         │  BROWSER ROOT   │   │  GATEWAY ROOT   │   │  ON-CHAIN ROOT  │
         │     MATCH       │ = │     MATCH       │ = │     MATCH       │
-        │  d3a6a55f…e22f  │   │  d3a6a55f…e22f  │   │  d3a6a55f…e22f  │
+        │  2c3ca194…e9b5  │   │  2c3ca194…e9b5  │   │  2c3ca194…e9b5  │
         │  computed here  │   │    reported     │   │    committed    │
         └─────────────────┘   └─────────────────┘   └─────────────────┘
 
@@ -401,6 +427,29 @@ Three independent sources:
 
 **Do not overclaim.** This proves one decision is covered by a root committed on Solana. It does not prove the gateway is honest about decisions it never logged, and it is not an audit of the program.
 
+### Why this page needs HTTPS
+
+The browser leg is done with **WebCrypto** (`crypto.subtle`), and browsers only
+expose that API in a **secure context** — HTTPS, or `localhost`. Over plain HTTP
+on an IP address, `crypto.subtle` is `undefined`, the recomputation throws, and
+the page reports **"DOES NOT VERIFY"**.
+
+That is the browser refusing to do cryptography on an insecure origin. It is not
+a fault in the proof, and the root is still perfectly valid — but on stage it
+reads as a failure. This is precisely why the deployment terminates TLS at nginx
+and why port 3100 is closed.
+
+| Origin | `isSecureContext` | `crypto.subtle` | Verifier |
+| --- | --- | --- | --- |
+| `https://13-200-171-103.sslip.io` | `true` | available | **Verified** ✅ |
+| `http://13.200.171.103:3100` | `false` | `undefined` | "DOES NOT VERIFY" ❌ |
+| `http://localhost:3100` | `true` | available | Verified ✅ |
+
+**If a judge asks why it is on `sslip.io`:** *"No domain was needed. sslip.io
+resolves any hostname of that shape back to the IP inside it, and Let's Encrypt
+will issue a real certificate for it — so we get genuine HTTPS without buying a
+domain."*
+
 ---
 
 ## 12. Settlement proof
@@ -415,12 +464,12 @@ From the verified run:
 
 | | |
 | --- | --- |
-| **Settlement transaction** | `4DGEmFK4LptHEmRRbQB5HZR8ae85BkuWsqsvJqwoXvj39fEJ29js9JhijtG3XhmXGVWXBUDwJLLyoEZ9D5uJK2aG` |
-| **Settlement record** | `BGYMzmAF4kTbBLsbRU4GMzKHkUxwDUyjXcUMZUWp4BSH` |
-| **Settlement authority (signer)** | `DLuD55Geh…ucv4FH6s` |
+| **Settlement transaction** | `5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj` |
+| **Settlement record** | `5QFZgmYKg47Jk2bxQTd55jdN7wjqyWv8JsJgnDQgBT7H` |
+| **Settlement authority (signer)** | `7zKU8vFe…K9ff2` |
 | **Provider signed** | **FALSE** |
 | **Required signatures** | 1 |
-| **Provider destination** | `2UuibK8uQy7MhUwEDaAVUb8LUuiDhK5U4KCPBPzz1xZf` |
+| **Provider destination** | `4gmnhcBLgr5YoKpiDNQLrD6ByDJUwbijwGgqdsyCech3` |
 | **Settled amount** | 1,500 micro-USDC (cumulative) |
 | **Remaining escrow** | 2,998,500 micro-USDC |
 | **V2 program present** | **TRUE** |
@@ -429,7 +478,7 @@ From the verified run:
 Verify it live in front of them:
 
 ```bash
-solana confirm -v 4DGEmFK4LptHEmRRbQB5HZR8ae85BkuWsqsvJqwoXvj39fEJ29js9JhijtG3XhmXGVWXBUDwJLLyoEZ9D5uJK2aG -u devnet
+solana confirm -v 5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj -u devnet
 ```
 
 ---
@@ -528,7 +577,7 @@ The provider is never contacted, no funds move, and the high-water mark does not
 No. The destination is derived from `session.provider`, which is inside the session PDA's seeds. It is fixed when the session opens and cannot be changed afterwards.
 
 **Q: Who signs the V2 settlement?**
-AgentPay's own settlement authority — `DLuD55Geh…ucv4FH6s` in this run. Exactly one signer. The provider's key did not sign, and does not exist on our servers.
+AgentPay's own settlement authority — `7zKU8vFe…K9ff2` in this run. Exactly one signer. The provider's key did not sign, and does not exist on our servers.
 
 **Q: How do you prove the evidence?**
 Each decision is hashed into a chain, and the chain is summarised by a Merkle root committed on chain at settlement. Any one decision can be proved with an inclusion proof, recomputed in the verifier's own browser.
@@ -573,32 +622,49 @@ State these before a judge finds them. It reads as confidence, not weakness.
 
 ## 18. Emergency / troubleshooting
 
-**Services are not running:**
+**Is the site up?**
 ```bash
-docker compose up -d
-```
-
-**The console is showing an old build:**
-```bash
-docker compose up -d --build web
-```
-
-**Check the gateway:**
-```bash
-curl -s localhost:8080/health | python3 -m json.tool
+curl -s -o /dev/null -w '%{http_code}\n' https://13-200-171-103.sslip.io/
 ```
 
 **Check all four services:**
 ```bash
-docker compose ps
+ssh ubuntu@13.200.171.103 'cd ~/AgentPay && sudo docker compose ps'
 ```
 *All of `gateway`, `postgres`, `provider`, `web` should read `running (healthy)`.*
 
-**The demo failed partway:** it is safe to re-run. Each run creates a fresh agent, session and mint; it never reuses the previous one.
+**Services are not running:**
+```bash
+ssh ubuntu@13.200.171.103 'cd ~/AgentPay && sudo docker compose up -d'
+```
 
-**The console looks stale:** confirm the `web` container is healthy and that you are on **:3100**. Any other port is not the deployed UI.
+**Check the gateway (it is bound to localhost on the server):**
+```bash
+ssh ubuntu@13.200.171.103 'curl -s localhost:8080/health | python3 -m json.tool'
+```
 
-> Never paste a private key, an admin token or the contents of `secrets/` into a terminal a judge can see. Nothing in this guide requires it.
+**Check the balances the demo spends from:**
+```bash
+ssh ubuntu@13.200.171.103 'solana balance 66VJi7nTRYBY9SEeCX2mWQLD8z6YiFm2zcapQdwVJre7 --url devnet'
+```
+*That is the payer. A run costs ~0.03 SOL. The settlement authority
+(`7zKU8vFe…K9ff2`) is funded separately and pays only settlement fees.*
+
+**The Verifier says "DOES NOT VERIFY":** check the address bar. If it is
+`http://` on an IP, that is the secure-context problem in section 11 — switch to
+`https://13-200-171-103.sslip.io`. The proof is fine; the browser is refusing to
+do the maths.
+
+**The demo failed partway:** it is safe to re-run. Each run creates a fresh
+agent, session and mint; it never reuses the previous one. If it stops with an
+insufficient-funds error, top up the payer above.
+
+**Nothing responds at all:** confirm the instance is running in the AWS console.
+The address is an **Elastic IP**, so it no longer changes on stop/start — but the
+instance still has to be up.
+
+> Never paste a private key, an admin token or the contents of `secrets/` into a
+> terminal a judge can see. Nothing in this guide requires it.
 
 ---
 
@@ -640,18 +706,18 @@ NETWORK          Solana devnet
 PROGRAM (V2)     ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
 V1 PRESENT       FALSE
 
-AGENT            "e2e v2 agent"   5vz9a8FGF6gQCSaWnK9y87CaLgKiACdRrZmWs6NsByMT
+AGENT            "e2e v2 agent"   3wNL8m4LfysUA949j3xocR1QTNGSUegDjF3qnkfMRVKj
                  autonomous · active
 ENVELOPE         max_total 1000000 · max_per_call 2000
                  allowed /weather, /quote · max_calls 10
 FUNDING          3000000 micro-USDC
 
-SESSION          6sTkEPT93VRGbLZhUXKGQdP8C9K5c1LRiwBpSFK2TvKQ
+SESSION          86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ
   owner          ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
   length         219 bytes
-  vault          F2bgLYszWDtApVwEvZ6Zgr8augXe6YD4WDEbN7SGLTf4
-  provider       2UuibK8uQy7MhUwEDaAVUb8LUuiDhK5U4KCPBPzz1xZf
-  authority      DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s
+  vault          2MpWpFM6cVFhVo9Q1P1rCmCCggHr4Be16rdai1kKe4dx
+  provider       4gmnhcBLgr5YoKpiDNQLrD6ByDJUwbijwGgqdsyCech3
+  authority      7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
 
 PURCHASES        /weather → cumulative 1000
                  /quote   → cumulative 1500
@@ -662,14 +728,14 @@ EVIDENCE         3 entries · chain_valid true
   seq 0          ALLOWED                  cumulative 1000  nonce 1
   seq 1          ALLOWED                  cumulative 1500  nonce 2
   seq 2          ERR_NONCE_NOT_MONOTONIC  cumulative 2500  nonce 2
-MERKLE ROOT      d3a6a55f1caaacbb288b8109e953b912a43e2fac0146a0995fd092e130e4e22f
+MERKLE ROOT      2c3ca1941f635809c88a04715e1312fcc74d06dbe822119da38b4890aef4e9b5
   browser        MATCH
   gateway        MATCH
   on chain       MATCH
 
-SETTLEMENT TX    4DGEmFK4LptHEmRRbQB5HZR8ae85BkuWsqsvJqwoXvj39fEJ29js9JhijtG3XhmXGVWXBUDwJLLyoEZ9D5uJK2aG
-  record         BGYMzmAF4kTbBLsbRU4GMzKHkUxwDUyjXcUMZUWp4BSH
-  signers        DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s  (1)
+SETTLEMENT TX    5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj
+  record         5QFZgmYKg47Jk2bxQTd55jdN7wjqyWv8JsJgnDQgBT7H
+  signers        7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2  (1)
   provider signed FALSE
   settled        1500 (cumulative)
   root_may_advance true
@@ -677,7 +743,33 @@ SETTLEMENT TX    4DGEmFK4LptHEmRRbQB5HZR8ae85BkuWsqsvJqwoXvj39fEJ29js9JhijtG3Xhm
 CONSERVATION     1500 + 2998500 = 3000000   ✓
 ```
 
-**Related documents:** [RUNBOOK.md](RUNBOOK.md) · [SETTLEMENT_CUSTODY.md](SETTLEMENT_CUSTODY.md) · [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md) · [RELEASE_V2.md](RELEASE_V2.md) · [PITCH_AND_QA.md](PITCH_AND_QA.md)
+---
+
+## Appendix B — where this is deployed
+
+```
+URL              https://13-200-171-103.sslip.io      Let's Encrypt, auto-renewing
+HOST             AWS EC2  i-06081a9c50742b671  ap-south-1  Ubuntu 24.04
+ADDRESS          13.200.171.103  (Elastic IP — does not change on stop/start)
+STACK            docker compose: gateway · postgres · provider · web
+TLS              nginx reverse proxy → 127.0.0.1:3100; http:80 → 301 → https
+
+OPEN TO THE WORLD    22 (ssh) · 80 (redirect only) · 443 (console)
+CLOSED               3100 · 8080 (gateway) · 5434 (postgres) · 4021 (provider)
+
+KEYS ON THE SERVER   settlement authority  7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
+                     payer                 66VJi7nTRYBY9SEeCX2mWQLD8z6YiFm2zcapQdwVJre7
+                     Both were generated ON the server and never transmitted.
+                     .env is 0600; the keypair is 0640 and group-readable only
+                     by the container runtime. Neither is in git.
+```
+
+**The authority is deliberately not the same key used locally.** A session binds
+whichever authority `/health` publishes at `open_session`, so the server settles
+its own sessions with its own key. If this box were ever compromised, sessions
+opened elsewhere are unaffected.
+
+**Related documents:** [RUNBOOK.md](RUNBOOK.md) · [SETTLEMENT_CUSTODY.md](SETTLEMENT_CUSTODY.md) · [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md) · [RELEASE_V2.md](RELEASE_V2.md) · [PITCH_AND_QA.md](PITCH_AND_QA.md) · [DEPLOY.md](DEPLOY.md)
 
 ---
 
