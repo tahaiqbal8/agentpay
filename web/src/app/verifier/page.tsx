@@ -6,14 +6,18 @@ import {
   AlertTriangle,
   ArrowDown,
   Binary,
+  Check,
   ChevronRight,
+  Hash,
   Link2,
   Search,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, variantForReason } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/empty-state";
 import { Field, Input } from "@/components/ui/input";
 import { useToast } from "@/components/toast";
 import { api, type EvidenceProof, type SessionEvidence } from "@/lib/api";
@@ -309,16 +313,121 @@ function VerifierInner() {
 
   return (
     <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="t-page">Verifier</h1>
-          <p className="t-body mt-1 max-w-2xl">
-            Prove that one decision is covered by a Merkle root committed on Solana. The hashing
-            happens in this browser, so the answer does not depend on trusting the gateway.
+          <h1 className="t-page brand-gradient-text">Cryptographic verification</h1>
+          <p className="t-body mt-1.5 max-w-2xl">
+            Independently verify every decision the payment gateway made. The hashing happens in
+            this browser, so the answer does not depend on trusting the gateway.
           </p>
         </div>
         <Badge variant="info">Solana devnet</Badge>
       </header>
+
+      {/* ---- the verdict, before the working ------------------------------
+          The three roots already existed at the bottom of the step-through,
+          which is the right place to CHECK them and the wrong place to LEARN
+          the answer — a reader had to scroll past a hash ladder to find out
+          whether it held.
+
+          This appears only once a proof has actually resolved. Three empty
+          root cards on arrival would be decoration, and decoration shaped like
+          a verification result is the one thing this page must not show. */}
+      {proof && recomputed && (
+        <section
+          aria-label="Verification result"
+          className={`relative overflow-hidden rounded-xl p-5 ${
+            anchored
+              ? "surface-verified verify-sweep"
+              : !valid || chainDisagrees
+                ? "border border-[var(--color-danger-dim)] bg-[#ef44441a]"
+                : "surface-card"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className={`grid size-9 shrink-0 place-items-center rounded-full ${
+                anchored
+                  ? "bg-[var(--color-accent)] text-black"
+                  : !valid || chainDisagrees
+                    ? "bg-[var(--color-danger)] text-white"
+                    : "bg-[var(--color-surface-2)] text-[var(--color-fg-dim)]"
+              }`}
+            >
+              {anchored ? (
+                <Check className="size-5" strokeWidth={3} />
+              ) : !valid || chainDisagrees ? (
+                <X className="size-5" strokeWidth={3} />
+              ) : (
+                <Hash className="size-4" />
+              )}
+            </span>
+            <div className="min-w-0">
+              <p className="text-[17px] font-semibold leading-tight text-[var(--color-fg)]">
+                {anchored
+                  ? "Verified"
+                  : chainDisagrees
+                    ? "Chain disagrees"
+                    : !valid
+                      ? "Does not verify"
+                      : "Not yet anchored"}
+              </p>
+              <p className="t-support mt-0.5">
+                {anchored
+                  ? "Browser = Gateway = Chain. This decision is covered by a root committed on Solana."
+                  : chainDisagrees
+                    ? "The committed root is not the one this evidence log produces."
+                    : !valid
+                      ? "Recomputation does not reproduce the reported root."
+                      : "Browser and gateway agree, but nothing is committed on chain yet."}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {[
+              { label: "Browser root", value: recomputed, note: "computed here" },
+              { label: "Gateway root", value: proof.merkle_root, note: "reported" },
+              { label: "On-chain root", value: chainRoot ?? null, note: "committed" },
+            ].map((r) => {
+              const agrees = r.value !== null && r.value === recomputed;
+              return (
+                <div
+                  key={r.label}
+                  className={`rounded-lg border p-3 ${
+                    r.value === null
+                      ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+                      : agrees
+                        ? "border-[var(--color-accent-dim)] bg-[#10b98114]"
+                        : "border-[var(--color-danger-dim)] bg-[#ef44441a]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="t-label">{r.label}</span>
+                    {r.value !== null && (
+                      <span
+                        className={`text-[11px] font-semibold ${
+                          agrees
+                            ? "text-[var(--color-accent)]"
+                            : "text-[var(--color-danger)]"
+                        }`}
+                      >
+                        {agrees ? "MATCH" : "DIFFERS"}
+                      </span>
+                    )}
+                  </div>
+                  <p className="t-mono mt-2 break-all text-[var(--color-fg)]">
+                    {r.value ? `${r.value.slice(0, 8)}…${r.value.slice(-8)}` : "—"}
+                  </p>
+                  <p className="t-support mt-1">
+                    {r.value === null ? "not settled yet" : r.note}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* ---- input + chain ---- */}
@@ -428,15 +537,12 @@ function VerifierInner() {
           </CardHeader>
 
           {!proof ? (
-            <CardContent className="grid-bg flex min-h-[420px] flex-col items-center justify-center gap-2 text-center">
-              <Binary aria-hidden="true" className="size-8 text-[var(--color-fg-dim)]" />
-              <p className="text-xs text-[var(--color-fg-muted)]">
-                Enter a session and sequence id, or pick an entry from the log.
-              </p>
-              <p className="t-support max-w-xs">
-                Every hash below is computed here. Nothing on this side of the page is taken on the
-                gateway&apos;s word.
-              </p>
+            <CardContent className="grid-bg flex min-h-[420px] items-center justify-center p-0">
+              <EmptyState
+                icon={Binary}
+                title="Nothing proved yet"
+                body="Pick a decision from the evidence log, or enter a session and sequence id. Every hash is then recomputed here — nothing on this side of the page is taken on the gateway's word."
+              />
             </CardContent>
           ) : (
             <CardContent className="space-y-3">

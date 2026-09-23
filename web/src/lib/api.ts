@@ -181,6 +181,14 @@ export interface Health {
   program_id: string;
   ephemeral_state: boolean;
   state_backend: string;
+  /**
+   * The key AgentPay settles v2 sessions with — its OWN, never a provider's.
+   *
+   * The gateway has always published this; it was simply missing from this
+   * type. Absent when no authority is configured, which is a real state: that
+   * gateway can serve v1 sessions and nothing else.
+   */
+  settlement_authority?: string;
 }
 
 export interface ApiError {

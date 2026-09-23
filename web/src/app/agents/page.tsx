@@ -1,30 +1,61 @@
 "use client";
 
 import * as React from "react";
-import { Bot, Loader2, Plus, ShieldOff, ShieldCheck, TriangleAlert } from "lucide-react";
+import {
+  Bot,
+  ChevronDown,
+  Loader2,
+  Plus,
+  ShieldCheck,
+  ShieldOff,
+  TriangleAlert,
+  Wallet,
+  X,
+} from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState, SkeletonCards } from "@/components/empty-state";
 import { Field, Input, Select } from "@/components/ui/input";
 import { MonoKey } from "@/components/mono";
 import { Progress } from "@/components/ui/progress";
+import { Stat } from "@/components/ui/stat";
 import { useToast } from "@/components/toast";
 import { api, type Agent, type AgentMode } from "@/lib/api";
-import { formatUsdc } from "@/lib/format";
+import { formatUsdc, formatUsdcCompact } from "@/lib/format";
 
 /**
- * Agent identity and authorization — stages 1 to 4 of the flow.
+ * Agent identity and authorization — stages 1 to 3 of the lifecycle.
  *
  * The distinction this page has to keep visible: an agent's ESCROW is the hard,
  * chain-enforced ceiling, and the envelope set here can only narrow it. A
  * reader who confuses the two would think suspending an agent claws back its
  * deposit, or that raising `max_total` gives it more money. Neither is true.
+ *
+ * Layout rule: identity first, permissions second, raw fields last and folded
+ * away. The old card led with a base58 key and a form; that is a database row
+ * with buttons, and it made a control surface look like an admin panel.
  */
+
+/** The three states an agent can actually be in. There is no fourth. */
+type AuthState = "authorized" | "unauthorized" | "paused";
+
+function authState(agent: Agent): AuthState {
+  if (agent.status === "suspended") return "paused";
+  return agent.policy ? "authorized" : "unauthorized";
+}
+
+const AUTH_BADGE: Record<AuthState, { variant: "allowed" | "denied" | "danger"; label: string }> = {
+  authorized: { variant: "allowed", label: "Authorized" },
+  unauthorized: { variant: "denied", label: "Not authorized" },
+  paused: { variant: "danger", label: "Paused" },
+};
 
 function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = React.useState(false);
   const [open, setOpen] = React.useState(false);
+  const [details, setDetails] = React.useState(false);
 
   const [maxTotal, setMaxTotal] = React.useState(agent.policy?.max_total ?? "1000000");
   const [maxPerCall, setMaxPerCall] = React.useState(agent.policy?.max_per_call ?? "25000");
@@ -37,7 +68,8 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
   );
   const [mode, setMode] = React.useState<AgentMode>(agent.mode);
 
-  const suspended = agent.status === "suspended";
+  const state = authState(agent);
+  const suspended = state === "paused";
   // Ids are namespaced per agent: several of these cards are open at once, and
   // duplicate ids would point every label at the first card's input.
   const id = (name: string) => `${agent.agent_id}-${name}`;
@@ -95,75 +127,119 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
     onChanged();
   };
 
+  const badge = AUTH_BADGE[state];
+
   return (
     <div
-      className={`rounded-md border p-3 ${
+      className={`rounded-xl border p-4 transition-colors ${
         suspended
           ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
-          : "border-[var(--color-border)] bg-[var(--color-surface-2)]"
+          : "surface-card hover:border-[var(--color-border-bright)]"
       }`}
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {/* ---- identity ---- */}
+      <div className="flex flex-wrap items-start gap-3">
         <span
           aria-hidden="true"
-          className={`grid size-6 shrink-0 place-items-center rounded-md ${
-            suspended ? "bg-[#ef44441a]" : "bg-[#a78bfa1a]"
+          className={`grid size-9 shrink-0 place-items-center rounded-lg ${
+            suspended ? "bg-[#ef44441a]" : "bg-[var(--color-agent-glow)]"
           }`}
         >
           <Bot
-            className={`size-3.5 ${
+            className={`size-4.5 ${
               suspended ? "text-[var(--color-danger)]" : "text-[var(--color-agent)]"
             }`}
           />
         </span>
-        <span className="text-sm font-medium text-[var(--color-fg)]">{agent.label}</span>
-        <Badge variant={suspended ? "danger" : "allowed"}>{agent.status}</Badge>
-        {/* Purple is the agent/policy colour throughout the console: the mode
-            is what the human decided about autonomy, not a status. */}
-        <Badge variant="agent">{agent.mode}</Badge>
-        <span className="ml-auto">
-          <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
-        </span>
-      </div>
-
-      {agent.policy ? (
-        <div className="mt-2.5">
-          <div className="flex items-baseline justify-between gap-2 text-xs">
-            <span className="tnum font-mono text-[var(--color-fg)]">
-              {formatUsdc(agent.spent)} / {formatUsdc(agent.policy.max_total)}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[15px] font-semibold leading-tight text-[var(--color-fg)]">
+              {agent.label}
             </span>
-            <span className="t-support">
-              {agent.calls} call{agent.calls === 1 ? "" : "s"}
-              {agent.policy.max_calls != null && ` of ${agent.policy.max_calls}`}
-              {agent.remaining != null && ` · ${formatUsdc(agent.remaining)} left`}
-            </span>
+            <Badge variant={badge.variant}>{badge.label}</Badge>
+            {/* Purple is the agent/policy colour throughout the console: the
+                mode is what the human decided about autonomy, not a status. */}
+            <Badge variant="agent">{agent.mode}</Badge>
           </div>
-          {pct != null && (
-            <div className="mt-1.5">
-              <Progress
-                percent={Math.min(pct, 100)}
-                tone={pct >= 90 ? "warn" : "agent"}
-                label={`${pct}% of this agent's envelope has been spent`}
-              />
-            </div>
-          )}
-          <p className="t-support mt-1.5 leading-relaxed">
-            Max {formatUsdc(agent.policy.max_per_call)} per call
-            {agent.policy.approval_threshold != null &&
-              ` · a human decides at ${formatUsdc(agent.policy.approval_threshold)}`}
-            {agent.policy.allowed_resources?.length
-              ? ` · ${agent.policy.allowed_resources.join(", ")}`
-              : " · any resource"}
+          <p className="t-support mt-1">
+            {agent.calls} call{agent.calls === 1 ? "" : "s"} ·{" "}
+            {formatUsdc(agent.spent)} spent
           </p>
         </div>
+      </div>
+
+      {/* ---- permissions, as facts rather than fields ---- */}
+      {agent.policy ? (
+        <div className="mt-4 space-y-3">
+          <div>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="t-label">Spending</span>
+              <span className="tnum text-[13px] text-[var(--color-fg)]">
+                {formatUsdc(agent.spent)}{" "}
+                <span className="text-[var(--color-fg-dim)]">
+                  / {formatUsdc(agent.policy.max_total)}
+                </span>
+              </span>
+            </div>
+            {pct != null && (
+              <div className="mt-2">
+                <Progress
+                  percent={Math.min(pct, 100)}
+                  tone={pct >= 90 ? "warn" : "agent"}
+                  label={`${pct}% of this agent's envelope has been spent`}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="t-label">Per call</p>
+              <p className="tnum mt-1 text-[13px] text-[var(--color-fg)]">
+                {formatUsdc(agent.policy.max_per_call)}
+              </p>
+            </div>
+            <div>
+              <p className="t-label">Remaining</p>
+              <p className="tnum mt-1 text-[13px] text-[var(--color-fg)]">
+                {agent.remaining != null ? formatUsdc(agent.remaining) : "—"}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <p className="t-label">Resources</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {agent.policy.allowed_resources?.length ? (
+                agent.policy.allowed_resources.map((r) => (
+                  <span
+                    key={r}
+                    className="t-mono rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[var(--color-fg-muted)]"
+                  >
+                    {r}
+                  </span>
+                ))
+              ) : (
+                <span className="t-support">Any resource — no allowlist set</span>
+              )}
+            </div>
+          </div>
+
+          {agent.policy.approval_threshold != null && (
+            <p className="t-support">
+              A human decides above {formatUsdc(agent.policy.approval_threshold)}.
+            </p>
+          )}
+        </div>
       ) : (
-        <p className="mt-2 text-xs leading-relaxed text-[var(--color-warn)]">
+        <p className="mt-4 text-[13px] leading-relaxed text-[var(--color-warn)]">
           Not authorized. Only this agent&apos;s on-chain escrow bounds it — there is no
           per-resource or per-call limit until one is set.
         </p>
       )}
 
-      <div className="mt-2.5 flex flex-wrap gap-2">
+      {/* ---- actions ---- */}
+      <div className="mt-4 flex flex-wrap gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -188,15 +264,54 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
           )}
           {suspended ? "Reinstate" : "Suspend"}
         </Button>
+        <button
+          onClick={() => setDetails((v) => !v)}
+          aria-expanded={details}
+          className="ml-auto flex items-center gap-1 text-[11px] text-[var(--color-fg-dim)] transition-colors hover:text-[var(--color-fg)]"
+        >
+          Technical details
+          <ChevronDown className={`size-3 transition-transform ${details ? "rotate-180" : ""}`} />
+        </button>
       </div>
 
+      {/* ---- the raw identity, folded away by default ---- */}
+      {details && (
+        <dl className="mt-3 space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <dt className="t-label">agent_id</dt>
+            <dd className="t-mono text-[var(--color-fg-muted)]">{agent.agent_id}</dd>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <dt className="t-label">agent_pubkey</dt>
+            <dd>
+              <MonoKey value={agent.agent_pubkey} head={6} tail={6} />
+            </dd>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <dt className="t-label">owner_pubkey</dt>
+            <dd>
+              {agent.owner_pubkey ? (
+                <MonoKey value={agent.owner_pubkey} head={6} tail={6} />
+              ) : (
+                <span className="t-support">—</span>
+              )}
+            </dd>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <dt className="t-label">created</dt>
+            <dd className="t-support">{new Date(agent.created_at).toLocaleString()}</dd>
+          </div>
+        </dl>
+      )}
+
+      {/* ---- the envelope editor ---- */}
       {open && (
-        <div className="mt-3 space-y-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
+        <div className="mt-3 space-y-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-3">
           <p className="t-support leading-relaxed">
             All amounts are micro-USDC. This envelope can only narrow what the escrow already
             permits — it never grants more.
           </p>
-          <div className="grid gap-2.5 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field label="max_total" hint="Ceiling across everything" htmlFor={id("max-total")}>
               <Input
                 id={id("max-total")}
@@ -238,11 +353,7 @@ function AgentCard({ agent, onChanged }: { agent: Agent; onChanged: () => void }
               placeholder="/weather, /quote"
             />
           </Field>
-          <Field
-            label="mode"
-            hint="Human mode asks a person for every spend."
-            htmlFor={id("mode")}
-          >
+          <Field label="mode" hint="Human mode asks a person for every spend." htmlFor={id("mode")}>
             <Select
               id={id("mode")}
               value={mode}
@@ -267,6 +378,7 @@ export default function AgentsPage() {
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [loaded, setLoaded] = React.useState(false);
   const [unavailable, setUnavailable] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
   const [label, setLabel] = React.useState("");
   const [pubkey, setPubkey] = React.useState("");
   const [owner, setOwner] = React.useState("");
@@ -305,79 +417,85 @@ export default function AgentsPage() {
     setLabel("");
     setPubkey("");
     setOwner("");
+    setCreating(false);
     void load();
   };
 
-  const suspendedCount = agents.filter((a) => a.status === "suspended").length;
-  const unauthorized = agents.filter((a) => !a.policy).length;
+  /* Counted, never estimated. `paused` and `unauthorized` are mutually
+     exclusive by `authState`, so these four numbers describe the list without
+     double-counting it. */
+  const active = agents.filter((a) => authState(a) === "authorized").length;
+  const unauthorized = agents.filter((a) => authState(a) === "unauthorized").length;
+  const paused = agents.filter((a) => authState(a) === "paused").length;
+  const controlled = agents.reduce((acc, a) => {
+    try {
+      return acc + BigInt(a.policy?.max_total ?? "0");
+    } catch {
+      return acc;
+    }
+  }, 0n);
 
   return (
     <div className="space-y-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="t-page">Agents</h1>
-          <p className="t-body mt-1 max-w-2xl">
-            Who may spend, and how much. The escrow on chain is the hard ceiling; everything set
-            here narrows it.
+          <h1 className="t-page brand-gradient-text">Agents</h1>
+          <p className="t-body mt-1.5 max-w-2xl">
+            Manage autonomous agents and their spending permissions. The escrow on chain is the
+            hard ceiling; everything set here narrows it.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {unauthorized > 0 && (
-            <Badge variant="denied">{unauthorized} without an envelope</Badge>
-          )}
-          {suspendedCount > 0 && <Badge variant="danger">{suspendedCount} suspended</Badge>}
-        </div>
+        <Button onClick={() => setCreating((v) => !v)} disabled={unavailable}>
+          {creating ? <X className="size-3.5" /> : <Plus className="size-3.5" />}
+          {creating ? "Cancel" : "Create agent"}
+        </Button>
       </header>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <Card className="min-w-0">
+      <section aria-label="Agent summary" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Stat
+          label="Authorized"
+          value={String(active)}
+          support={active > 0 ? "acting inside an envelope" : "none carry a policy yet"}
+          icon={ShieldCheck}
+          tone={active > 0 ? "accent" : "neutral"}
+        />
+        <Stat
+          label="Awaiting authorization"
+          value={String(unauthorized)}
+          support={
+            unauthorized > 0 ? "bounded only by their escrow" : "every agent has an envelope"
+          }
+          icon={TriangleAlert}
+          tone={unauthorized > 0 ? "warn" : "neutral"}
+        />
+        <Stat
+          label="Paused"
+          value={String(paused)}
+          support={paused > 0 ? "cannot spend at this gateway" : "none suspended"}
+          icon={ShieldOff}
+          tone={paused > 0 ? "danger" : "neutral"}
+        />
+        {/* The sum of every envelope — what a human has AUTHORIZED, which is
+            not what has been spent and not what is escrowed. Named so. */}
+        <Stat
+          label="Authorized ceiling"
+          value={formatUsdcCompact(controlled)}
+          support="total of every envelope"
+          icon={Wallet}
+          tone="agent"
+        />
+      </section>
+
+      {creating && (
+        <Card accent="agent">
           <CardHeader>
             <div>
-              <CardTitle>Agents</CardTitle>
-              <CardDescription>Identity, wallet and permission envelope</CardDescription>
+              <CardTitle>New agent</CardTitle>
+              <CardDescription>Bind an Ed25519 wallet to an identity</CardDescription>
             </div>
-            <Badge variant="neutral">{agents.length}</Badge>
           </CardHeader>
-          <CardContent className="max-h-[640px] space-y-2 overflow-y-auto p-2">
-            {unavailable && (
-              <div className="flex items-start gap-2 rounded-md border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-3">
-                <TriangleAlert
-                  aria-hidden="true"
-                  className="mt-0.5 size-3.5 shrink-0 text-[var(--color-warn)]"
-                />
-                <p className="text-xs leading-relaxed text-[var(--color-fg-muted)]">
-                  <span className="font-semibold text-[var(--color-warn)]">
-                    The control plane is unavailable.
-                  </span>{" "}
-                  Agents, policies and the registry need a database, and this gateway is running
-                  without one. Claims are still verified; nothing here can be stored.
-                </p>
-              </div>
-            )}
-            {loaded && !unavailable && agents.length === 0 && (
-              <div className="py-12 text-center">
-                <p className="text-xs text-[var(--color-fg-muted)]">No agents yet.</p>
-                <p className="t-support mx-auto mt-1 max-w-xs">
-                  Create one to bind a wallet to an identity and set what it may spend.
-                </p>
-              </div>
-            )}
-            {agents.map((a) => (
-              <AgentCard key={a.agent_id} agent={a} onChanged={load} />
-            ))}
-          </CardContent>
-        </Card>
-
-        <div className="min-w-0 space-y-4">
-          <Card accent="agent">
-            <CardHeader>
-              <div>
-                <CardTitle>New agent</CardTitle>
-                <CardDescription>Bind an Ed25519 wallet to an identity</CardDescription>
-              </div>
-              <Plus aria-hidden="true" className="size-4 text-[var(--color-fg-dim)]" />
-            </CardHeader>
-            <CardContent className="space-y-3">
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
               <Field label="label" htmlFor="new-agent-label">
                 <Input
                   id="new-agent-label"
@@ -410,40 +528,64 @@ export default function AgentsPage() {
                   placeholder="Base58, optional"
                 />
               </Field>
-              <Button
-                onClick={create}
-                disabled={busy || !label.trim() || !pubkey.trim() || unavailable}
-                className="w-full"
-              >
-                {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+            </div>
+            <Button
+              onClick={create}
+              disabled={busy || !label.trim() || !pubkey.trim() || unavailable}
+            >
+              {busy ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+              Create agent
+            </Button>
+            <p className="t-support border-t border-[var(--color-border)] pt-3 leading-relaxed">
+              This creates an identity, not a wallet. It holds no private key and moves no money —
+              spending power comes entirely from an on-chain escrow opened against this key, and
+              the envelope you set afterwards can only narrow it.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {unavailable && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-[var(--color-warn-dim)] bg-[#f59e0b0d] p-4">
+          <TriangleAlert
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-[var(--color-warn)]"
+          />
+          <p className="text-[13px] leading-relaxed text-[var(--color-fg-muted)]">
+            <span className="font-semibold text-[var(--color-warn)]">
+              The control plane is unavailable.
+            </span>{" "}
+            Agents, policies and the registry need a database, and this gateway is running without
+            one. Claims are still verified; nothing here can be stored.
+          </p>
+        </div>
+      )}
+
+      {!loaded && <SkeletonCards count={3} className="sm:grid-cols-2 xl:grid-cols-3" />}
+
+      {loaded && !unavailable && agents.length === 0 && (
+        <Card>
+          <EmptyState
+            icon={Bot}
+            title="No agents yet"
+            body="Create your first autonomous agent, then give it a bounded spending policy. Nothing can spend until both exist."
+            action={
+              <Button onClick={() => setCreating(true)}>
+                <Plus className="size-3.5" />
                 Create agent
               </Button>
-            </CardContent>
-          </Card>
+            }
+          />
+        </Card>
+      )}
 
-          <Card>
-            <CardHeader>
-              <CardTitle>What creating an agent does not do</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-xs leading-relaxed text-[var(--color-fg-muted)]">
-              <p>
-                It does not create a wallet, hold a private key, or move any money. The
-                agent&apos;s spending power comes entirely from an on-chain escrow opened against
-                this key. The envelope set here can only narrow that — never widen it.
-              </p>
-              <p>
-                Suspending an agent stops it at this gateway immediately. It does not claw back the
-                escrow, and it does not recall a settlement already in flight.
-              </p>
-              <p className="border-t border-[var(--color-border)] pt-2.5">
-                An agent with no envelope is not unrestricted — its escrow still bounds it
-                absolutely — but nothing narrower applies: no per-call ceiling, no resource
-                allowlist, no approval step.
-              </p>
-            </CardContent>
-          </Card>
+      {agents.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {agents.map((a) => (
+            <AgentCard key={a.agent_id} agent={a} onChanged={load} />
+          ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }

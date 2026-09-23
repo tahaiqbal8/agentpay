@@ -11,14 +11,36 @@
  */
 
 @theme {
-  --color-bg: #09090b;
-  --color-surface: #0e0e11;
-  --color-surface-2: #131317;
-  --color-border: #1f1f25;
-  --color-border-bright: #2a2a33;
+  --color-bg: #08090c;
+  --color-surface: #0f1116;
+  --color-surface-2: #161921;
+  --color-border: #ffffff14;
+  --color-border-bright: #ffffff24;
 
-  --color-fg: #e4e4e7;
-  --color-fg-muted: #a1a1aa;
+  /* ---- Brand -------------------------------------------------------------
+   * ONE accent for chrome: the brand mark, the active nav item, the primary
+   * action, the focus ring. Electric indigo, because every *state* colour
+   * below is already spoken for by a meaning and a brand colour must not be
+   * mistakable for one.
+   *
+   * --color-agent is a lighter tint of the same family. That is deliberate:
+   * agents are what this product is *about*, so the subject of the page and
+   * the brand read as related without reading as identical. Brand is for
+   * chrome; agent is for data. They never appear in the same role.
+   *
+   * MEASURED: #7c5cfc is 4.54:1 on --color-bg but only 4.01:1 on
+   * --color-surface-2. It therefore may be used for the brand mark, an active
+   * nav item, a filled button's BACKGROUND, borders, rings and icons — all
+   * non-text or large/bold roles, which need 3:1 — and must NOT be used for
+   * small body text on a card. Text that has to be read stays --color-fg /
+   * --color-fg-muted / --color-fg-dim, all of which clear 4.5:1 everywhere. */
+  --color-brand: #7c5cfc;
+  --color-brand-strong: #6d4bf5;
+  --color-brand-dim: #2a1f5c;
+  --color-brand-glow: #7c5cfc2e;
+
+  --color-fg: #f5f7fa;
+  --color-fg-muted: #9ca3af;
   /* Measured, not chosen by eye.
    *
    * This was #71717a, which is 4.12:1 on the page background and 3.83:1 on a
@@ -28,10 +50,12 @@
    * shade too dark here made most of the secondary writing in the product
    * technically unreadable.
    *
-   * #83838e clears 4.5:1 against the WORST background it ever sits on
-   * (--color-surface-2, the lightest surface) and stays clearly dimmer than
-   * --color-fg-muted, so the three-tone hierarchy survives. */
-  --color-fg-dim: #83838e;
+   * Re-measured when the surfaces were re-cut for the 2026 palette:
+   * --color-surface-2 moved from #131317 to #161921, so the old #83838e no
+   * longer cleared the bar against it. #8a8f9c does, with margin, and stays
+   * clearly dimmer than --color-fg-muted so the three-tone hierarchy
+   * survives. The ratios are asserted in the audit below, not eyeballed. */
+  --color-fg-dim: #8a8f9c;
 
   /* Confirmed on-chain / allowed */
   --color-accent: #10b981;
@@ -98,6 +122,85 @@ body {
     linear-gradient(to right, #ffffff06 1px, transparent 1px),
     linear-gradient(to bottom, #ffffff06 1px, transparent 1px);
   background-size: 32px 32px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Surface treatments
+ *
+ * Three, and no more. Every card in the console is one of these, so depth
+ * stays a property of the hierarchy rather than of whoever wrote the page.
+ * The gradients are barely there by design — a 2-3% top highlight reads as
+ * light falling on a surface; anything stronger reads as a button.
+ * ------------------------------------------------------------------------ */
+
+/* The default card: a near-flat surface lifted off the page. */
+.surface-card {
+  background: linear-gradient(180deg, #ffffff07 0%, #ffffff00 40%), var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+/* Reserved for the one card on a page that carries the answer. */
+.surface-hero {
+  background:
+    radial-gradient(120% 100% at 50% 0%, var(--color-brand-glow) 0%, transparent 62%),
+    linear-gradient(180deg, #ffffff09 0%, #ffffff00 45%),
+    var(--color-surface);
+  border: 1px solid var(--color-border-bright);
+}
+
+/* Sticky chrome only — blur is expensive and reads as cheap when overused. */
+.glass {
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(140%);
+}
+
+/* A confirmed cryptographic result. Emerald, never brand: the brand must not
+ * be able to imply that something verified. */
+.surface-verified {
+  background:
+    radial-gradient(120% 100% at 50% 0%, #10b98122 0%, transparent 60%),
+    var(--color-surface);
+  border: 1px solid #10b98147;
+}
+
+/* ---------------------------------------------------------------------------
+ * Brand
+ * ------------------------------------------------------------------------ */
+.brand-gradient-text {
+  background: linear-gradient(135deg, var(--color-fg) 20%, var(--color-brand) 130%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* The rail that connects the payment-lifecycle stages. */
+.lifecycle-rail {
+  background: linear-gradient(
+    90deg,
+    var(--color-brand) 0%,
+    var(--color-brand) var(--progress, 0%),
+    var(--color-border) var(--progress, 0%),
+    var(--color-border) 100%
+  );
+}
+
+/* One slow sweep when a proof resolves. Runs once — a looping animation on a
+ * verification result reads as "still working". */
+@keyframes verify-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+.verify-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, #10b98124, transparent);
+  animation: verify-sweep 900ms ease-out 1;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verify-sweep::after { animation: none; }
 }
 
 @keyframes pulse-ring {

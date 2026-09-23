@@ -9,6 +9,26 @@
 /** `CLOCK_SKEW_TOLERANCE_SECS` in gateway/src/claim.rs and the program. */
 export const CLOCK_SKEW_TOLERANCE_SECS = 30;
 
+/**
+ * The two deployed programs, so the console can NAME the protocol it is
+ * pointed at instead of asserting one.
+ *
+ * `/health` reports the program id the gateway actually uses; the label is
+ * derived from it. A console that printed "V2" from a constant would keep
+ * printing it while pointed at v1, which is the one thing a protocol badge
+ * must never do.
+ */
+export const PROGRAM_V1 = "3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U";
+export const PROGRAM_V2 = "ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m";
+
+/** "V2 Protocol", "V1 Legacy", or "Unknown program" — never a guess. */
+export function protocolLabel(programId: string | undefined | null): string {
+  if (!programId) return "Protocol —";
+  if (programId === PROGRAM_V2) return "V2 Protocol";
+  if (programId === PROGRAM_V1) return "V1 Legacy";
+  return "Unknown program";
+}
+
 /** USDC decimals. Amounts are micro-USDC integers everywhere. */
 export const USDC_DECIMALS = 6;
 

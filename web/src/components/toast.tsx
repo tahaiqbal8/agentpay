@@ -20,7 +20,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-full max-w-sm flex-col gap-2">
+      {/* `w-full max-w-sm` is 384px, which is wider than a 375px phone, and
+          `right-4` pushed it a further 16px out — so on a small screen the
+          toast stack dragged a horizontal scrollbar onto every page whether or
+          not a toast was ever shown. Cap against the viewport minus both
+          insets instead. */}
+      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-full max-w-[min(24rem,calc(100vw-2rem))] flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}

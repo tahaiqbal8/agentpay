@@ -17,6 +17,8 @@ import {
   Wallet,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { PaymentLifecycle } from "@/components/lifecycle";
+import { SecurityControls, type ControlState } from "@/components/security-controls";
 import { Badge, variantForReason } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -34,7 +36,15 @@ import {
 } from "@/components/ui/table";
 import { SearchInput } from "@/components/ui/input";
 import { MonoKey } from "@/components/mono";
-import { api, mock, type RecentDecision, type SessionSummary } from "@/lib/api";
+import {
+  api,
+  mock,
+  type Agent,
+  type Health,
+  type RecentDecision,
+  type SessionSummary,
+} from "@/lib/api";
+import { protocolLabel } from "@/lib/constants";
 import { DECISION_LABEL, DECISION_WHY } from "@/lib/constants";
 import { isStrandedEscrow, sessionStatus } from "@/lib/session-status";
 import {
@@ -185,6 +195,63 @@ export default function MonitorPage() {
     };
   }, []);
 
+  /* ---- what the lifecycle strip and the controls panel are allowed to claim
+   *
+   * Both draw ticks, so both need a source. These three reads are what turns
+   * "Human ✓ Agent ✓ Policy ✓" from a diagram into a status: agents prove the
+   * control plane has been used, health proves which protocol and whether a
+   * settlement authority exists, and the on-chain root proves the last stage
+   * actually happened rather than merely being marked settled locally.
+   *
+   * They poll far more slowly than the session feed because none of them
+   * changes per claim. */
+  const [agents, setAgents] = React.useState<Agent[] | null>(null);
+  const [health, setHealth] = React.useState<Health | null>(null);
+  const [anchoredRoot, setAnchoredRoot] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      const [a, h] = await Promise.all([api.agents(), api.health()]);
+      if (cancelled) return;
+      setAgents(a.ok ? a.data.agents : null);
+      setHealth(h.ok ? h.data : null);
+    };
+    poll();
+    const t = setInterval(poll, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  // The newest settled session, read from the chain. Without this the strip
+  // would light "Verified" from a local flag, which is exactly the fabrication
+  // this console exists to avoid.
+  const newestSettled = React.useMemo(
+    () =>
+      [...sessions]
+        .filter((s) => s.is_settled)
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0] ?? null,
+    [sessions]
+  );
+
+  React.useEffect(() => {
+    if (!newestSettled) {
+      setAnchoredRoot(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const r = await api.onChainSettlement(newestSettled.session);
+      if (cancelled) return;
+      setAnchoredRoot(r.ok && r.data.settled ? (r.data.merkle_root ?? null) : null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [newestSettled?.session]);
+
   const withStatus = React.useMemo(
     () => sessions.map((s) => ({ s, st: sessionStatus(s, nowSecs) })),
     [sessions, nowSecs]
@@ -281,15 +348,114 @@ export default function MonitorPage() {
 
   const showingFiltered = filter !== "" || statusFilter !== "all";
 
+  /* ---- the lifecycle strip -------------------------------------------------
+   *
+   * Every stage is a question answered by data already on this page. The
+   * stages are cumulative, so `reached` is the last one whose answer is yes —
+   * a later stage cannot be true while an earlier one is false, because the
+   * protocol cannot reach it.
+   *
+   * `null` agents (the control plane needs a token this browser may not have)
+   * leaves the first three stages unlit rather than assumed. */
+  const lifecycleReached = React.useMemo(() => {
+    const anyAgent = (agents?.length ?? 0) > 0;
+    const anyBound = agents?.some((a) => !!a.agent_pubkey) ?? false;
+    const anyPolicy = agents?.some((a) => a.policy !== null) ?? false;
+    const anyEscrow = sessions.some((s) => s.chain_verified);
+    const anyClaim = sessions.some((s) => BigInt(s.cumulative_accepted) > 0n);
+    const anyDecision = decisions.length > 0;
+    const anyEvidence = sessions.some((s) => s.evidence_count > 0);
+    const anySettled = sessions.some((s) => s.is_settled);
+    const anchored = anchoredRoot !== null;
+
+    const answered = [
+      anyAgent,
+      anyBound,
+      anyPolicy,
+      anyEscrow,
+      anyClaim,
+      anyDecision,
+      anyEvidence,
+      anySettled,
+      anchored,
+    ];
+    let last = -1;
+    for (let i = 0; i < answered.length; i++) {
+      if (!answered[i]) break;
+      last = i;
+    }
+    return last;
+  }, [agents, sessions, decisions, anchoredRoot]);
+
+  /* ---- the controls panel --------------------------------------------------
+   *
+   * `unknown` wherever the gateway's public surface cannot confirm the answer.
+   * Two of these genuinely cannot be read without an operator token, and
+   * saying so is more useful than a tick that means "probably". */
+  const controls = React.useMemo(() => {
+    const agentsKnown = agents !== null;
+    const authorized = agents?.filter((a) => a.policy !== null).length ?? 0;
+    const verifiedEscrows = sessions.filter((s) => s.chain_verified).length;
+    const evidenceEntries = sessions.reduce((n, s) => n + s.evidence_count, 0);
+
+    return [
+      {
+        label: "Human authorization",
+        state: (agentsKnown
+          ? authorized > 0
+            ? "on"
+            : "off"
+          : "unknown") as ControlState,
+        evidence: agentsKnown
+          ? `${authorized} of ${agents!.length} agents carry a spending policy`
+          : "Needs an operator token to read the control plane",
+      },
+      {
+        label: "Escrow bound on chain",
+        state: (verifiedEscrows > 0 ? "on" : sessions.length ? "off" : "unknown") as ControlState,
+        evidence: sessions.length
+          ? `${verifiedEscrows} of ${sessions.length} sessions verified against a vault`
+          : "No sessions opened yet",
+      },
+      {
+        label: "Signed claims verified",
+        state: (decisions.length > 0 ? "on" : "unknown") as ControlState,
+        evidence: decisions.length
+          ? `${decisions.length} Ed25519 claims decided, ${denials} refused`
+          : "No claims submitted yet",
+      },
+      {
+        label: "Evidence chain",
+        state: (evidenceEntries > 0 ? "on" : "unknown") as ControlState,
+        evidence: evidenceEntries
+          ? `${evidenceEntries} decisions hash-chained across ${sessions.length} sessions`
+          : "No decisions recorded yet",
+      },
+      {
+        label: "Settlement authority",
+        state: (health
+          ? health.settlement_authority
+            ? "on"
+            : "off"
+          : "unknown") as ControlState,
+        evidence: health?.settlement_authority
+          ? `${protocolLabel(health.program_id)} — AgentPay settles without a provider key`
+          : health
+            ? "Gateway reports no settlement authority"
+            : "Gateway not reachable",
+      },
+    ];
+  }, [agents, sessions, decisions, denials, health]);
+
   return (
     <div className="space-y-5">
       {/* ---- header -------------------------------------------------------
           No name: the browser has no authenticated operator identity, and a
           greeting with a made-up name would be fabricated data on a page whose
           entire claim is that its numbers are real. */}
-      <header className="flex flex-wrap items-end justify-between gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="t-page">Agent payments, enforced and provable</h1>
+          <h1 className="t-page brand-gradient-text">Agent payments, enforced and provable</h1>
           {/* What the old line said was "this is a dashboard". It described
               the console, not the product, so a reader who arrived here cold
               learned nothing about what AgentPay does in the ten seconds they
@@ -304,15 +470,28 @@ export default function MonitorPage() {
             root on Solana — so what an agent spent can be proved without trusting this gateway.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Wraps, and must. `shrink-0` here held three badges on one line and
+            pushed the document 98px past a 375px viewport — the whole page
+            scrolled sideways because of a status row. */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {live !== null && (
             <Badge variant={live ? "allowed" : "denied"}>
               {live ? "All systems operational" : "Gateway unreachable"}
             </Badge>
           )}
           <Badge variant="info">Solana devnet</Badge>
+          {/* Named from /health, so it cannot keep saying V2 while the gateway
+              is pointed at the old program. */}
+          {health && <Badge variant="agent">{protocolLabel(health.program_id)}</Badge>}
         </div>
       </header>
+
+      {/* ---- level 0: what this system DOES ------------------------------
+          Above the metrics on purpose. A reader who has never heard of
+          AgentPay needs the shape of the thing before any number about it
+          means anything, and this is the only element on the page that
+          explains rather than reports. Every stage is lit from data. */}
+      <PaymentLifecycle reached={lifecycleReached} />
 
       {/* ---- level 1: what is happening now ---- */}
       <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -606,6 +785,11 @@ export default function MonitorPage() {
 
         {/* ---- level 3/4: what happened, and where to investigate ---- */}
         <div className="space-y-4">
+          {/* The five things that make this a security product rather than a
+              payments dashboard. First in the column because it answers "why
+              should I believe any of this" before the numbers arrive. */}
+          <SecurityControls controls={controls} />
+
           {/* Escrow summary. No single "escrow wallet" exists — every session
               has its own vault PDA — so this summarises rather than pretending
               to be one address, and links to the filter instead of a refund
