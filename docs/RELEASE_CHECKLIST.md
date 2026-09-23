@@ -84,7 +84,7 @@ direct invocations recorded in [HACKATHON_KT.md](HACKATHON_KT.md) §10. Adding
 `package.json` entries would be a sensible follow-up; it was deliberately not
 done as part of a documentation-only change.
 
-Also note `npm run evidence-devnet` runs `tests/evidence-devnet.ts`, which is a
+Also note `npm run evidence:v1-legacy` runs `tests/evidence-devnet.ts`, which is a
 **different file** from `tests/devnet-evidence.ts`. The names are one
 transposition apart. Check which one you mean.
 

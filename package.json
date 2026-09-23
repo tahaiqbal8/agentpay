@@ -4,20 +4,27 @@
   "private": true,
   "description": "Integration and attack test suite for the AgentPay escrow program",
   "scripts": {
+    "//": "THE demo command is `demo:v2`. Anything suffixed `:v1-legacy` drives the OLD program (3aKGM6Cb…) and must never be used to demonstrate AgentPay — see docs/RUNBOOK.md, 'Canonical V2 demo'.",
+
+    "demo:v2": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/e2e-v2-devnet.ts",
+    "e2e-v2": "npm run demo:v2",
+    "custody:v2": "ts-mocha -p ./tsconfig.json -t 1000000 tests/custody.ts",
+    "evidence:v2": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/devnet-evidence.ts",
+
     "test": "ts-mocha -p ./tsconfig.json -t 1000000 tests/attacks.ts",
-    "diagnostics": "ts-mocha -p ./tsconfig.json -t 1000000 tests/diagnostics.ts",
     "smoke": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/gateway-smoke.ts",
-    "settle-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/settle-devnet.ts",
     "restart-test": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/restart-durability.ts",
-    "evidence-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/evidence-devnet.ts",
-    "sdk-demo": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/sdk-demo.ts",
-    "sdk-test": "npm --prefix sdk test",
-    "policy-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/policy-devnet.ts",
-    "reconcile-devnet": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/reconcile-devnet.ts",
-    "stage-settleable": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/stage-settleable.ts",
     "demo": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-agent.ts",
     "buy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/demo-buy.ts",
-    "e2e-v2": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/e2e-v2-devnet.ts"
+    "sdk-test": "npm --prefix sdk test",
+
+    "evidence:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/evidence-devnet.ts",
+    "settle:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/settle-devnet.ts",
+    "policy:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/policy-devnet.ts",
+    "reconcile:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' tests/reconcile-devnet.ts",
+    "sdk-demo:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/sdk-demo.ts",
+    "stage-settleable:v1-legacy": "ts-node --compiler-options '{\"module\":\"commonjs\",\"esModuleInterop\":true}' scripts/stage-settleable.ts",
+    "diagnostics:v1-legacy": "ts-mocha -p ./tsconfig.json -t 1000000 tests/diagnostics.ts"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",

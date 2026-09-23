@@ -566,7 +566,7 @@ Regression — must be byte-identical:
 17. the 73-byte claim vector test
 18. every existing Merkle root recomputes to the same value
 19. `npm test` (replay, forgery, high-water)
-20. `npm run evidence-devnet` end to end
+20. `npm run evidence:v1-legacy` end to end
 
 ---
 

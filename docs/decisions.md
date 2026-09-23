@@ -649,7 +649,7 @@ its provider at `confirmed`, which removed most spurious blockhash errors.
 
 `POST /v1/session/settle` assembles the two-instruction transaction the program
 requires, signs as the provider, and submits it. Verified end to end
-(`npm run settle-devnet`): a real escrow session was opened on devnet, four
+(`npm run settle:v1-legacy`): a real escrow session was opened on devnet, four
 claims were authorised off-chain, and **one** transaction settled them all.
 
 ```

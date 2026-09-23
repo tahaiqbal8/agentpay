@@ -363,7 +363,7 @@ Expected on a healthy install:
 
 ```bash
 npm run demo            # needs AGENTPAY_TRUST_OPEN_REQUESTS=1 — dev only
-npm run evidence-devnet # full on-chain loop; spends devnet SOL
+npm run evidence:v1-legacy # full on-chain loop; spends devnet SOL
 ```
 
 ---

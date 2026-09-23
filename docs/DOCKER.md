@@ -234,7 +234,7 @@ That counter is the proof of the security property: a denied claim never reaches
 the provider, so an agent cannot get free data by sending a claim it knows will
 be refused.
 
-For the real on-chain path with real escrow, use `npm run evidence-devnet` — it
+For the real on-chain path with real escrow, use `npm run evidence:v1-legacy` — it
 needs devnet SOL and the Solana toolchain on the host, not in Docker.
 
 ---

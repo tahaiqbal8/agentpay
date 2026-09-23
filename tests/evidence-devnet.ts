@@ -1,3 +1,9 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Drives the OLD program, 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U, via
+// idl/agentpay-v1.json. It is regression coverage for sessions opened before
+// the v2 cutover — it is NOT a demonstration of AgentPay.
+// Run it as `npm run evidence:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * End-to-end evidence test against Solana devnet.
  *

@@ -1,3 +1,7 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Loads idl/agentpay-v1.json, so it reports the OLD program's behaviour.
+// Run it as `npm run diagnostics:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * Not an attack suite. This prints the *actual* on-chain failure for the cases
  * where the defence is structural rather than an Anchor error code, so the

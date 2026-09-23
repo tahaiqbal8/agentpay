@@ -50,6 +50,14 @@ import {
   withRpcRetry,
 } from "./helpers";
 
+// Before anything reads `process.env`. `ADMIN` below is a module-level
+// constant, so it is evaluated at import time — earlier than any call inside
+// `main()`. Loading `.env` from there left `ADMIN` undefined and the run died
+// at step 2 with ERR_UNAUTHORIZED, for a token sitting in a file in the
+// project root. `scripts/sdk-demo.ts` and `tests/policy-devnet.ts` already
+// call it at module scope for the same reason.
+ensureDevnetEnv();
+
 const BASE = process.env.GATEWAY ?? "http://127.0.0.1:8080";
 const DEPOSIT = 3_000_000n; // 3 USDC
 const ADMIN = process.env.AGENTPAY_ADMIN_TOKEN?.trim();
@@ -92,7 +100,6 @@ async function api(method: string, path: string, body?: any) {
 }
 
 async function main() {
-  ensureDevnetEnv();
   const provider = makeProvider();
   anchor.setProvider(provider);
   const program = programFor("v2", provider);

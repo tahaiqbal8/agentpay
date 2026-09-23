@@ -157,50 +157,84 @@ Registry, Approvals.
 
 ---
 
-## Part 3 — The whole flow, in one command
+## Part 3 — Canonical V2 demo
+
+**This is the demo. One command, program v2, real devnet.**
 
 ```bash
 npm install
-npm run sdk-demo
+npm run demo:v2
 ```
 
-This opens a real devnet escrow, authorizes an agent, buys, gets refused, and
-settles. Expected:
+It loads `AGENTPAY_ADMIN_TOKEN`, `AGENTPAY_PROGRAM_ID` and `AGENTPAY_RPC_URL`
+from `.env` itself — nothing to export. It needs `docker compose up -d`
+running and a devnet wallet holding ~0.1 SOL; it spends roughly 0.02–0.05
+devnet SOL in rent and fees.
+
+Fourteen stages, each one verified against the chain or the gateway rather
+than against the value the script submitted. Abridged, from a real run:
 
 ```
-escrow 2.000000 USDC · envelope 0.005000 · allowlist /weather,/quote
+ 5. the agent opens an escrow, binding AgentPay as settlement authority
+   session PDA                  7axQ7wTJCzVkShTgarpUxRL3eCBAvauhP6jtKGokep8i
+   settlement_authority (chain) DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s
+   PASS  session account is 219 bytes                 the v2 layout
 
-  200 Lahore    paid 0.001000  24°C Haze · via demo-provider
-  200 Karachi   paid 0.001000  31°C Clear · via demo-provider
-  404 Multan    paid 0.001000  charged, but the provider did not serve
-  403 analyse   ERR_POLICY_RESOURCE_NOT_ALLOWED  retrying will not help
+ 8. the agent buys, signing a cumulative claim each time
+   PASS  bought /weather                              cumulative 1000
+   PASS  bought /quote                                cumulative 1500
 
-  buyMany: 1 of 20 succeeded, spent 0.001000  stopped by ERR_UPSTREAM_UNAVAILABLE
+ 9. enforcement: the gateway refuses what the human did not allow
+   PASS  /analyse refused                             ERR_POLICY_RESOURCE_NOT_ALLOWED
+   PASS  the mark did not move                        still 1500
+   PASS  a reused nonce refused                       ERR_NONCE_NOT_MONOTONIC
 
-  settled 0.004000 USDC in one transaction
-  sig   3aooufGe…
-  root  ce4b1397…  (4 decisions, refusals included)
+11. settlement — signed by AgentPay's authority, NOT a provider key
+   provider balance after       0 -> 1500  (+1500)
+   vault balance after          3000000 -> 2998500  (-1500)
+   transaction signers          DLuD55GehdW6pNnv82NUs9hwbwN4mXssXwm8ucv4FH6s
+   PASS  the provider key never signed                AgentPay holds no provider key here
 
-PASS  4 decisions, 0.004000 USDC committed,
-      and exactly TWO chain transactions: one to open, one to settle.
+12. the root the program stored, checked independently
+   PASS  independently recomputed root MATCHES        7d733e13b31641b63d350f84…
+   PASS  reported as the LATEST root                  not final — settlement is repeatable
+
+14. what remains is still the agent's
+   PASS  conservation holds                           1500 + 2998500 = 3000000
 ```
 
-Four lines worth reading twice:
+Five lines worth reading twice:
 
-- **`404 Multan … charged`** — a charge is per *call*, not per *success*. The
-  claim is admitted before the request is forwarded, which is what stops a
-  refused claim from reaching the provider; the price of that ordering is that
-  a provider error still costs. The SDK reports it rather than hiding it.
-- **`403 analyse`** — the human's envelope refused it, naming the rule.
-- **`stopped by ERR_UPSTREAM_UNAVAILABLE`** — `buyMany` stops on a provider
-  failure instead of spending the whole budget on errors.
-- **TWO chain transactions** for the entire session.
+- **`session account is 219 bytes`** — the v2 layout. A v1 session is 187. The
+  gateway refuses any other length rather than guessing.
+- **`/analyse refused` … `the mark did not move`** — a refusal is not just a
+  rejected response; the cumulative high-water mark is unchanged, so nothing
+  was spent and a replay of it cannot spend either.
+- **`the provider key never signed`** — the whole point of v2. The money
+  still lands in the provider's account because the program binds the
+  destination in the session PDA's seeds.
+- **`not final — settlement is repeatable`** — the stored root is the *latest
+  committed* root, not an immutable one. A proof exported now will not verify
+  against a later root.
+- **`conservation holds`** — what the provider received plus what remains in
+  the vault equals the deposit, exactly.
 
 Verify the settlement yourself, against the chain rather than the script:
 
 ```bash
-solana confirm -v <the sig from above> -u devnet
+solana confirm -v <the settlement tx from the output> -u devnet
 ```
+
+### V1 is legacy — never demo it
+
+`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` is still deployed and still
+serves every session opened before the cutover. Every script that drives it is
+suffixed `:v1-legacy` and carries a banner at the top of the file.
+
+**Do not run any `:v1-legacy` command to demonstrate AgentPay.** They exercise
+the old custody model, where AgentPay holds the provider's private key — the
+thing v2 exists to remove. They are kept only as regression coverage for
+sessions that already exist. See [MIGRATION_V1_V2.md](MIGRATION_V1_V2.md).
 
 ---
 
@@ -237,8 +271,16 @@ applied to a claim ambiguous.
 ### 4.2 Fund it — this is the only step with custody
 
 The escrow is opened **on chain**, by the agent's key. Nothing in the gateway
-can create or increase it. Use `npm run stage-settleable` to do this for a test
-agent, or `open_session` directly.
+can create or increase it.
+
+For a v2 session — the one you want — this is stage 5 of `npm run demo:v2`,
+which calls `open_session` with `settlement_authority` set to the key
+`/health` publishes. Calling `open_session` directly works too; bind that same
+authority, or AgentPay will not be able to settle the session.
+
+`npm run stage-settleable:v1-legacy` also leaves a funded session waiting, but
+it opens a **v1** session under the old program. Use it only when you
+specifically want to exercise the legacy path.
 
 **This deposit is the agent's absolute ceiling.** No policy, no bug and no
 compromised gateway can exceed it.
@@ -428,15 +470,28 @@ provable against a root committed on Solana — without trusting the operator.**
 
 ## Part 6 — Testing
 
+**Program v2 — the current protocol:**
+
 | Command | Covers | Needs |
 | --- | --- | --- |
 | `cargo test --manifest-path gateway/Cargo.toml` | 129 hermetic | nothing |
 | `npm run sdk-test` | 27 SDK checks incl. claim parity | nothing |
-| `npm test` | 24 attacks against the program | devnet |
-| `npm run policy-devnet` | 45 control-plane, planner and operator checks | devnet |
-| `npm run evidence-devnet` | evidence + Merkle proof | devnet |
-| `npm run sdk-demo` | the SDK end to end | devnet |
-| `npm run stage-settleable` | leaves a settleable session for the UI | devnet |
+| `npm test` | 24 attacks; v2 by default, `AGENTPAY_TEST_PROGRAM=v1` for the old rules | devnet |
+| `npm run demo:v2` | **the canonical demo** — the whole lifecycle | devnet |
+| `npm run custody:v2` | 20 custody invariants | local validator |
+| `npm run evidence:v2` | custody evidence, every figure read back from chain | devnet |
+
+**Program v1 — legacy regression only. Never demo these.**
+
+| Command | Covers | Needs |
+| --- | --- | --- |
+| `npm run policy:v1-legacy` | 45 control-plane, planner and operator checks | devnet |
+| `npm run evidence:v1-legacy` | evidence + Merkle proof, old program | devnet |
+| `npm run settle:v1-legacy` | provider-key settlement, the model v2 replaced | devnet |
+| `npm run reconcile:v1-legacy` | 8 lies at `/v1/session/open`, all refused | devnet |
+| `npm run sdk-demo:v1-legacy` | the SDK end to end, old program | devnet |
+| `npm run stage-settleable:v1-legacy` | leaves a **v1** settleable session for the UI | devnet |
+| `npm run diagnostics:v1-legacy` | prints actual on-chain failures, old program | devnet |
 
 Database-backed tests need a **separate, disposable** database:
 
@@ -557,7 +612,7 @@ audit trail depend on the party it exists to check.
 | `401 ERR_UNAUTHORIZED` on a control endpoint | Token missing or wrong | `export TOKEN=$(grep '^AGENTPAY_ADMIN_TOKEN=' .env \| cut -d= -f2)` |
 | `429 ERR_RATE_LIMITED` | Hit the limit | Wait; `/v1/session/open` refills at 20/min |
 | `ERR_SETTLEMENT_UNAVAILABLE` | No settlement key for that session's program — v2 needs `AGENTPAY_SETTLEMENT_AUTHORITY_KEYPAIR`, v1 needs `AGENTPAY_PROVIDER_KEYPAIR` | Mount the right one (Part 2) and `--force-recreate gateway` |
-| Settlement page empty | Sessions have no confirmed escrow | Press **Check against the chain**, or `npm run stage-settleable` |
+| Settlement page empty | Sessions have no confirmed escrow | Press **Check against the chain**, or `npm run stage-settleable:v1-legacy` |
 | `ERR_SESSION_ACCOUNT_NOT_FOUND` at open | No escrow on chain for that address | Open one first |
 | `ERR_CLAIM_NOT_MONOTONIC` | Client restarted its counters at zero | Use `AgentPayClient.resume()` |
 | Gateway won't start, mentions the admin token | Non-loopback bind without one | Set it. This is the guard working. |

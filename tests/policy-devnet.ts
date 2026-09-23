@@ -1,3 +1,8 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Drives the OLD program, 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U.
+// The v2 equivalent of this walk is step 2-9 of `npm run demo:v2`.
+// Run it as `npm run policy:v1-legacy`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * The control plane, end to end, against a real devnet escrow.
  *

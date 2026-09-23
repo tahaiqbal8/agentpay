@@ -332,7 +332,7 @@ auth before knowing anyone wants the product is effort spent on a guess.
 3. Publish /_catalogue on their API    provider's own work        [EXISTING]
 4. Receive workspace token             returned once at step 1    [NEW]
 5. Point agents at the gateway         config, no code            [EXISTING]
-6. Test one payment                    npm run sdk-demo           [EXISTING]
+6. Test one payment                    npm run sdk-demo:v1-legacy           [EXISTING]
 7. Go live                             —
 ```
 

@@ -941,11 +941,11 @@ logs `settlement enabled provider=…` at boot when the key loads.
 | --- | --- |
 | `npm run demo` | 8 enforcement scenarios against synthetic sessions (needs the trust flag) |
 | `npm run buy` | An agent actually buying data: 402 → sign → 200 + payload |
-| `npm run evidence-devnet` | Real escrow, 7 claims, settles, proves the root against the chain |
-| `npm run stage-settleable` | The same but **stops before settling**, leaving a session for the Settlement page |
-| `npm run reconcile-devnet` | Opens one real session and tries to register it under 8 lies; all must be refused |
-| `npm run policy-devnet` | The control plane end to end: create, authorize, plan, buy, then be refused five ways |
-| `npm run sdk-demo` | The same purchases as `demo-buy`, through the SDK — six lines instead of 194 |
+| `npm run evidence:v1-legacy` | Real escrow, 7 claims, settles, proves the root against the chain |
+| `npm run stage-settleable:v1-legacy` | The same but **stops before settling**, leaving a session for the Settlement page |
+| `npm run reconcile:v1-legacy` | Opens one real session and tries to register it under 8 lies; all must be refused |
+| `npm run policy:v1-legacy` | The control plane end to end: create, authorize, plan, buy, then be refused five ways |
+| `npm run sdk-demo:v1-legacy` | The same purchases as `demo-buy`, through the SDK — six lines instead of 194 |
 | `npm run sdk-test` | The SDK suite, including the claim-encoding parity vector |
 
 The devnet scripts default `ANCHOR_PROVIDER_URL`, `ANCHOR_WALLET` and
@@ -999,12 +999,12 @@ settler, double settlement, refund before expiry.
 ### Devnet end-to-end
 
 ```bash
-npm run evidence-devnet     # the full loop, including the Merkle proof
-npm run reconcile-devnet    # 8 lies at /v1/session/open, all must be refused
+npm run evidence:v1-legacy     # the full loop, including the Merkle proof
+npm run reconcile:v1-legacy    # 8 lies at /v1/session/open, all must be refused
 npm run restart-test        # state survives a gateway restart
 ```
 
-`npm run policy-devnet` is the control-plane equivalent: 22 checks against a
+`npm run policy:v1-legacy` is the control-plane equivalent: 22 checks against a
 real devnet escrow covering agent creation, wallet binding, authorization,
 planning, purchases inside the envelope, and refusals by allowlist, price cap,
 call limit, suspension and approval. Its load-bearing assertion is that a

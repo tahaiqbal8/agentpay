@@ -377,7 +377,7 @@ Restart with step ② to recover.
 ### 8.5 The full on-chain loop (real devnet money)
 
 ```bash
-npm run evidence-devnet
+npm run evidence:v1-legacy
 ```
 
 Opens a real escrow session, drives 7 claims, settles on devnet, then verifies
@@ -452,7 +452,7 @@ npm --prefix web run dev        # console   :3100
 
 npm run demo                    # 8 scripted scenarios
 npm run demo -- --watch         # continuous traffic
-npm run evidence-devnet         # full on-chain loop (spends SOL)
+npm run evidence:v1-legacy         # full on-chain loop (spends SOL)
 ./scripts/dev-db.sh psql        # inspect the database
 ```
 

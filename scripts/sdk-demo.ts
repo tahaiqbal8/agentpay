@@ -1,3 +1,8 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Opens its session under the OLD program,
+// 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U, via idl/agentpay-v1.json.
+// Run it as `npm run sdk-demo:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * The same job `demo-buy.ts` does, through the SDK.
  *

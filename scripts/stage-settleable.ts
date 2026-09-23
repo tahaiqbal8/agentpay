@@ -1,3 +1,9 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Stages its session under the OLD program,
+// 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U, so the session it leaves in
+// the console settles under v1 rules, with the provider's own key.
+// Run it as `npm run stage-settleable:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * Leaves one genuinely settleable session waiting in the console.
  *

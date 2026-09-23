@@ -1,3 +1,7 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Drives the OLD program, 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U.
+// Run it as `npm run reconcile:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * On-chain reconciliation of /v1/session/open, against devnet.
  *

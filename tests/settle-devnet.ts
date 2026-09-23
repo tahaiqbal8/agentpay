@@ -1,3 +1,8 @@
+// ─── V1 LEGACY ───────────────────────────────────────────────────────────────
+// Drives the OLD program, 3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U, and
+// settles with the PROVIDER's own key — the custody model v2 replaced.
+// Run it as `npm run settle:v1-legacy`. The demo is `npm run demo:v2`.
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * End-to-end settlement against Solana devnet.
  *

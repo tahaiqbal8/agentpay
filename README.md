@@ -139,16 +139,51 @@ npm run buy
     no data returned — the provider was never contacted
 ```
 
-Both of those run against synthetic sessions. For a **real** one on devnet:
+Both of those run against synthetic sessions.
+
+---
+
+## Canonical V2 demo
+
+**One command. This is the demo.**
 
 ```bash
-npm run evidence-devnet     # opens, drives claims, settles, proves the root
-npm run stage-settleable    # the same, but stops before settling
+npm run demo:v2
 ```
 
-`stage-settleable` leaves a funded session waiting so the console's Settlement
-page has something to act on — otherwise every script settles its own session
-and the Settle button is never seen working.
+It runs the whole lifecycle against **real Solana devnet** under program v2
+(`ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m`): a human creates an agent and
+sets a spending envelope, the agent funds an escrow that binds AgentPay's
+settlement authority, discovers the catalogue, plans, buys `/weather` and
+`/quote` against signed cumulative claims, is **refused** `/analyse` by policy
+and refused again on a replayed nonce, has every decision written to a hash
+chain, and is settled by AgentPay's authority — which never holds the
+provider's key. The Merkle root is then recomputed independently, a refusal is
+proved against it, and conservation is checked.
+
+It reads `AGENTPAY_ADMIN_TOKEN`, `AGENTPAY_PROGRAM_ID` and `AGENTPAY_RPC_URL`
+from `.env` itself. You do not need to export anything.
+
+Prerequisites: `docker compose up -d` running, and a devnet wallet with
+~0.1 SOL. The run spends roughly 0.02–0.05 devnet SOL in rent and fees.
+
+Full step-by-step, including the manual `curl` version of each stage:
+[RUNBOOK.md — Canonical V2 demo](docs/RUNBOOK.md#canonical-v2-demo).
+
+### V1 is legacy
+
+`3aKGM6Cb4Rd5sPH5YmSFc9567xNCDDKschQ4u7y5xP2U` is still deployed and still
+serves every session opened before the cutover. Its scripts are kept as
+regression coverage and are all suffixed `:v1-legacy`:
+
+```bash
+npm run evidence:v1-legacy          # V1 — NOT the demo
+npm run stage-settleable:v1-legacy  # V1 — leaves a V1 session for the UI
+```
+
+**Never run a `:v1-legacy` command to demonstrate AgentPay.** They exercise the
+old custody model, in which AgentPay holds the provider's private key — the
+thing v2 exists to remove. See [MIGRATION_V1_V2.md](docs/MIGRATION_V1_V2.md).
 
 ---
 
