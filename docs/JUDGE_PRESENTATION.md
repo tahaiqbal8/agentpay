@@ -198,6 +198,46 @@ The claim is admitted **before** the request is forwarded. That is why a refused
 
 ---
 
+## 7b. What a hardening pass found — and what it did not
+
+Worth having ready: a judge who asks "what did you find when you audited it?"
+is asking whether you looked, not whether it was perfect.
+
+**Four gaps were found and fixed.**
+
+| Gap | What it was | Fix |
+|---|---|---|
+| Evidence was append-only by convention | The runtime role held UPDATE/DELETE/TRUNCATE, and `evidence_log` carried `ON DELETE CASCADE` from `sessions` — so deleting one session erased its whole evidence chain without touching the table | Database triggers refuse UPDATE, DELETE and TRUNCATE, cascade included |
+| Rate limits keyed on the TCP peer | Behind nginx the peer *is* nginx, so every public client shared one bucket | `AGENTPAY_TRUSTED_PROXIES` — the header is believed only from listed addresses, walked right to left |
+| A V1 read path used the wrong program | `GET /v1/session/{s}/settlement` derived the record address from the primary program, so a settled V1 session read as `settled: false` | Owner picks the address, length picks the version — one fetch |
+| No security headers on the deployment | The console sent none and advertised its stack | Five headers at nginx, version banner off |
+
+**The one worth telling as a story:** `usage_records` had *deliberately* been
+denied a foreign key to `sessions`, with a comment saying a deleted session
+"must not silently erase the record that the customer was billed for those
+calls." The billing table was protected from exactly the erasure the
+cryptographic record was not.
+
+**Seven areas were audited and already sound** — claim security, policy
+enforcement, the evidence hash chain, settlement, custody, the API surface and
+secret handling. No tests were added there, because coverage existed.
+
+**Eight limitations were reviewed and accepted, not fixed.** Four of them
+because fixing would make things worse: closing the `SettlementRecord` to
+reclaim rent would destroy the proofs it anchors; adding a resource name to
+evidence would change the hash preimage and invalidate every root ever
+published; a partial Token-2022 test would turn "untested" into "believed to
+work"; removing the V1 provider key would strand the sessions that need it.
+
+> **What I say:** *"We audited it, we fixed four things, and we wrote down the
+> eight we did not — including four where the fix would have been worse than the
+> gap. That list is in the repository."*
+
+**Test counts after the pass:** 148 gateway hermetic, 45 Postgres-backed, all
+passing. Full reasoning: [FINAL_GAP_AUDIT.md](../FINAL_GAP_AUDIT.md).
+
+---
+
 ## 8. Live demo — exact commands
 
 AgentPay is deployed and running. Judges do not need anything installed — they
@@ -284,7 +324,7 @@ failure and is not one. Section 11 explains this.
 
 **What the judge sees:**
 ```
-session PDA                  86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ
+session PDA                  Eb62WN5exY1fZthDT7kiKzULCfe2p2yJw4BFFA9AucjA
 settlement_authority (chain) 7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
 PASS  session account is 219 bytes     the v2 layout
 ```
@@ -383,8 +423,8 @@ Console: **https://13-200-171-103.sslip.io**
 | Route | Show | Priority |
 | --- | --- | --- |
 | `/` | Payment lifecycle strip, KPIs, Security controls panel | **High** |
-| `/session/86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ` | Escrow figures, 9-of-9 lifecycle, claim activity | **High** |
-| `/verifier?session=86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ` | Three-root verification | **Highest** |
+| `/session/Eb62WN5exY1fZthDT7kiKzULCfe2p2yJw4BFFA9AucjA` | Escrow figures, 9-of-9 lifecycle, claim activity | **High** |
+| `/verifier?session=Eb62WN5exY1fZthDT7kiKzULCfe2p2yJw4BFFA9AucjA` | Three-root verification | **Highest** |
 | `/settle` | Settlement flow and the latest committed root | **High** |
 | `/agents` | The envelope that bounds the agent | Medium |
 | `/approvals` | Per-purchase human control | Medium |
@@ -410,7 +450,7 @@ This is the screen that wins the room. Open it, click the red entry, stop talkin
         ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
         │  BROWSER ROOT   │   │  GATEWAY ROOT   │   │  ON-CHAIN ROOT  │
         │     MATCH       │ = │     MATCH       │ = │     MATCH       │
-        │  2c3ca194…e9b5  │   │  2c3ca194…e9b5  │   │  2c3ca194…e9b5  │
+        │  02078c46…2e38  │   │  02078c46…2e38  │   │  02078c46…2e38  │
         │  computed here  │   │    reported     │   │    committed    │
         └─────────────────┘   └─────────────────┘   └─────────────────┘
 
@@ -464,12 +504,12 @@ From the verified run:
 
 | | |
 | --- | --- |
-| **Settlement transaction** | `5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj` |
-| **Settlement record** | `5QFZgmYKg47Jk2bxQTd55jdN7wjqyWv8JsJgnDQgBT7H` |
+| **Settlement transaction** | `3Na9CSu5nCrUb428LtuoJQ8AoVZMnxkk5pSaQNSmBCkAWaFYnJNPDj1aHGipsMNVWNkKkxJmJWBFCxE5iSNU3d1J` |
+| **Settlement record** | `G7nwwHH1dzt6ZcM6X8Lg8LEAPRPBT73zPzD4Xb726tgZ` |
 | **Settlement authority (signer)** | `7zKU8vFe…K9ff2` |
 | **Provider signed** | **FALSE** |
 | **Required signatures** | 1 |
-| **Provider destination** | `4gmnhcBLgr5YoKpiDNQLrD6ByDJUwbijwGgqdsyCech3` |
+| **Provider destination** | `6EeBWmkE3bfYivuNwPwVZyV4YyecZUTWLp5qbz3PTN9Y` |
 | **Settled amount** | 1,500 micro-USDC (cumulative) |
 | **Remaining escrow** | 2,998,500 micro-USDC |
 | **V2 program present** | **TRUE** |
@@ -478,7 +518,7 @@ From the verified run:
 Verify it live in front of them:
 
 ```bash
-solana confirm -v 5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj -u devnet
+solana confirm -v 3Na9CSu5nCrUb428LtuoJQ8AoVZMnxkk5pSaQNSmBCkAWaFYnJNPDj1aHGipsMNVWNkKkxJmJWBFCxE5iSNU3d1J -u devnet
 ```
 
 ---
@@ -585,6 +625,19 @@ Each decision is hashed into a chain, and the chain is summarised by a Merkle ro
 **Q: Is the Merkle root final?**
 No, and we are careful about this. V2 settlement is monotonic and repeatable, so a later settlement can commit a root over more entries. It is the **latest committed root**, not a final one. A proof exported now will not verify against a later root.
 
+**Q: Can someone tamper with the evidence log in the database?**
+Two layers stop it. The hash chain detects it — change a row and the next
+entry's `prev_hash` no longer matches, and the gateway reports
+`chain_valid: false`. Underneath that, database triggers refuse UPDATE, DELETE
+and TRUNCATE outright, including a delete arriving through the cascade from
+`sessions`. The test that proves it fails when the trigger is disabled.
+
+**Q: Behind a proxy, can someone forge their way past your rate limit?**
+No. `X-Forwarded-For` is believed only from addresses an operator explicitly
+listed; from anyone else it is ignored completely and the TCP peer is used. The
+header is walked right to left, skipping hops we already trust, so anything a
+client prepended is never reached. Ten tests, including the spoof attempt.
+
 **Q: Is AgentPay audited?**
 No. Neither program has ever been externally audited. This is devnet only, and mainnet would need an audit first.
 
@@ -613,10 +666,15 @@ State these before a judge finds them. It reads as confidence, not weakness.
 - **The provider still needs a wallet address**, and should keep its key as a V1 fallback. The claim is that AgentPay does not *hold* it — not that it does not exist.
 - **A compromised control plane can change a provider's registered settlement address for future sessions.** Existing sessions are safe; this must be disclosed to providers.
 - **Evidence does not contain the resource name.** The hash preimage is session ‖ cumulative ‖ nonce ‖ decision, so the console cannot show which endpoint a claim was for.
-- **Rate limiting keys on the TCP peer**, so behind a load balancer all tenants share one bucket.
-- **One known read-path defect:** `GET /v1/session/{s}/settlement` derives the settlement-record address from the primary program unconditionally, so a settled **V1** session is reported as unsettled. Read-only; the settle path routes correctly; it does not affect the V2 demo.
 - **`SettlementRecord` is not in the V2 IDL** — the account became `UncheckedAccount`. Decode it by offset, as the gateway does.
+- **Token-2022 is untested.** The code path exists via `token_interface`; no test exercises it. Untested, not broken — and not claimed.
+- **Single gateway instance.** Per-session serialisation comes from a database row lock, which is correct for one process and several against one database. Multi-instance behaviour under partition is unproven. No horizontal scalability is claimed.
+- **Rate limiting is per-process.** The key is now correct behind a proxy, but the counter lives in one process's memory. Distributed limiting would need Redis, deliberately not introduced.
+- **The `SettlementRecord` rent is never reclaimed** — roughly 0.0013 SOL per settled session. No instruction closes the account, correctly: it is the proof anchor.
 - **No commercial validation.** No design partner, no pilot, no pricing research.
+
+Full reasoning for every one of these, including the four where a fix would make
+things worse, is in [FINAL_GAP_AUDIT.md](../FINAL_GAP_AUDIT.md).
 
 ---
 
@@ -706,17 +764,17 @@ NETWORK          Solana devnet
 PROGRAM (V2)     ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
 V1 PRESENT       FALSE
 
-AGENT            "e2e v2 agent"   3wNL8m4LfysUA949j3xocR1QTNGSUegDjF3qnkfMRVKj
+AGENT            "e2e v2 agent"   CnP3Mf2UA4rPMExMQt7ReQLN2tevzGY9FDtv1V5b5V5W
                  autonomous · active
 ENVELOPE         max_total 1000000 · max_per_call 2000
                  allowed /weather, /quote · max_calls 10
 FUNDING          3000000 micro-USDC
 
-SESSION          86EbWj1VQtYoWvFZTxTyUmyCVyXRumqJYzALw7Y5yUVZ
+SESSION          Eb62WN5exY1fZthDT7kiKzULCfe2p2yJw4BFFA9AucjA
   owner          ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m
   length         219 bytes
-  vault          2MpWpFM6cVFhVo9Q1P1rCmCCggHr4Be16rdai1kKe4dx
-  provider       4gmnhcBLgr5YoKpiDNQLrD6ByDJUwbijwGgqdsyCech3
+  vault          (vault — derived from the session PDA)
+  provider       6EeBWmkE3bfYivuNwPwVZyV4YyecZUTWLp5qbz3PTN9Y
   authority      7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2
 
 PURCHASES        /weather → cumulative 1000
@@ -728,13 +786,13 @@ EVIDENCE         3 entries · chain_valid true
   seq 0          ALLOWED                  cumulative 1000  nonce 1
   seq 1          ALLOWED                  cumulative 1500  nonce 2
   seq 2          ERR_NONCE_NOT_MONOTONIC  cumulative 2500  nonce 2
-MERKLE ROOT      2c3ca1941f635809c88a04715e1312fcc74d06dbe822119da38b4890aef4e9b5
+MERKLE ROOT      02078c467577961a9c5ee955a33fc380e3416da54a2e3dbf47053d87141b2e38
   browser        MATCH
   gateway        MATCH
   on chain       MATCH
 
-SETTLEMENT TX    5o1zVt5ycLDABGQCPhai86UreFHZ8kcQ7Lv4Z7ctjxKUMex2zwiu6bXfZZE7o7gdrEUNRg5WgEhyWZJnpWLaF5Gj
-  record         5QFZgmYKg47Jk2bxQTd55jdN7wjqyWv8JsJgnDQgBT7H
+SETTLEMENT TX    3Na9CSu5nCrUb428LtuoJQ8AoVZMnxkk5pSaQNSmBCkAWaFYnJNPDj1aHGipsMNVWNkKkxJmJWBFCxE5iSNU3d1J
+  record         G7nwwHH1dzt6ZcM6X8Lg8LEAPRPBT73zPzD4Xb726tgZ
   signers        7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2  (1)
   provider signed FALSE
   settled        1500 (cumulative)
@@ -753,6 +811,16 @@ HOST             AWS EC2  i-06081a9c50742b671  ap-south-1  Ubuntu 24.04
 ADDRESS          13.200.171.103  (Elastic IP — does not change on stop/start)
 STACK            docker compose: gateway · postgres · provider · web
 TLS              nginx reverse proxy → 127.0.0.1:3100; http:80 → 301 → https
+HEADERS          Strict-Transport-Security max-age=86400 · X-Content-Type-Options
+                 nosniff · X-Frame-Options DENY · Referrer-Policy
+                 strict-origin-when-cross-origin · Cross-Origin-Opener-Policy
+                 same-origin · server_tokens off · X-Powered-By hidden
+                 No CSP: Next.js emits inline scripts, so a strict policy needs
+                 per-response nonces and a loose one would be decoration. An
+                 unverified CSP that breaks the verifier is worse than none.
+                 No CORS: the gateway is not browser-reachable, so a policy
+                 would describe a request that cannot happen.
+CONFIG           deploy/nginx-agentpay.conf (in the repository)
 
 OPEN TO THE WORLD    22 (ssh) · 80 (redirect only) · 443 (console)
 CLOSED               3100 · 8080 (gateway) · 5434 (postgres) · 4021 (provider)
