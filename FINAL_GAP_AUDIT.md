@@ -15,15 +15,26 @@ change. Nothing here is marked fixed because the code "looks correct".
 
 ## Executive Summary
 
-Three engineering gaps were found, fixed, and covered by regression tests. A
-further seven areas were audited and found **already covered** — those are
-reported as verified, not as new work, because claiming otherwise would be
-checkbox theatre.
+Four engineering gaps were found and fixed — three with regression tests, one
+at the deployment layer verified live. A further seven areas were audited and
+found **already covered**; those are reported as verified, not as new work,
+because claiming otherwise would be checkbox theatre.
+
+A final review then took the nine remaining items one at a time, classified
+each, and decided whether it should be fixed now. One was (security headers).
+Eight are accepted, each with the reason stated — including four where fixing
+would make things worse: closing the `SettlementRecord` would destroy the proofs
+it anchors, adding a resource name to evidence would invalidate every root ever
+published, a partial Token-2022 test would turn "untested" into "believed to
+work", and removing the v1 provider key would strand sessions that need it.
+
+This is not a zero-item checklist and does not claim to be.
 
 | | |
 |---|---|
-| Gaps fixed this pass | 3 |
+| Gaps fixed this pass | 4 |
 | Areas audited and already sound | 7 |
+| Remaining gaps re-reviewed and accepted | 8 |
 | Tests added | 15 |
 | Gateway tests | 148 hermetic · 45 Postgres — all passing |
 | Fresh devnet run | passed, independently verified on chain |
@@ -37,7 +48,7 @@ billing table was protected from an erasure the cryptographic record was not.
 
 ---
 
-## Fixed Engineering Gaps
+## FIXED
 
 ### 1. Evidence was append-only by convention only
 
@@ -159,6 +170,74 @@ and `settle::tests::settlement_records_do_not_collide_across_sessions`.
 The chain confirms independently: `A7V1PEEP…B3WTf` is owned by the v1 program
 and holds that root. A v2 session is unaffected — same record, and
 `root_may_advance` still `true`.
+
+---
+
+### 4. No security headers on the public deployment
+
+**Problem.** The deployed console sent no security headers at all, and
+advertised its stack: `Server: nginx/1.24.0 (Ubuntu)` and
+`X-Powered-By: Next.js`. Nothing stopped the page being framed, nothing told
+browsers not to sniff content types, and there was no HSTS on a site that is
+HTTPS-only by design.
+
+**Classification.** SECURITY ISSUE — deployment layer. This is the one of the
+nine that was both real and safely fixable now.
+
+**Fix.** Five headers on the TLS server block, chosen for being verifiably safe
+with Next.js and WebCrypto, plus two disclosures turned off:
+
+```
+Strict-Transport-Security: max-age=86400
+X-Content-Type-Options:    nosniff
+X-Frame-Options:           DENY
+Referrer-Policy:           strict-origin-when-cross-origin
+Cross-Origin-Opener-Policy: same-origin
+server_tokens off          (nginx version hidden)
+proxy_hide_header X-Powered-By
+```
+
+**There is deliberately no Content-Security-Policy.** Next.js emits inline
+scripts and styles, so a strict CSP needs per-response nonces threaded through
+the application; a loose one carrying `unsafe-inline` would be decoration. An
+unverified CSP that breaks the verifier is worse than no CSP, because the
+verifier is the entire point of this deployment. Stated rather than omitted.
+
+**There is deliberately no CORS policy.** The gateway is not reachable from a
+browser at all — port 8080 is closed and the console proxies server-side
+through `/api/gw/[...path]`. A CORS policy would describe a request that cannot
+happen.
+
+**HSTS is one day, not the usual year.** The certificate auto-renews and the
+redirect works, but a short max-age keeps the decision reversible: a year-long
+pin on a demo host is painful to undo if the address moves.
+
+**Files.** `deploy/nginx-agentpay.conf` (new — the deployment's config, now in
+the repository so it is reproducible rather than living only on the server).
+
+**Verification** — live, against the public deployment:
+
+```
+Server: nginx                          (version no longer disclosed)
+X-Powered-By                           0 occurrences
+Strict-Transport-Security: max-age=86400
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Cross-Origin-Opener-Policy: same-origin
+
+http -> 301 -> https                   redirect intact
+all 8 console routes                   200
+3100 / 8080 / 5434 / 4021              still closed
+```
+
+**And the check that mattered.** With every header in place, the browser
+verifier was re-run against session `Eb62WN5e…9AucjA`:
+`isSecureContext: true`, `crypto.subtle: object`, verdict **Verified — Browser =
+Gateway = Chain**, zero console errors. The headers broke nothing.
+
+No gateway, program, SDK or web source changed in this pass, so `npm run
+demo:v2` was not re-run — there is no protocol or gateway behaviour to re-prove.
 
 ---
 
@@ -288,47 +367,109 @@ pricing model — a percentage of a small session cannot cover it.
 
 ---
 
-## Remaining Engineering Limitations
+## ACCEPTED LIMITATIONS
 
-Genuine, and none of them closable by editing this repository today.
+Each of the nine was re-reviewed individually: classified, judged on whether it
+should be fixed now, and either fixed or left with the reason stated. One was
+fixed (gap 9, below in FIXED). The other eight are accepted, and each entry says
+what makes it safe.
 
-1. **Token-2022 is untested.** The program uses `token_interface`, so the code
-   path exists, but no test exercises it — `Token2022` appears **0** times in
-   `tests/`, against 61 uses of the classic `TOKEN_PROGRAM_ID`. Writing a test
-   would mean minting a Token-2022 asset and settling against it; that is real
-   work, and until it is done the honest status is *unsupported*, which is what
-   the README says.
-2. **Single gateway instance.** Per-session serialisation comes from
-   `SELECT … FOR UPDATE` on the session row, which is correct for one process
-   and for several processes against one database. What is **unproven** is
-   multi-instance operation under partition or failover. No horizontal
-   scalability is claimed.
-3. **Rate limiting is per-process.** The trusted-proxy fix makes the *key*
-   correct; the *counter* still lives in one process's memory. Distributed
-   limiting would need Redis or equivalent, which was deliberately not
-   introduced for a devnet demo.
-4. **The `SettlementRecord` rent is never reclaimed.** No instruction closes the
-   account — correctly, since it is the proof anchor — so roughly 0.0013 SOL is
-   permanently sunk per settled session.
-5. **`SettlementRecord` is absent from the v2 IDL**, because the account became
-   `UncheckedAccount`. It must be decoded by offset, as the gateway does.
-6. **Migration v1 → v2 is unfinished.** `AGENTPAY_PROVIDER_KEYPAIR` is still
-   required for v1 sessions, so the gateway still holds a provider key for
-   those, until they drain.
-7. **A compromised control plane can change a provider's registered settlement
-   address for future sessions.** Existing sessions are safe — their provider is
-   in the PDA seeds. This cannot be fixed in the program, which never learns
-   what a provider "should" be. It must be disclosed to providers.
-8. **Evidence carries no resource name.** The hash preimage is
-   session ‖ cumulative ‖ nonce ‖ decision. The console therefore cannot show
-   which endpoint a claim was for, and does not pretend to.
-9. **No CORS policy and no security headers** on the gateway. The console
-   proxies server-side, so no browser talks to the gateway cross-origin and the
-   absence is currently the safe default. A different front end would need both.
+### 1. Token-2022 untested — DOCUMENTATION LIMITATION
 
----
+The program uses `token_interface`, so the code path exists. No test exercises
+it: `Token2022` appears **0** times in `tests/`, against 61 uses of the classic
+`TOKEN_PROGRAM_ID`.
 
-## External Validation Still Required
+**Not fixed, deliberately.** Adding a Token-2022 test means minting such an
+asset and settling against it — real work whose failure modes (transfer hooks,
+transfer fees, confidential transfers) each need their own reasoning. A partial
+test would turn "untested" into "believed to work", which is worse. The README
+says unsupported; no UI or document claims otherwise.
+
+### 2. Multi-instance deployment unproven — DEPLOYMENT LIMITATION
+
+Per-session serialisation comes from `SELECT … FOR UPDATE` on the session row,
+which is correct for one process and for several processes against one database
+— that is what the row lock is for. What is **unproven** is behaviour under
+partition or failover.
+
+**Not fixed.** The deployment is intentionally single-instance. Proving
+multi-instance safety needs a test harness with two gateways and an injected
+partition, which is a project rather than a patch. No horizontal scalability is
+claimed anywhere.
+
+### 3. Rate-limit counter is per-process — DEPLOYMENT LIMITATION
+
+The trusted-proxy fix made the *key* correct. The *counter* still lives in one
+process's memory, so two gateway processes would each allow the full budget.
+
+**Not fixed.** Distributed limiting needs Redis or equivalent. Introducing an
+external dependency for a single-instance devnet deployment would add an outage
+mode to fix a problem that deployment does not have. Documented as a
+single-instance assumption.
+
+### 4. `SettlementRecord` rent is permanently sunk — PROTOCOL LIMITATION
+
+No instruction closes the account, so roughly 0.0013 SOL per settled session is
+never reclaimed.
+
+**Not fixed, and it should not be.** The record *is* the proof anchor: closing
+it to reclaim rent would destroy the thing every exported proof verifies
+against. The cost is the price of durable evidence. It is a real constraint on
+future pricing — the cost is per session and fixed — and is stated as such
+rather than hidden.
+
+### 5. `SettlementRecord` absent from the v2 IDL — DOCUMENTATION LIMITATION
+
+The account is `UncheckedAccount` in the instruction, so Anchor emits neither an
+`accounts` nor a `types` entry for it. A third party has no machine-readable
+layout for the record they must decode.
+
+**Not fixed in the IDL.** Hand-editing a generated IDL would create a second
+source of truth that can silently drift from the program. The layout is instead
+pinned by a test against **real devnet bytes** —
+`chain::the_real_settlement_record_parses_to_the_root_the_browser_recomputed`
+asserts the offsets, the root, the amount and the timestamp against an account
+actually read from the chain. Documentation that a test cannot contradict.
+
+### 6. V1 migration unfinished — ACCEPTED, BY DESIGN
+
+`AGENTPAY_PROVIDER_KEYPAIR` is still configured, so the gateway still holds a
+provider key for v1 sessions.
+
+**Not fixed.** It cannot be: those sessions were opened under a program that
+requires `provider: Signer`. Removing the key would strand them. The retirement
+condition is exact and already written down — for every session under the v1
+program, `deposited_total - cumulative_settled - refunded_total == 0`. Until
+then the legacy branch stays, marked legacy, doing nothing else.
+
+### 7. A compromised control plane can change a provider's registered address — PROTOCOL LIMITATION
+
+For **future** sessions only.
+
+**Not fixed, and existing sessions were re-verified rather than assumed.** The
+settle path reads `record.provider` from the stored session, not the registry
+(`routes.rs:920`), and the program constrains the destination with
+`provider_token_account.owner == session.provider` (`lib.rs:655`) where
+`provider` is inside the PDA seeds (`lib.rs:563`). Proven on devnet by
+`custody.ts` — *"18. a compromised gateway cannot redirect funds"*. There is no
+vulnerability for existing sessions, so there was nothing to redesign. The
+residual risk for future sessions cannot be fixed in the program, which never
+learns what a provider "should" be, and must be disclosed to providers.
+
+### 8. Evidence carries no resource name — PROTOCOL LIMITATION
+
+The hash preimage is `session ‖ cumulative ‖ nonce ‖ decision`. The console
+cannot show which endpoint a claim was for.
+
+**Not fixed, deliberately.** Adding a field to the preimage would change every
+entry hash and therefore **every Merkle root ever published**, invalidating
+proofs that already exist on chain. The console shows `—` rather than inventing
+a name, and the judge guide states the limitation.
+
+### 9. CORS and security headers — **FIXED**, see below.
+
+## EXTERNAL VALIDATION
 
 Not engineering defects. No amount of code changes these.
 
@@ -384,7 +525,7 @@ Chain**, zero console errors.
 
 ---
 
-## Safe Claims
+## SAFE CLAIMS
 
 Every one is backed by source, a passing test, or chain evidence above.
 
@@ -404,7 +545,7 @@ Every one is backed by source, a passing test, or chain evidence above.
 9. Rate limits cannot be bypassed by forging `X-Forwarded-For`.
 10. AgentPay charges no platform fee.
 
-## Claims We Must NOT Make
+## UNSUPPORTED CLAIMS
 
 1. **Not audited.** No third party has reviewed either program.
 2. **Not production-ready.** Devnet only.
