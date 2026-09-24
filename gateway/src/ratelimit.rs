@@ -156,6 +156,141 @@ impl RateLimiter {
 }
 
 #[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use axum::extract::ConnectInfo;
+    use axum::http::Request as HttpRequest;
+    use std::net::SocketAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// Builds a request as if it arrived from `peer`, optionally carrying an
+    /// `X-Forwarded-For`.
+    fn req(peer: &str, xff: Option<&str>) -> Request {
+        let mut b = HttpRequest::builder().uri("/");
+        if let Some(v) = xff {
+            b = b.header("x-forwarded-for", v);
+        }
+        let mut r: Request = b.body(axum::body::Body::empty()).unwrap();
+        let addr: SocketAddr = format!("{peer}:40000").parse().unwrap();
+        r.extensions_mut().insert(ConnectInfo(addr));
+        r
+    }
+
+    /// The bypass this whole mechanism exists to prevent.
+    ///
+    /// A client talking to the gateway directly can write any address it likes
+    /// into `X-Forwarded-For`. If that were believed, every request could claim
+    /// a fresh bucket and the limiter would be decorative.
+    #[test]
+    fn a_direct_client_cannot_spoof_its_way_into_a_fresh_bucket() {
+        let trusted = vec![ip("10.0.0.1")];
+        // Peer 203.0.113.9 is NOT trusted, so its header is worthless.
+        for spoof in ["1.2.3.4", "5.6.7.8", "9.9.9.9"] {
+            let got = client_ip_with(&req("203.0.113.9", Some(spoof)), &trusted);
+            assert_eq!(
+                got,
+                ip("203.0.113.9"),
+                "an untrusted peer's X-Forwarded-For must be ignored entirely"
+            );
+        }
+    }
+
+    /// With nothing configured the header is never believed, from anyone.
+    #[test]
+    fn with_no_trusted_proxies_the_header_is_always_ignored() {
+        let got = client_ip_with(&req("10.0.0.1", Some("1.2.3.4")), &[]);
+        assert_eq!(got, ip("10.0.0.1"), "empty list means believe nobody");
+    }
+
+    /// The deployment this exists for: nginx in front, real client behind.
+    #[test]
+    fn a_trusted_proxy_reveals_the_real_client() {
+        let trusted = vec![ip("127.0.0.1")];
+        let got = client_ip_with(&req("127.0.0.1", Some("198.51.100.7")), &trusted);
+        assert_eq!(got, ip("198.51.100.7"));
+    }
+
+    /// Two clients through one proxy must land in two buckets. Without this
+    /// they share one, and a single noisy client rate-limits everybody.
+    #[test]
+    fn two_clients_behind_one_proxy_get_separate_buckets() {
+        let trusted = vec![ip("127.0.0.1")];
+        let a = client_ip_with(&req("127.0.0.1", Some("198.51.100.7")), &trusted);
+        let b = client_ip_with(&req("127.0.0.1", Some("198.51.100.8")), &trusted);
+        assert_ne!(a, b, "distinct clients must key distinctly");
+    }
+
+    /// A chain of proxies: walk from the right, skip hops we ourselves trust,
+    /// and stop at the first address a trusted hop actually observed.
+    #[test]
+    fn a_chain_of_trusted_proxies_is_walked_from_the_right() {
+        let trusted = vec![ip("127.0.0.1"), ip("10.0.0.5")];
+        // client -> 10.0.0.5 -> 127.0.0.1 -> us
+        let got = client_ip_with(&req("127.0.0.1", Some("198.51.100.7, 10.0.0.5")), &trusted);
+        assert_eq!(got, ip("198.51.100.7"));
+    }
+
+    /// Everything to the LEFT of the first untrusted hop is client-supplied and
+    /// must not be believed, even through a trusted proxy.
+    #[test]
+    fn client_supplied_hops_to_the_left_are_not_believed() {
+        let trusted = vec![ip("127.0.0.1")];
+        // The client prepended a lie; the proxy appended the truth.
+        let got = client_ip_with(
+            &req("127.0.0.1", Some("1.1.1.1, 2.2.2.2, 198.51.100.7")),
+            &trusted,
+        );
+        assert_eq!(
+            got,
+            ip("198.51.100.7"),
+            "the rightmost untrusted entry is the only one a trusted hop vouched for"
+        );
+    }
+
+    /// A malformed header must fail safe — never to something an attacker
+    /// supplied, and never by panicking.
+    #[test]
+    fn malformed_forwarding_headers_fail_safe() {
+        let trusted = vec![ip("127.0.0.1")];
+        for bad in ["", ",,,", "not-an-ip", "999.999.999.999", "  ", "<script>"] {
+            let got = client_ip_with(&req("127.0.0.1", Some(bad)), &trusted);
+            assert_eq!(
+                got,
+                ip("127.0.0.1"),
+                "malformed header {bad:?} must fall back to the peer"
+            );
+        }
+    }
+
+    /// A garbage entry between real ones is skipped, not fatal.
+    #[test]
+    fn one_bad_hop_does_not_poison_the_whole_header() {
+        let trusted = vec![ip("127.0.0.1")];
+        let got = client_ip_with(&req("127.0.0.1", Some("198.51.100.7, garbage")), &trusted);
+        assert_eq!(got, ip("198.51.100.7"));
+    }
+
+    /// A trusted proxy that forwards nothing leaves the peer standing.
+    #[test]
+    fn a_trusted_proxy_with_no_header_keys_on_the_peer() {
+        let trusted = vec![ip("127.0.0.1")];
+        assert_eq!(client_ip_with(&req("127.0.0.1", None), &trusted), ip("127.0.0.1"));
+    }
+
+    /// An attacker cannot escape their bucket by naming a trusted proxy.
+    #[test]
+    fn naming_a_trusted_proxy_in_the_header_does_not_help_an_attacker() {
+        let trusted = vec![ip("127.0.0.1")];
+        // Untrusted peer claims to be the proxy. Still ignored.
+        let got = client_ip_with(&req("203.0.113.9", Some("127.0.0.1")), &trusted);
+        assert_eq!(got, ip("203.0.113.9"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -304,18 +439,72 @@ use crate::routes::{request_id, AppState};
 
 /// The client address a limit is keyed on.
 ///
-/// Uses the peer address, NOT `X-Forwarded-For`. A caller can put anything in
-/// that header, so keying on it lets an attacker pick a fresh bucket per
-/// request and bypass the limit entirely. Behind a trusted proxy the operator
-/// must strip and re-set it there — that is the proxy's job, because only it
-/// knows which hop to believe.
-fn client_ip(req: &Request) -> IpAddr {
-    req.extensions()
+/// # The rule
+///
+/// `X-Forwarded-For` is believed **only** when the request arrived from an
+/// address the operator explicitly listed in `AGENTPAY_TRUSTED_PROXIES`. From
+/// anyone else the header is ignored entirely and the peer address is used.
+///
+/// A caller can put anything in that header. Trusting it unconditionally lets
+/// an attacker pick a fresh bucket per request and bypass the limit completely,
+/// which is strictly worse than no limit — it looks like one and is not.
+///
+/// # Why the list matters in the other direction too
+///
+/// With no trusted proxy configured the peer address is the only honest answer,
+/// and behind a reverse proxy that address is the PROXY. Every public client
+/// then shares one bucket: one noisy client can rate-limit everybody else. That
+/// is the failure this configuration exists to fix, and it is the deployment
+/// AgentPay actually runs (nginx terminating TLS in front of the gateway).
+///
+/// # The walk
+///
+/// `X-Forwarded-For` is appended to by each hop, so the right-hand entries are
+/// the ones added closest to us and therefore the ones we can reason about.
+/// Walking from the right and skipping entries that are themselves trusted
+/// proxies yields the first address a trusted hop actually observed. Anything
+/// further left was supplied by the client and is not evidence.
+fn client_ip_with(req: &Request, trusted: &[IpAddr]) -> IpAddr {
+    let peer = req
+        .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())
         // No peer address means the request did not arrive over TCP — a test
         // harness, usually. Key those together rather than exempting them.
-        .unwrap_or_else(|| IpAddr::from([0, 0, 0, 0]))
+        .unwrap_or_else(|| IpAddr::from([0, 0, 0, 0]));
+
+    if trusted.is_empty() || !trusted.contains(&peer) {
+        return peer;
+    }
+
+    let Some(xff) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    else {
+        // A trusted proxy that forwarded no header. Nothing to learn; the peer
+        // is still the most specific address we have.
+        return peer;
+    };
+
+    for hop in xff.split(',').rev() {
+        // A malformed entry is skipped, not fatal: one bad hop must not make
+        // the whole header unusable, and it must not fall through to something
+        // an attacker controls either.
+        let Ok(ip) = hop.trim().parse::<IpAddr>() else {
+            continue;
+        };
+        if !trusted.contains(&ip) {
+            return ip;
+        }
+    }
+
+    // Every entry was a trusted proxy, or none parsed. The peer stands.
+    peer
+}
+
+fn client_ip(req: &Request, state: &AppState) -> IpAddr {
+    client_ip_with(req, &state.trusted_proxies)
 }
 
 /// Limits the expensive, unauthenticated reconciliation path.
@@ -324,7 +513,8 @@ pub async fn limit_open(
     req: Request,
     next: Next,
 ) -> Result<Response, Denial> {
-    guard(&state.open_limiter, req, next, "session/open").await
+    let limiter = Arc::clone(&state.open_limiter);
+    guard(&limiter, &state, req, next, "session/open").await
 }
 
 /// The loose global limit: catches a runaway loop, not a determined attacker.
@@ -333,16 +523,18 @@ pub async fn limit_general(
     req: Request,
     next: Next,
 ) -> Result<Response, Denial> {
-    guard(&state.general_limiter, req, next, "general").await
+    let limiter = Arc::clone(&state.general_limiter);
+    guard(&limiter, &state, req, next, "general").await
 }
 
 async fn guard(
     limiter: &RateLimiter,
+    state: &AppState,
     req: Request,
     next: Next,
     which: &'static str,
 ) -> Result<Response, Denial> {
-    let ip = client_ip(&req);
+    let ip = client_ip(&req, state);
     match limiter.check(ip) {
         Decision::Allow => Ok(next.run(req).await),
         Decision::Refuse { retry_after_secs } => {

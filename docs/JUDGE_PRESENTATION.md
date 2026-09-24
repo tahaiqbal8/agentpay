@@ -1,6 +1,6 @@
 # AgentPay
 
-### Autonomous Payment Infrastructure for AI Agents
+### Payment Control, Policy Enforcement, Evidence & On-Chain Settlement
 
 **Judge Presentation & Live Demo Guide**
 
@@ -33,7 +33,7 @@ npm run demo:v2
 
 ## 2. 30-second elevator pitch
 
-> AI agents are starting to buy things on their own — data, APIs, compute.
+> Software is starting to buy things on its own — data, APIs, compute.
 >
 > But you cannot hand an agent your wallet and hope for the best.
 >
@@ -49,7 +49,7 @@ npm run demo:v2
 
 ## 3. The problem
 
-**How do you let an AI agent spend money on its own without handing it unrestricted control of funds?**
+**How do you let an automated client spend money on its own without handing it unrestricted control of funds?**
 
 Today the honest answer is: you don't. You give it an API key with a credit card behind it and you hope. That leaves six concrete risks:
 
@@ -68,7 +68,7 @@ The last two are the ones that matter to an auditor, and the ones nobody solves.
 
 ## 4. The solution
 
-AgentPay is an enforcement and audit layer between an autonomous agent and the APIs it buys from.
+AgentPay is a payment control and audit layer between an automated client and the APIs it buys from.
 
 ```
         Human
@@ -166,7 +166,7 @@ Separate mechanism. A spend needs an explicit human decision when either:
 
 While it waits the agent is refused with `ERR_APPROVAL_REQUIRED` — refused, not held open — and retries after the decision. Approving authorizes **that one purchase**, bound to that resource at that price. The console page is `/approvals`.
 
-> **Note for the demo:** the canonical run uses an autonomous agent operating inside its envelope, so it does **not** trigger a per-purchase approval. Show `/approvals` to explain the mechanism; do not claim the demo exercised it.
+> **Note for the demo:** the canonical run uses an agent in `autonomous` mode operating inside its envelope, so it does **not** trigger a per-purchase approval. Show `/approvals` to explain the mechanism; do not claim the demo exercised it.
 
 ---
 
@@ -670,7 +670,7 @@ instance still has to be up.
 
 ## 19. The 60-second version
 
-> AI agents are starting to buy things on their own, but you cannot hand one your wallet.
+> Software is starting to buy things on its own, but you cannot hand an automated client your wallet.
 >
 > AgentPay puts a human-defined spending limit in front of the agent, backed by an escrow on Solana that nothing can exceed.
 >
@@ -686,7 +686,7 @@ instance still has to be up.
 
 ## 20. Closing statement
 
-> AgentPay does not give an AI agent unrestricted access to money.
+> AgentPay does not give an automated client unrestricted access to money.
 >
 > A human defines the spending envelope. The agent proves every claim cryptographically. The gateway enforces the policy before a single request reaches a provider. Every decision — including every refusal — becomes tamper-evident evidence. And the settlement can be checked against the blockchain by anyone, without trusting us.
 >

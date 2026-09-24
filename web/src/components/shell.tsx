@@ -262,7 +262,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 AgentPay
               </p>
               <p className="truncate text-[11px] leading-tight text-[var(--color-fg-dim)]">
-                Autonomous Payment Infrastructure
+                Payment Control & Settlement
               </p>
             </div>
           )}
@@ -288,7 +288,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <div className="min-w-0">
                   <p className="text-[15px] font-semibold leading-tight">AgentPay</p>
                   <p className="text-[11px] leading-tight text-[var(--color-fg-dim)]">
-                    Autonomous Payment Infrastructure
+                    Payment Control & Settlement
                   </p>
                 </div>
               </div>

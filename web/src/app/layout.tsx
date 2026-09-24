@@ -6,7 +6,7 @@ import { ToastProvider } from "@/components/toast";
 export const metadata: Metadata = {
   title: "AgentPay Console",
   description:
-    "Enforcement and audit layer for autonomous agent payments on Solana.",
+    "Payment control, policy enforcement, evidence and on-chain settlement on Solana.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -177,7 +177,7 @@ export default function RegistryPage() {
         <div>
           <h1 className="t-page brand-gradient-text">Resource registry</h1>
           <p className="t-body mt-1.5 max-w-2xl">
-            Services available to autonomous agents. The gateway records where to ask — every price
+            Services available to authorized agents. The gateway records where to ask — every price
             here came from the provider&apos;s own catalogue, moments ago.
           </p>
         </div>

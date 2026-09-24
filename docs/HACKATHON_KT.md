@@ -13,7 +13,7 @@
 
 ## 1. The one-paragraph version
 
-An AI agent needs to pay for a thousand API calls costing a fraction of a cent
+An automated client needs to pay for a thousand API calls costing a fraction of a cent
 each. Paying on-chain per call costs more in fees than the calls are worth.
 AgentPay lets the agent make those calls off-chain against an escrowed deposit,
 enforces the owner's spending limits **at the moment of spend**, and settles the

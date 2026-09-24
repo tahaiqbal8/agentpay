@@ -441,7 +441,7 @@ export default function AgentsPage() {
         <div>
           <h1 className="t-page brand-gradient-text">Agents</h1>
           <p className="t-body mt-1.5 max-w-2xl">
-            Manage autonomous agents and their spending permissions. The escrow on chain is the
+            Manage agents and their spending permissions. The escrow on chain is the
             hard ceiling; everything set here narrows it.
           </p>
         </div>
@@ -568,7 +568,7 @@ export default function AgentsPage() {
           <EmptyState
             icon={Bot}
             title="No agents yet"
-            body="Create your first autonomous agent, then give it a bounded spending policy. Nothing can spend until both exist."
+            body="Create your first agent, then give it a bounded spending policy. Nothing can spend until both exist."
             action={
               <Button onClick={() => setCreating(true)}>
                 <Plus className="size-3.5" />

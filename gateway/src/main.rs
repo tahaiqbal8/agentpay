@@ -397,6 +397,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )),
         registry,
         require_agent_policy: config.require_agent_policy,
+        trusted_proxies: config.trusted_proxies.clone(),
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;

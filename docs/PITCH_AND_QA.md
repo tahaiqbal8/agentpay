@@ -14,14 +14,14 @@
 
 ## The problem
 
-An autonomous AI agent needs to buy a thousand API calls. Each one costs a
+An automated client needs to buy a thousand API calls. Each one costs a
 fraction of a cent. **Every existing payment rail breaks on this shape of
 traffic.**
 
 **Card rails and Stripe** carry a fixed per-transaction cost — roughly 30¢ plus
 a percentage. On a $0.001 call that is a **300× overhead**. Worse, cards assume
 a human: a cardholder who can be charged back, a billing address, a dispute
-window measured in months. An autonomous agent has none of those. You end up
+window measured in months. An automated client has none of those. You end up
 extending *credit* to software and reconciling later, which is exactly the
 exposure nobody wants.
 
@@ -40,7 +40,7 @@ evidence of what was **refused**.
 
 ## The solution
 
-AgentPay is a **bar tab for autonomous agents**, with a cryptographic receipt.
+AgentPay is a **bar tab for automated clients**, with a cryptographic receipt.
 
 | Step | What happens | On chain? |
 |---|---|:--:|
@@ -220,7 +220,7 @@ are not who writes the cheque.
 
 **The end user never sees AgentPay**, and should not.
 
-> **The wedge is narrower than "AI agents".** The realistic first customer is an
+> **The wedge is narrower than "automation".** The realistic first customer is an
 > API provider **already** seeing agent traffic they cannot price: scraping,
 > inference, data, RPC. They feel the pain without being convinced of anything.
 

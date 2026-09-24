@@ -77,6 +77,9 @@ pub struct AppState {
     /// deployment's behaviour. On, it closes the gap where an unregistered
     /// agent is bounded only by its escrow.
     pub require_agent_policy: bool,
+    /// Addresses whose `X-Forwarded-For` may be believed when keying rate
+    /// limits. Empty means "believe nobody", which is the safe default.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl AppState {
@@ -532,7 +535,50 @@ pub async fn on_chain_settlement(
         return Err(Denial::new(ReasonCode::ERR_CHAIN_UNAVAILABLE, &rid));
     };
 
-    let (record_pda, _) = derive_settlement_record(&state.program_id, &session);
+    // Which program owns the session decides BOTH the address of its
+    // settlement record and whether that record's root can still move. Read it
+    // from the chain, exactly as the settle path does.
+    //
+    // This used to derive the record PDA from `state.program_id`
+    // unconditionally. During a migration that is wrong in a way that reads as
+    // a fact: a v1 session's record lives under the LEGACY program, the PDA
+    // derived under the new one does not exist, and the endpoint reported a
+    // settled session as `settled: false`. The settle path already carries a
+    // comment warning against precisely this; the read path had not been
+    // brought in line.
+    //
+    // A session the chain cannot confirm keeps the old behaviour — derived
+    // under the primary program, reported unsettled — because with no owner
+    // there is no better address to name, and there is no record under either
+    // program for a session that does not exist.
+    //
+    // One fetch, both answers: the owner picks the record's address, the
+    // length picks the version. Fetching twice could straddle a change and
+    // report a record from one program with the semantics of the other.
+    let session_account: Option<(Pubkey, usize)> = match fetcher.fetch(&session).await {
+        Ok(Some((owner, data))) => Some((owner, data.len())),
+        // Unknown. Not an error here: this is a read-only endpoint, and a
+        // session that is not on chain is genuinely not settled.
+        _ => None,
+    };
+    let owning_program: Option<Pubkey> = session_account.map(|(owner, _)| owner);
+
+    // Only the two programs this gateway knows. Anything else is not a session
+    // of ours, whatever it looks like, and must not be read as one.
+    if let Some(owner) = owning_program {
+        if owner != state.program_id && Some(owner) != state.legacy_program_id {
+            warn!(
+                request_id = %rid,
+                session = %session,
+                owner = %owner,
+                "session is owned by an unrecognised program"
+            );
+            return Err(Denial::new(ReasonCode::ERR_WRONG_PROGRAM_OWNER, &rid));
+        }
+    }
+
+    let derive_under = owning_program.unwrap_or(state.program_id);
+    let (record_pda, _) = derive_settlement_record(&derive_under, &session);
 
     // Fail closed: an unreachable node must not read as "not settled".
     let Ok(fetched) = fetcher.fetch(&record_pda).await else {
@@ -552,23 +598,19 @@ pub async fn on_chain_settlement(
         }));
     };
 
-    // Which program wrote this session decides whether its root can still
+    // Which program wrote this session also decides whether its root can still
     // move. A v1 session settled exactly once, so its root is final; a v2
     // session can settle again, so its root is only the latest.
     //
-    // Read from the session account rather than inferred from configuration:
-    // the length IS the version, and the chain is the authority on it. One
-    // extra RPC on a read-only verification endpoint, never on the money path.
-    let root_may_advance: Option<bool> = match fetcher.fetch(&session).await {
-        Ok(Some((_, session_data))) => {
-            Some(session_data.len() != crate::chain::SESSION_ACCOUNT_LEN_V1)
-        }
-        // Unknown. `None` is the honest answer; asserting either would be a
-        // guess about whether a published proof can go stale.
-        _ => None,
-    };
+    // Taken from the LENGTH, not the owner. Both programs write the same
+    // account discriminator, so the length is what actually distinguishes the
+    // two layouts — and unlike a comparison against `legacy_program_id`, it
+    // still answers correctly on a gateway that has no legacy program
+    // configured at all.
+    let root_may_advance: Option<bool> =
+        session_account.map(|(_, len)| len != crate::chain::SESSION_ACCOUNT_LEN_V1);
 
-    let record = parse_settlement_record(&owner, &state.program_id, &data).map_err(|e| {
+    let record = parse_settlement_record(&owner, &derive_under, &data).map_err(|e| {
         warn!(
             request_id = %rid,
             settlement_record = %record_pda,

@@ -271,6 +271,55 @@ pub fn commitment() -> CommitmentConfig {
 mod tests {
     use super::*;
 
+    /// The settlement record of a v1 session does NOT live where a v2
+    /// derivation would look for it.
+    ///
+    /// Regression for a real defect in `GET /v1/session/{s}/settlement`: it
+    /// derived the record PDA from the gateway's PRIMARY program regardless of
+    /// which program owned the session. For a session opened under the legacy
+    /// program that address holds nothing, so a settled session was reported
+    /// as `settled: false` — a false negative that looked like a fact.
+    ///
+    /// The seeds are `[b"settlement", session]` and the program id is the
+    /// fourth input to `find_program_address`, so changing the program changes
+    /// the address. That is exactly why deriving under the wrong one cannot
+    /// accidentally still work, and why the read path must pick the program
+    /// from the session account's OWNER rather than from configuration.
+    #[test]
+    fn the_settlement_record_address_depends_on_the_owning_program() {
+        let session = Pubkey::new_from_array([42u8; 32]);
+        let v2 = Pubkey::new_from_array([1u8; 32]);
+        let v1 = Pubkey::new_from_array([2u8; 32]);
+
+        let (under_v2, _) = derive_settlement_record(&v2, &session);
+        let (under_v1, _) = derive_settlement_record(&v1, &session);
+
+        assert_ne!(
+            under_v2, under_v1,
+            "same session, different program: the record addresses must differ, \
+             otherwise deriving under the wrong program would silently appear to work"
+        );
+
+        // And the derivation is a pure function of (program, session): the same
+        // inputs must keep producing the same address, or a record written
+        // yesterday becomes unreadable today.
+        let (again, _) = derive_settlement_record(&v1, &session);
+        assert_eq!(under_v1, again, "derivation must be deterministic");
+    }
+
+    /// Two different sessions under one program also differ — the session is a
+    /// seed, so records cannot collide between sessions.
+    #[test]
+    fn settlement_records_do_not_collide_across_sessions() {
+        let program = Pubkey::new_from_array([1u8; 32]);
+        let a = Pubkey::new_from_array([10u8; 32]);
+        let b = Pubkey::new_from_array([11u8; 32]);
+
+        let (ra, _) = derive_settlement_record(&program, &a);
+        let (rb, _) = derive_settlement_record(&program, &b);
+        assert_ne!(ra, rb, "one record per session, never shared");
+    }
+
     #[test]
     fn discriminator_matches_the_generated_idl() {
         // target/idl/agentpay.json reports these. Deriving rather than pasting

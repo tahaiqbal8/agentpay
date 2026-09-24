@@ -1196,6 +1196,159 @@ mod pg_tests {
         assert_eq!(loaded.cumulative_accepted, 1_000);
     }
 
+    /// Two settlements racing: exactly one may report that it changed anything.
+    ///
+    /// The authoritative guard is the PROGRAM — `cumulative_amount >
+    /// cumulative_settled` makes a repeated settlement fail on chain with
+    /// ClaimNotMonotonic, which `tests/custody.ts` proves concurrently and
+    /// `tests/devnet-evidence.ts` proves on devnet. This is the bookkeeping
+    /// layer underneath: if `mark_session_settled` reported `true` twice, the
+    /// gateway would believe it had settled a session twice and could log a
+    /// second settlement that never happened.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore = "requires DATABASE_URL"]
+    async fn concurrent_settlements_report_exactly_one_change() {
+        let db = Arc::new(connect_db().await);
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+        db.upsert_claim_high_water_mark(&claim_for(rec.session, 100, 1), &sig(1), NOW)
+            .await
+            .unwrap()
+            .expect("admitted");
+
+        let changed = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let db = Arc::clone(&db);
+            let changed = Arc::clone(&changed);
+            let session = rec.session;
+            handles.push(tokio::spawn(async move {
+                if db.mark_session_settled(&session).await.expect("no db error") {
+                    changed.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            changed.load(Ordering::SeqCst),
+            1,
+            "exactly one of eight concurrent settlements may report a change"
+        );
+    }
+
+    /// Concurrent claims never SUM. The escrow ceiling holds under races.
+    ///
+    /// Claims are cumulative, not incremental: two concurrent claims of 600 and
+    /// 700 against a 1000 deposit settle to 700, never 1300. A protocol that
+    /// added them would let an agent exceed its escrow by firing claims in
+    /// parallel — each individually under the ceiling, the sum over it.
+    ///
+    /// The sequential case is covered by `claim_above_deposit_is_refused`. This
+    /// is the racing one, which is where an incremental design would actually
+    /// break.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[ignore = "requires DATABASE_URL"]
+    async fn concurrent_claims_take_the_maximum_never_the_sum() {
+        let db = Arc::new(connect_db().await);
+        // Deposit deliberately smaller than 600 + 700.
+        let rec = record(1_000);
+        db.save_session(&rec).await.unwrap();
+
+        let amounts: [u64; 2] = [600, 700];
+        let mut handles = Vec::new();
+        for (i, amount) in amounts.iter().enumerate() {
+            let db = Arc::clone(&db);
+            let session = rec.session;
+            let amount = *amount;
+            let nonce = (i + 1) as u64;
+            handles.push(tokio::spawn(async move {
+                db.upsert_claim_high_water_mark(&claim_for(session, amount, nonce), &sig(nonce as u8), NOW)
+                    .await
+            }));
+        }
+        for h in handles {
+            // Neither request may error; both must reach a decision.
+            h.await.unwrap().expect("no db error");
+        }
+
+        let loaded = db.load_session(&rec.session).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.cumulative_accepted, 700,
+            "the mark must be the HIGHEST claim, not the sum"
+        );
+        assert!(
+            loaded.cumulative_accepted <= rec.deposited_total,
+            "the mark ({}) must never exceed the escrow ({})",
+            loaded.cumulative_accepted,
+            rec.deposited_total
+        );
+    }
+
+    /// Evidence is append-only at the DATABASE level, not merely by convention.
+    ///
+    /// The hash chain already detects tampering after the fact. This is the
+    /// layer underneath: migration 0007 installs triggers so the mutation is
+    /// refused outright, including a DELETE arriving through the ON DELETE
+    /// CASCADE from `sessions` — which is how an entire evidence chain could
+    /// previously be erased without touching `evidence_log` at all.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL"]
+    async fn evidence_rows_cannot_be_updated_deleted_or_cascaded_away() {
+        let db = connect_db().await;
+        let rec = record(1_000_000);
+        db.save_session(&rec).await.unwrap();
+
+        // One real entry to attack.
+        db.upsert_claim_high_water_mark(&claim_for(rec.session, 10, 1), &sig(1), NOW)
+            .await
+            .unwrap()
+            .expect("admitted");
+        let key = rec.session.to_string();
+
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence_log WHERE session_pubkey = $1")
+            .bind(&key)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(before > 0, "need at least one evidence row to test against");
+
+        // 1. UPDATE must be refused.
+        let upd = sqlx::query("UPDATE evidence_log SET cumulative_amount = 999999 WHERE session_pubkey = $1")
+            .bind(&key)
+            .execute(&db.pool)
+            .await;
+        assert!(upd.is_err(), "UPDATE on evidence_log must be refused");
+
+        // 2. DELETE must be refused.
+        let del = sqlx::query("DELETE FROM evidence_log WHERE session_pubkey = $1")
+            .bind(&key)
+            .execute(&db.pool)
+            .await;
+        assert!(del.is_err(), "DELETE on evidence_log must be refused");
+
+        // 3. The cascade must be refused too: deleting the parent session must
+        //    not take the evidence with it.
+        let cascade = sqlx::query("DELETE FROM sessions WHERE session_pubkey = $1")
+            .bind(&key)
+            .execute(&db.pool)
+            .await;
+        assert!(
+            cascade.is_err(),
+            "deleting a session must not cascade-delete its evidence"
+        );
+
+        // 4. Nothing actually changed.
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence_log WHERE session_pubkey = $1")
+            .bind(&key)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before, "evidence row count must be unchanged");
+    }
+
     /// Different sessions must not block each other; only same-session claims
     /// serialise.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

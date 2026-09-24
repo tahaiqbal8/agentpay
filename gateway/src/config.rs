@@ -99,6 +99,19 @@ pub struct Config {
     /// deployment must not start refusing traffic because the gateway was
     /// upgraded. On, every session must belong to an agent a human authorized.
     pub require_agent_policy: bool,
+
+    /// Addresses whose `X-Forwarded-For` header may be believed.
+    ///
+    /// Empty by default, which means the header is ignored and every request is
+    /// keyed on its TCP peer. That is the safe default: an unlisted caller can
+    /// put anything in that header.
+    ///
+    /// Behind a reverse proxy the peer IS the proxy, so without this every
+    /// public client shares one rate-limit bucket. List the proxy here and the
+    /// gateway keys on the address the proxy actually saw.
+    ///
+    /// `AGENTPAY_TRUSTED_PROXIES=127.0.0.1,::1` — comma separated, IPs only.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,6 +197,29 @@ impl Config {
         let require_agent_policy =
             std::env::var("AGENTPAY_REQUIRE_AGENT_POLICY").is_ok_and(|v| v == "1");
 
+        // An unparseable entry is dropped with a warning rather than failing
+        // the boot: a typo in this list must not take the gateway down, and the
+        // consequence of dropping one is a stricter limit, never a looser one.
+        let trusted_proxies: Vec<std::net::IpAddr> = optional_env("AGENTPAY_TRUSTED_PROXIES")
+            .map(|raw| {
+                raw.split(',')
+                    .filter_map(|p| {
+                        let p = p.trim();
+                        if p.is_empty() {
+                            return None;
+                        }
+                        match p.parse::<std::net::IpAddr>() {
+                            Ok(ip) => Some(ip),
+                            Err(_) => {
+                                tracing::warn!(entry = %p, "ignoring unparseable AGENTPAY_TRUSTED_PROXIES entry");
+                                None
+                            }
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // The control-plane guard, and the one rule that makes it hold:
         // exposing this gateway beyond loopback without a token is refused at
         // BOOT. Failing here means the operator is watching a deploy; failing
@@ -233,6 +269,7 @@ impl Config {
             open_rate_limit,
             general_rate_limit,
             require_agent_policy,
+            trusted_proxies,
             database_url,
             trust_open_requests,
             upstream_url,

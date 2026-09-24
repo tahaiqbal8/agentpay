@@ -1,8 +1,9 @@
 # AgentPay
 
-**Enforcement and audit layer for autonomous agent payments on Solana.**
+**Payment control, policy enforcement, evidence, and on-chain settlement for
+automated services and authorized software clients.**
 
-An AI agent makes a thousand API calls costing a fraction of a cent each.
+An automated client makes a thousand API calls costing a fraction of a cent each.
 Settling each one on-chain costs more than the call is worth. AgentPay lets the
 agent spend off-chain against an escrowed deposit, enforces the owner's limits
 **at the moment of spend**, and settles the whole session in **one** Solana

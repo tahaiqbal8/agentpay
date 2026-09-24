@@ -465,7 +465,7 @@ export default function MonitorPage() {
               refused against a policy, and the record of those decisions ends
               up on Solana where anyone can check it. */}
           <p className="t-body mt-1.5 max-w-3xl">
-            AI agents spend inside an escrow a human funded and bounded. AgentPay admits or refuses
+            Automated clients spend inside an escrow a human funded and bounded. AgentPay admits or refuses
             every purchase against that policy, hash-chains each decision, and anchors the evidence
             root on Solana — so what an agent spent can be proved without trusting this gateway.
           </p>

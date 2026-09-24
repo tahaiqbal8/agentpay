@@ -2,7 +2,8 @@
 
 2026-09-19
 
-A Solana enforcement and audit layer for autonomous agent payments.
+Payment control, policy enforcement, evidence, and on-chain settlement on
+Solana, for automated services and authorized software clients.
 
 > **Updated for the v2 release.** Two devnet programs are live at once:
 > **v2** `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` opens all new sessions,
@@ -19,7 +20,7 @@ A Solana enforcement and audit layer for autonomous agent payments.
 
 ## 1. What this is
 
-An AI agent that buys things — API calls, inference, data — makes hundreds of
+An automated client that buys things — API calls, compute, data — makes hundreds of
 tiny purchases. Settling each one on-chain is absurd: the fee exceeds the
 purchase, and confirmation latency exceeds the work.
 
@@ -299,7 +300,7 @@ envelope. A spend at or above `approval_threshold` still asks; with no
 threshold set, it never does.
 
 What holds in both cases: the escrow deposit is a hard ceiling the chain
-enforces, so even a fully autonomous agent with a defective decision layer
+enforces, so even a fully unattended client with a defective decision layer
 cannot spend beyond what the human escrowed. **Autonomy is bounded by custody,
 not by the agent's own correctness.** That is the reason for the escrow-first
 design.
@@ -1220,7 +1221,7 @@ full allowance at the end of one window and again at the start of the next.
 ### The three-layer trust boundary
 
 Human authorization, agent autonomy and gateway enforcement are three separate
-layers, and the separation is what makes an autonomous agent safe to run. Each
+layers, and the separation is what makes an unattended client safe to run. Each
 layer can fail without the ones below it failing.
 
 | Layer | Trusted to | **Not** trusted to | Enforced by |
@@ -1252,7 +1253,7 @@ What `open_session` authorizes is precise and chain-enforced:
 - **By whom** — `agent`, the only key whose signature is accepted.
 
 That is a genuine, useful authorization envelope, and it is the reason an
-autonomous agent is bounded by custody rather than by its own correctness.
+unattended client is bounded by custody rather than by its own correctness.
 
 What the escrow does **not** express, the off-chain envelope now does
 (`agent_policies`, evaluated in `policy.rs`):
