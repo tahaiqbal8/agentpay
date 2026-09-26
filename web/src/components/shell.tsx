@@ -11,6 +11,7 @@ import {
   Bot,
   Store,
   UserCheck,
+  Layers,
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
@@ -20,40 +21,76 @@ import { cn } from "@/lib/utils";
 import { api, type Health } from "@/lib/api";
 import { protocolLabel } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
+import { useJudgeMode, exitJudgeMode } from "@/lib/judge-mode";
 
 /**
- * Grouped by what an operator is trying to DO, not by what the page contains.
+ * Grouped in the order things actually happen: SET UP → SPEND → PROVE.
  *
- * Operate → run it. Control → bound it. Verify → prove it. The last group is
- * the product's actual claim, so it sits last and on its own: a reader who
- * scans the sidebar once should come away knowing this system is something
- * you check, not just something you watch.
+ * The previous grouping — Operate / Control / Verify — named an operator's
+ * activities, which is a useful model only for someone who already knows what
+ * the system does. It also scattered the lifecycle: Agents (stage 2) above
+ * Approvals (stage 3) above Registry (setup) above Verifier (stage 9). A
+ * visitor scanning the sidebar learned nothing about the sequence.
  *
- * Sessions are not a separate destination. The session list IS Overview, and
- * a session opens at /session/[pubkey] from there; giving it a nav entry as
- * well would mean two routes rendering the same table.
+ * Reading the rail top to bottom now retells the story the lifecycle strip on
+ * Overview tells: somebody is authorized and bounded, then spending happens
+ * inside those bounds, then the result can be checked. Overview sits outside
+ * every group because "what is this" is not a stage.
+ *
+ * PLAYGROUND IS DELIBERATELY NOT UNDER "PROVE". It is a local projection of
+ * the gateway's rules — the browser holds no agent key, so it cannot produce a
+ * signature the gateway would accept, and the page says so at length. Sitting
+ * one row beneath the real cryptographic Verifier, it invited exactly the
+ * confusion its own disclaimer exists to prevent. Under Advanced it reads as
+ * what it is: a place to try the rules, not a place that proves anything.
+ *
+ * Sessions links to Overview's table rather than to a route of its own — the
+ * session list IS Overview, and a second route rendering the same table would
+ * be duplication. It is here because SPEND is a real stage and a reader
+ * looking for "where is the money right now" should find a word for it.
  */
-const NAV_GROUPS = [
+const NAV_GROUPS: {
+  label: string | null;
+  items: {
+    href: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    hint: string;
+    /** Hidden in judge view: reaches a surface that can change state. */
+    control?: boolean;
+  }[];
+}[] = [
   {
-    label: "Operate",
+    label: null,
     items: [
-      { href: "/", label: "Overview", icon: Activity, hint: "Sessions & live claims" },
-      { href: "/agents", label: "Agents", icon: Bot, hint: "Identity & authorization" },
+      { href: "/", label: "Overview", icon: Activity, hint: "What AgentPay does" },
     ],
   },
   {
-    label: "Control",
+    label: "Set up",
     items: [
-      { href: "/approvals", label: "Approvals", icon: UserCheck, hint: "Human-decided spends" },
-      { href: "/registry", label: "Registry", icon: Store, hint: "Providers & catalogue" },
+      { href: "/agents", label: "Agents", icon: Bot, hint: "Who may spend", control: true },
+      { href: "/approvals", label: "Approvals", icon: UserCheck, hint: "Spends a human decides", control: true },
+      { href: "/registry", label: "Registry", icon: Store, hint: "What is for sale", control: true },
     ],
   },
   {
-    label: "Verify",
+    label: "Spend",
     items: [
-      { href: "/verifier", label: "Verifier", icon: ShieldCheck, hint: "Merkle proofs" },
-      { href: "/settle", label: "Settlement", icon: Landmark, hint: "On-chain settle" },
-      { href: "/playground", label: "Playground", icon: FlaskConical, hint: "Claim simulator" },
+      { href: "/#sessions", label: "Sessions", icon: Layers, hint: "Live escrows & totals" },
+    ],
+  },
+  {
+    label: "Prove",
+    items: [
+      { href: "/verifier", label: "Verifier", icon: ShieldCheck, hint: "Check the record yourself" },
+      { href: "/settle", label: "Settlement", icon: Landmark, hint: "What Solana recorded", control: true },
+    ],
+  },
+  {
+    label: "Advanced",
+    items: [
+      { href: "/playground", label: "Playground", icon: FlaskConical, hint: "Try the rules, spend nothing", control: true },
     ],
   },
 ];
@@ -115,6 +152,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [health, setHealth] = React.useState<Health | null>(null);
   const [live, setLive] = React.useState<boolean | null>(null);
   const protocol = protocolLabel(health?.program_id);
+  const judge = useJudgeMode();
 
   React.useEffect(() => {
     let cancelled = false;
@@ -142,16 +180,28 @@ export function Shell({ children }: { children: React.ReactNode }) {
      panel. */
   const renderNav = (collapsed: boolean) => (
     <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
-      {NAV_GROUPS.map((group) => (
-        <div key={group.label} className="flex flex-col gap-0.5">
-          {!collapsed && (
+      {/* Judge view hides the surfaces that can change state — and one of them,
+          Settlement, spends real devnet SOL. Hiding them is not a permission
+          check (see lib/judge-mode.ts); it keeps a visitor who is still working
+          out what the product does from wandering into an action. */}
+      {NAV_GROUPS.map((group) => {
+        const items = judge ? group.items.filter((i) => !i.control) : group.items;
+        if (items.length === 0) return null;
+        return (
+        <div key={group.label ?? "root"} className="flex flex-col gap-0.5">
+          {!collapsed && group.label && (
             <p className="t-label px-3 pb-1.5 pt-1">{group.label}</p>
           )}
-          {group.items.map((item) => {
+          {items.map((item) => {
+            /* Overview owns "/" exactly; Sessions owns a single session's page.
+               They do not overlap, so opening a session lights the row a reader
+               would look for it under rather than leaving Overview selected. */
             const active =
               item.href === "/"
-                ? pathname === "/" || pathname?.startsWith("/session/")
-                : pathname === item.href;
+                ? pathname === "/"
+                : item.href === "/#sessions"
+                  ? !!pathname?.startsWith("/session/")
+                  : pathname === item.href;
             const Icon = item.icon;
             return (
               <Link
@@ -192,7 +242,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
             );
           })}
         </div>
-      ))}
+        );
+      })}
     </nav>
   );
 
@@ -328,7 +379,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </p>
           </div>
           <div className="ml-auto flex items-center gap-3">
-            {health && (
+            {/* Says what it is, and offers the way out in the same breath.
+                Judge view hides nothing a visitor is entitled to see, so
+                concealing that it is on would be the dishonest choice. */}
+            {judge && (
+              <div className="flex items-center gap-2">
+                <Badge variant="info">Judge view · read only</Badge>
+                <button
+                  onClick={exitJudgeMode}
+                  className="hidden text-[11px] text-[var(--color-fg-dim)] underline-offset-2 transition-colors hover:text-[var(--color-fg)] hover:underline sm:inline"
+                >
+                  Show full console
+                </button>
+              </div>
+            )}
+            {health && !judge && (
               <span
                 className="hidden font-mono text-[11px] text-[var(--color-fg-dim)] lg:inline"
                 title={health.program_id}

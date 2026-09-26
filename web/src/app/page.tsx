@@ -44,6 +44,8 @@ import {
   type RecentDecision,
   type SessionSummary,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { useJudgeMode } from "@/lib/judge-mode";
 import { protocolLabel } from "@/lib/constants";
 import { DECISION_LABEL, DECISION_WHY } from "@/lib/constants";
 import { isStrandedEscrow, sessionStatus } from "@/lib/session-status";
@@ -124,13 +126,21 @@ function SortHeader({
   dir,
   onClick,
   numeric,
+  /** Judge view keeps the column, drops the control. Sorting is an operator's
+   *  tool for scanning a long table; on a first read it is three more things
+   *  that look clickable without rewarding the click. */
+  sortable = true,
 }: {
   label: string;
   active: boolean;
   dir: "asc" | "desc";
   onClick: () => void;
   numeric?: boolean;
+  sortable?: boolean;
 }) {
+  if (!sortable) {
+    return <TH numeric={numeric}>{label}</TH>;
+  }
   return (
     <TH numeric={numeric} aria-sort={active ? (dir === "desc" ? "descending" : "ascending") : "none"}>
       <button
@@ -155,7 +165,7 @@ function SortHeader({
 const QUICK_ACTIONS = [
   { href: "/agents", label: "New agent", hint: "Identity & envelope", icon: Bot },
   { href: "/registry", label: "Registry", hint: "Providers & prices", icon: Store },
-  { href: "/verifier", label: "Verify a decision", hint: "Merkle proof", icon: ShieldCheck },
+  { href: "/verifier", label: "Verify a decision", hint: "Check the evidence", icon: ShieldCheck },
   { href: "/playground", label: "Simulate a claim", hint: "Without spending", icon: FlaskConical },
 ];
 
@@ -345,6 +355,11 @@ export default function MonitorPage() {
   const stranded = withStatus.filter((x) => isStrandedEscrow(x.s));
   const strandedTotal = stranded.reduce((acc, x) => acc + BigInt(x.s.remaining), 0n);
   const committed = sessions.reduce((acc, s) => acc + BigInt(s.cumulative_accepted), 0n);
+  /* Evidence rows across every session the gateway will show us. Counted from
+     the same session payload the table renders, so the headline figure and the
+     rows beneath it can never disagree. */
+  const evidenceTotal = sessions.reduce((acc, s) => acc + s.evidence_count, 0);
+  const judge = useJudgeMode();
 
   const showingFiltered = filter !== "" || statusFilter !== "all";
 
@@ -464,10 +479,17 @@ export default function MonitorPage() {
               agents spend from a funded escrow, each purchase is admitted or
               refused against a policy, and the record of those decisions ends
               up on Solana where anyone can check it. */}
+          {/* Plainer than it was, and deliberately so. The previous wording —
+              "hash-chains each decision, and anchors the evidence root" — is
+              exact, and it asked a first-time reader to know three pieces of
+              vocabulary before the first full stop. The precise language still
+              exists where a reader has arrived on purpose: the Verifier, the
+              session detail page, and the docs. Here the job is to be
+              understood in the ten seconds somebody is willing to give it. */}
           <p className="t-body mt-1.5 max-w-3xl">
-            Automated clients spend inside an escrow a human funded and bounded. AgentPay admits or refuses
-            every purchase against that policy, hash-chains each decision, and anchors the evidence
-            root on Solana — so what an agent spent can be proved without trusting this gateway.
+            A person funds an escrow and sets the spending rules. Automated clients spend inside it —
+            and AgentPay allows or refuses every request before any money moves. Every decision is
+            recorded, so what was spent can be checked by anyone, without trusting this gateway.
           </p>
         </div>
         {/* Wraps, and must. `shrink-0` here held three badges on one line and
@@ -492,6 +514,65 @@ export default function MonitorPage() {
           means anything, and this is the only element on the page that
           explains rather than reports. Every stage is lit from data. */}
       <PaymentLifecycle reached={lifecycleReached} />
+
+      {/* ---- level 0b: the argument, in one line --------------------------
+          Not a card, and deliberately not four more of them. The single most
+          compelling number this system produces — the refusal count — was
+          sitting in the fourth and least-read stat tile below, phrased as a
+          footnote, while the three tiles above it read zero. A visitor's
+          second impression of AgentPay was therefore "nothing is happening".
+
+          The refusals ARE the product: a system that only ever said yes would
+          need none of the machinery above. So the count comes up here, next to
+          the one action a sceptical reader actually wants, and every figure is
+          read from the same live data the tiles use. When there is nothing to
+          report this says so rather than inventing a number. */}
+      <section
+        aria-label="What this gateway has enforced"
+        className="surface-card flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl px-4 py-3"
+      >
+        {decisions.length === 0 && evidenceTotal === 0 ? (
+          <p className="t-support">
+            No requests have been decided yet. Run{" "}
+            <code className="font-mono text-[var(--color-fg-muted)]">npm run demo:v2</code> to put a
+            real session through the lifecycle above.
+          </p>
+        ) : (
+          <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+            <div className="flex items-baseline gap-2">
+              <dd className="tnum text-lg font-semibold leading-none text-[var(--color-fg)]">
+                {decisions.length}
+              </dd>
+              <dt className="t-support">requests decided</dt>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <dd
+                className={cn(
+                  "tnum text-lg font-semibold leading-none",
+                  policyRefusals > 0 ? "text-[var(--color-warn)]" : "text-[var(--color-fg)]"
+                )}
+              >
+                {policyRefusals}
+              </dd>
+              <dt className="t-support">refused — enforcement, not errors</dt>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <dd className="tnum text-lg font-semibold leading-none text-[var(--color-fg)]">
+                {evidenceTotal}
+              </dd>
+              <dt className="t-support">
+                {anchoredRoot ? "decisions recorded, anchored on Solana" : "decisions recorded"}
+              </dt>
+            </div>
+          </dl>
+        )}
+        <Button asChild size="sm" className="w-full sm:w-auto">
+          <Link href="/verifier">
+            Check the record yourself
+            <ArrowRight aria-hidden="true" className="size-3" />
+          </Link>
+        </Button>
+      </section>
 
       {/* ---- level 1: what is happening now ---- */}
       <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -598,11 +679,14 @@ export default function MonitorPage() {
             `min-w-0`: a grid item sizes to its content by default, so the
             table's minimum width would widen the whole page instead of
             scrolling inside `TableWrap`. */}
-        <Card className="min-w-0">
+        {/* `scroll-mt` clears the sticky 64px header: the Sessions nav entry
+            jumps here, and without it the card title lands underneath the
+            chrome. */}
+        <Card id="sessions" className="min-w-0 scroll-mt-20">
           <CardHeader className="flex-wrap gap-3">
             <div>
               <CardTitle>Sessions</CardTitle>
-              <CardDescription>High-water mark against escrowed allowance</CardDescription>
+              <CardDescription>Spent so far against the escrowed allowance</CardDescription>
             </div>
             <div className="flex items-baseline gap-3">
               <span className="t-label">Total</span>
@@ -612,6 +696,12 @@ export default function MonitorPage() {
             </div>
           </CardHeader>
 
+          {/* Judge view drops the table's own controls. They are useful to an
+              operator scanning dozens of sessions and pure noise to somebody
+              deciding what this product is: four filter chips, a search box and
+              four sortable headers, all before a single row is read. The rows
+              themselves stay — only the apparatus for rearranging them goes. */}
+          {!judge && (
           <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] px-4 py-2.5">
             <Segmented
               value={statusFilter}
@@ -631,6 +721,7 @@ export default function MonitorPage() {
               className="ml-auto w-full sm:w-64"
             />
           </div>
+          )}
 
           <CardContent className="p-0">
             <TableWrap aria-label="Sessions">
@@ -641,6 +732,7 @@ export default function MonitorPage() {
                 <THead>
                   <TR>
                     <SortHeader
+                      sortable={!judge}
                       label="Session"
                       active={sortKey === "created"}
                       dir={sortDir}
@@ -648,7 +740,8 @@ export default function MonitorPage() {
                     />
                     <TH>Agent</TH>
                     <SortHeader
-                      label="High-water mark"
+                      sortable={!judge}
+                      label="Spent so far"
                       active={sortKey === "consumed"}
                       dir={sortDir}
                       onClick={() => toggleSort("consumed")}
@@ -656,6 +749,7 @@ export default function MonitorPage() {
                     <TH>Expiry</TH>
                     <TH>Status</TH>
                     <SortHeader
+                      sortable={!judge}
                       label="Evidence"
                       numeric
                       active={sortKey === "evidence"}
@@ -830,9 +924,14 @@ export default function MonitorPage() {
             <CardHeader className="flex-wrap gap-2">
               <div>
                 <CardTitle>Recent decisions</CardTitle>
-                <CardDescription>Signed Ed25519 claims, newest first</CardDescription>
+                <CardDescription>Every request, allowed or refused — newest first</CardDescription>
               </div>
               <div className="flex items-center gap-2">
+                {/* The allowed/denied split is the operator's tool. A judge
+                    should see the feed unfiltered — the refusals mixed in with
+                    the approvals is the honest picture, and the one worth
+                    seeing. */}
+                {!judge && (
                 <Segmented
                   value={feedFilter}
                   onChange={setFeedFilter}
@@ -842,6 +941,7 @@ export default function MonitorPage() {
                     { value: "denied", label: "Denied", count: denials },
                   ]}
                 />
+                )}
                 {live === true && (
                   <span
                     title="Live — polling the gateway"
@@ -936,6 +1036,9 @@ export default function MonitorPage() {
             </CardContent>
           </Card>
 
+          {/* Three of the four tiles lead to surfaces judge view hides, and the
+              fourth duplicates the CTA at the top of the page. */}
+          {!judge && (
           <Card>
             <CardHeader>
               <CardTitle>Quick actions</CardTitle>
@@ -958,6 +1061,7 @@ export default function MonitorPage() {
               ))}
             </CardContent>
           </Card>
+          )}
         </div>
       </div>
     </div>
