@@ -4,26 +4,25 @@ import * as React from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  Ban,
+  Check,
   ArrowDown,
   ArrowRight,
   ArrowUp,
-  Ban,
   Bot,
-  CircleCheck,
   FlaskConical,
-  Layers,
   ShieldCheck,
   Store,
   Wallet,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PaymentLifecycle } from "@/components/lifecycle";
+import { MetricsBand } from "@/components/metrics-band";
 import { SecurityControls, type ControlState } from "@/components/security-controls";
 import { Badge, variantForReason } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Segmented } from "@/components/ui/segmented";
-import { Stat } from "@/components/ui/stat";
 import {
   Table,
   TableSkeleton,
@@ -361,6 +360,30 @@ export default function MonitorPage() {
   const evidenceTotal = sessions.reduce((acc, s) => acc + s.evidence_count, 0);
   const judge = useJudgeMode();
 
+  /* The money line: escrow, spent, remaining — three views of one quantity.
+   *
+   * Summed over CHAIN-VERIFIED sessions only. An escrow the gateway has not
+   * confirmed against the chain is a number it was told, not one it checked,
+   * and the headline figure on this page has to be the checked one. Sessions
+   * still awaiting confirmation are reported separately under the escrow
+   * figure rather than folded silently into it. */
+  const verified = sessions.filter((s) => s.chain_verified);
+  const escrowTotal = verified.reduce((a, s) => a + BigInt(s.deposited_total), 0n);
+  const remainingTotal = verified.reduce((a, s) => a + BigInt(s.remaining), 0n);
+  const allowedCount = decisions.filter((d) => d.allowed).length;
+  /* The session the "check the record" button should open: the most recent one
+     that has evidence to check. Settled sessions are preferred — their root is
+     anchored on chain, so the verifier can complete all three comparisons
+     rather than stopping at two. */
+  const verifiableSession = React.useMemo(() => {
+    const withEvidence = sessions.filter((s) => s.evidence_count > 0);
+    const settled = withEvidence.filter((s) => s.is_settled);
+    const pick = (settled.length > 0 ? settled : withEvidence).sort(
+      (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)
+    )[0];
+    return pick?.session ?? null;
+  }, [sessions]);
+
   const showingFiltered = filter !== "" || statusFilter !== "all";
 
   /* ---- the lifecycle strip -------------------------------------------------
@@ -566,75 +589,84 @@ export default function MonitorPage() {
             </div>
           </dl>
         )}
+        {/* Deep-links to a session that actually has evidence, so the click
+            lands on a finished proof rather than on an empty form asking for a
+            pubkey the reader does not have. The verifier already reads
+            `?session=`; falling back to the bare page is only for the case
+            where nothing has been recorded yet. */}
         <Button asChild size="sm" className="w-full sm:w-auto">
-          <Link href="/verifier">
+          <Link
+            href={verifiableSession ? `/verifier?session=${verifiableSession}` : "/verifier"}
+          >
             Check the record yourself
             <ArrowRight aria-hidden="true" className="size-3" />
           </Link>
         </Button>
       </section>
 
-      {/* ---- level 1: what is happening now ---- */}
-      <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Stat
-          label="Active sessions"
-          value={String(counts.active)}
-          // Zero is a real answer, not a broken one. Say which.
-          support={
-            counts.active > 0
-              ? `${counts.expired} expired · ${counts.settled} settled`
-              : counts.all > 0
-              ? `none live right now · ${counts.settled} settled, ${counts.expired} expired`
-              : "no sessions have been opened yet"
-          }
-          icon={Layers}
-          tone={counts.active > 0 ? "accent" : "neutral"}
-        />
-        {/* Purple: escrow under a human's policy is the agent-control surface,
-            not a plain balance. */}
-        <Stat
-          label="Escrowed"
-          value={formatUsdcCompact(escrowedLive)}
-          support={
-            unconfirmed > 0
-              ? `confirmed on chain · ${unconfirmed} unconfirmed excluded`
-              : escrowedLive > 0n
-              ? "confirmed on chain, still accepting"
-              : "nothing is currently accepting claims"
-          }
-          icon={Wallet}
-          tone={unconfirmed > 0 ? "warn" : "agent"}
-        />
-        <Stat
-          label="Claimed cumulative"
-          value={formatUsdcCompact(committed)}
-          support="across all sessions"
-          icon={CircleCheck}
-          tone="cyan"
-        />
-        {/* Not "denial rate". A refusal is an enforcement decision — a
-            policy cap, or a protocol invariant like a replayed claim — and a
-            metric named like a failure rate trains an operator to read the
-            product working as the product breaking. Faults are counted
-            separately because those really are breakage. Left as "Refused"
-            rather than "Refused by policy" because a replay is refused by the
-            protocol, not by anybody's policy. */}
-        <Stat
-          label="Refused"
-          value={`${denialRate}%`}
-          support={
-            decisions.length === 0
-              ? "no decisions recorded yet"
-              : faults > 0
-              ? `${policyRefusals} refused of last ${decisions.length} · ${faults} fault${
-                  faults === 1 ? "" : "s"
-                }`
-              : `${policyRefusals} of last ${decisions.length} — enforcement, not errors`
-          }
-          icon={Ban}
-          tone={faults > 0 ? "danger" : denials > 0 ? "warn" : "neutral"}
-        />
-      </section>
+      {/* ---- level 1: the money line -------------------------------------
+          Four separate KPI tiles became one band. The old set answered an
+          operator's questions — active sessions, escrowed, claimed cumulative,
+          refusal rate — and three of the four routinely read zero, so the
+          second thing a visitor saw was a row of nothing. Escrow, spent and
+          remaining are three readings of the SAME quantity and now sit inside
+          one frame, in that order, so the row can be read as an equation
+          rather than as four unrelated facts. */}
+      <MetricsBand
+        metrics={[
+          {
+            label: "Escrow",
+            /* Full six decimals, not the compact form. Escrow, spent and
+               remaining have to line up as an equation, and the compact
+               formatter renders 7.000000 as "7" beside 3.765433 — which
+               reads as two different kinds of number. */
+            value: formatUsdc(escrowTotal),
+            emphasis: "money",
+            tone: "agent",
+            support:
+              unconfirmed > 0
+                ? `confirmed on chain · ${unconfirmed} awaiting confirmation`
+                : escrowTotal > 0n
+                  ? `across ${verified.length} confirmed session${verified.length === 1 ? "" : "s"}`
+                  : "no confirmed escrow yet",
+          },
+          {
+            label: "Spent",
+            value: formatUsdc(committed),
+            emphasis: "money",
+            support:
+              committed > 0n
+                ? "admitted against policy"
+                : "nothing has been spent yet",
+          },
+          {
+            label: "Remaining",
+            value: formatUsdc(remainingTotal),
+            emphasis: "money",
+            tone: "accent",
+            support:
+              stranded.length > 0
+                ? `${stranded.length} expired session${stranded.length === 1 ? "" : "s"} still holding funds`
+                : remainingTotal > 0n
+                  ? "still available to spend"
+                  : "nothing left in escrow",
+          },
+          {
+            label: "Decisions",
+            value: String(decisions.length),
+            emphasis: "count",
+            tone: faults > 0 ? "warn" : "default",
+            /* A refusal is enforcement; a fault is breakage. They are counted
+               apart so the product working never reads as the product failing. */
+            support:
+              decisions.length === 0
+                ? "no requests decided yet"
+                : faults > 0
+                  ? `${allowedCount} allowed · ${policyRefusals} refused · ${faults} fault${faults === 1 ? "" : "s"}`
+                  : `${allowedCount} allowed · ${policyRefusals} refused`,
+          },
+        ]}
+      />
 
       {/* ---- level 2: what needs attention --------------------------------
           Amber, not red: escrow sitting past expiry is a thing to do, not a
@@ -952,49 +984,90 @@ export default function MonitorPage() {
                 )}
               </div>
             </CardHeader>
-            <CardContent className="max-h-[520px] space-y-1.5 overflow-y-auto p-2">
+            <CardContent className="max-h-[520px] overflow-y-auto p-3">
               {feed.map((d) => {
                 // Anything older than an hour is history, not live traffic.
                 const stale = Date.now() - Date.parse(d.created_at) > 3_600_000;
                 // Amber for a decision, red only for a forged claim or a
                 // failed dependency. See `variantForReason`.
                 const tone = variantForReason(d.allowed ? "ALLOWED" : d.decision);
-                const edge =
-                  tone === "allowed"
-                    ? "border-[var(--color-border)] bg-[var(--color-surface-2)]"
-                    : tone === "danger"
-                    ? "border-[var(--color-danger-dim)] bg-[#ef44440d]"
-                    : "border-[var(--color-warn-dim)] bg-[#f59e0b0d]";
+                /* Three states, three colours, and they are not
+                   interchangeable. Emerald is an admitted request. Amber is
+                   ENFORCEMENT — a policy cap or a protocol invariant doing its
+                   job. Red is reserved for a genuine fault, so an operator who
+                   sees red knows something is broken rather than working. */
+                const glyph = {
+                  allowed: {
+                    Icon: Check,
+                    ring: "border-[var(--color-accent-dim)] bg-[#10b9811a]",
+                    ink: "text-[var(--color-accent)]",
+                    title: "Request allowed",
+                  },
+                  danger: {
+                    Icon: AlertTriangle,
+                    ring: "border-[var(--color-danger-dim)] bg-[#ef44441a]",
+                    ink: "text-[var(--color-danger)]",
+                    title: "System fault",
+                  },
+                  warn: {
+                    Icon: Ban,
+                    ring: "border-[var(--color-warn-dim)] bg-[#f59e0b1a]",
+                    ink: "text-[var(--color-warn)]",
+                    title: "Request refused",
+                  },
+                }[tone === "allowed" ? "allowed" : tone === "danger" ? "danger" : "warn"];
+                const Glyph = glyph.Icon;
                 return (
                   <div
                     key={`${d.session}-${d.sequence_id}-${d.entry_hash}`}
-                    className={`animate-in-row rounded-md border p-2.5 ${edge} ${
-                      stale ? "opacity-60" : ""
-                    }`}
+                    className={`animate-in-row flex gap-3 ${stale ? "opacity-60" : ""}`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span title={DECISION_WHY[d.decision] ?? d.decision}>
-                        <Badge variant={tone}>
-                          {DECISION_LABEL[d.decision] ?? d.decision.replace(/^ERR_/, "")}
-                        </Badge>
+                    {/* Rail, not a box. Forty bordered tiles stacked in a
+                        column read as forty separate things; one continuous
+                        rule reads as a stream of events, which is what this
+                        is. */}
+                    <div className="flex flex-col items-center">
+                      <span
+                        aria-hidden="true"
+                        className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border ${glyph.ring}`}
+                      >
+                        <Glyph className={`size-3 ${glyph.ink}`} strokeWidth={2.5} />
+                      </span>
+                      <span className="w-px flex-1 bg-[var(--color-border)]" />
+                    </div>
+                    <div className="min-w-0 flex-1 pb-3.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span
+                        className={`truncate text-[13px] font-medium ${glyph.ink}`}
+                        title={DECISION_WHY[d.decision] ?? d.decision}
+                      >
+                        {glyph.title}
                       </span>
                       <time
                         dateTime={d.created_at}
-                        className="t-support"
+                        className="t-support shrink-0"
                         title={new Date(d.created_at).toLocaleString()}
                       >
                         {timeAgo(d.created_at)}
                       </time>
                     </div>
-                    <div className="mt-2 flex items-baseline justify-between gap-2">
-                      <span className="tnum font-mono text-sm text-[var(--color-fg)]">
+                    {/* The gateway records no resource name on a decision, so
+                        none is shown. What it does record is the reason and the
+                        running total, and those are real. */}
+                    <p className="t-support mt-0.5 truncate">
+                      {d.allowed
+                        ? "Admitted against policy"
+                        : DECISION_LABEL[d.decision] ?? d.decision.replace(/^ERR_/, "")}
+                    </p>
+                    <div className="mt-1 flex items-baseline justify-between gap-2">
+                      <span className="tnum font-mono text-[13px] text-[var(--color-fg)]">
                         {formatUsdc(d.cumulative_amount)}
                       </span>
                       <span className="t-mono text-[var(--color-fg-dim)]">
                         seq {d.sequence_id} · nonce {d.nonce}
                       </span>
                     </div>
-                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <div className="mt-1 flex items-center justify-between gap-2">
                       <Link
                         href={`/session/${d.session}`}
                         className="t-mono text-[var(--color-fg-dim)] hover:text-[var(--color-cyan)]"
@@ -1009,6 +1082,7 @@ export default function MonitorPage() {
                       >
                         {d.entry_hash.slice(0, 10)}…
                       </Link>
+                    </div>
                     </div>
                   </div>
                 );

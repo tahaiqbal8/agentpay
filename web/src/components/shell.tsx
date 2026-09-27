@@ -210,11 +210,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 onClick={() => setMobileOpen(false)}
                 title={collapsed ? item.label : undefined}
                 aria-current={active ? "page" : undefined}
+                /* The active row is unmistakable: tinted fill, a hairline
+                   border the inactive rows do not have, and the left rail.
+                   Tint alone was too close to the hover state to read as
+                   "you are here" at a glance. */
                 className={cn(
-                  "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors duration-150",
+                  "group relative flex items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-[background-color,color,border-color] duration-200",
                   active
-                    ? "bg-[var(--color-brand-glow)] text-[var(--color-fg)]"
-                    : "text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-fg)]"
+                    ? "border-[var(--color-brand-dim)] bg-[var(--color-brand-glow)] text-[var(--color-fg)]"
+                    : "border-transparent text-[var(--color-fg-muted)] hover:border-[var(--color-border)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-fg)]"
                 )}
               >
                 {/* The active marker is a rail, not a dot: it survives the
@@ -254,12 +258,40 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="mt-auto flex flex-col gap-2 border-t border-[var(--color-border)] px-4 py-3">
       {!collapsed && (
         <>
-          <div className="flex items-center gap-2">
-            <span className="relative size-1.5 rounded-full bg-[var(--color-accent)]">
-              {live && <span className="live-dot absolute inset-0" />}
+          {/* Environment first, connection state under it. Which chain you are
+              looking at is the question an operator asks before any number on
+              the page means anything, so it gets the emphasis and the live dot
+              sits with the word it qualifies. `live` is null until /health has
+              actually answered — "Connecting" is said, never assumed. */}
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-fg)]">
+              {health ? "Devnet" : "Devnet"}
             </span>
-            <span className="text-[11px] font-medium text-[var(--color-fg-muted)]">
-              {health ? "Devnet" : "Devnet · connecting"}
+            <span className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "relative size-1.5 shrink-0 rounded-full",
+                  live === null
+                    ? "bg-[var(--color-fg-dim)]"
+                    : live
+                      ? "bg-[var(--color-accent)]"
+                      : "bg-[var(--color-danger)]"
+                )}
+              >
+                {live && <span className="live-dot absolute inset-0" />}
+              </span>
+              <span
+                className={cn(
+                  "text-[11px] font-medium",
+                  live === null
+                    ? "text-[var(--color-fg-dim)]"
+                    : live
+                      ? "text-[var(--color-accent)]"
+                      : "text-[var(--color-danger)]"
+                )}
+              >
+                {live === null ? "Connecting…" : live ? "Connected" : "Unreachable"}
+              </span>
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -313,7 +345,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 AgentPay
               </p>
               <p className="truncate text-[11px] leading-tight text-[var(--color-fg-dim)]">
-                Payment Control & Settlement
+                Control Center
               </p>
             </div>
           )}
@@ -339,7 +371,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <div className="min-w-0">
                   <p className="text-[15px] font-semibold leading-tight">AgentPay</p>
                   <p className="text-[11px] leading-tight text-[var(--color-fg-dim)]">
-                    Payment Control & Settlement
+                    Control Center
                   </p>
                 </div>
               </div>
@@ -372,10 +404,20 @@ export function Shell({ children }: { children: React.ReactNode }) {
               a second one here would make each document claim two top-level
               titles — a screen reader would announce the chrome as the page.
               This is a location label, so it is styled like one. */}
+          {/* Two lines, not one. The label alone told a reader which page they
+              were on and nothing about what it was for; the hint is already
+              written once in NAV_GROUPS, so saying it here costs nothing and
+              turns the header into an answer rather than a breadcrumb. */}
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">
+            <p className="truncate text-sm font-semibold leading-tight">
               {NAV.find((n) => n.href === pathname)?.label ??
                 (pathname?.startsWith("/session/") ? "Session" : "AgentPay")}
+            </p>
+            <p className="hidden truncate text-[11px] leading-tight text-[var(--color-fg-dim)] sm:block">
+              {NAV.find((n) => n.href === pathname)?.hint ??
+                (pathname?.startsWith("/session/")
+                  ? "One session, end to end"
+                  : "Policy-bounded payments for authorized software clients")}
             </p>
           </div>
           <div className="ml-auto flex items-center gap-3">

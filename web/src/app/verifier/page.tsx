@@ -363,7 +363,11 @@ function VerifierInner() {
               )}
             </span>
             <div className="min-w-0">
-              <p className="text-[17px] font-semibold leading-tight text-[var(--color-fg)]">
+              {/* The verdict is the whole page. It was set at 17px, the same
+                  weight as a card title, so the one sentence a sceptic came to
+                  read carried no more emphasis than the furniture around it. */}
+              <p className="t-label">Verification status</p>
+              <p className="mt-0.5 text-[22px] font-semibold leading-tight tracking-tight text-[var(--color-fg)] sm:text-[26px]">
                 {anchored
                   ? "Verified"
                   : chainDisagrees
