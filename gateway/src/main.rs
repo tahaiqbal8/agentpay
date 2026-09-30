@@ -102,13 +102,28 @@ fn control_plane(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// Deadline for every route that answers from Postgres, memory, or the
+/// upstream provider. A hung upstream must not pin a connection indefinitely.
+const GENERAL_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub fn build_router(state: Arc<AppState>) -> Router {
-    // The money path and the public verification endpoints. Protected by
-    // signatures and on-chain reconciliation, not by a shared secret — putting
-    // a token here would break every agent and add nothing.
-    let open = Router::new()
-        .route("/", get(routes::index))
-        .route("/health", get(routes::health))
+    let chain_timeout = state.chain_timeout;
+
+    // ---- routes that WAIT ON SOLANA ---------------------------------------
+    //
+    // Split out for one reason: their latency is set by the cluster, not by
+    // this process. `settle_session` submits a transaction and then blocks
+    // until it is confirmed; `open_session` and `reconcile_session` read
+    // account state before they will trust a deposit; `on_chain_settlement`
+    // reads the settlement record back off the chain.
+    //
+    // Under a blanket 15s deadline a slow devnet made settlement return a bare
+    // `504` with an empty body. The caller could not distinguish that from a
+    // malformed reply, and — worse — the deadline fired before the transaction
+    // was submitted at all, so a caller who retried had no way to know whether
+    // the first attempt had spent anything. (It had not, but only the logs
+    // said so.) These routes keep a bound; it is simply the right one.
+    let chain = Router::new()
         .route(
             "/v1/session/open",
             post(routes::open_session).layer(axum::middleware::from_fn_with_state(
@@ -116,39 +131,62 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 ratelimit::limit_open,
             )),
         )
-        .route("/v1/claim/verify", post(routes::verify_claim))
         .route("/v1/session/settle", post(routes::settle_session))
         .route("/v1/session/reconcile", post(routes::reconcile_session))
+        .route(
+            "/v1/session/{session}/settlement",
+            get(routes::on_chain_settlement),
+        )
+        .with_state(Arc::clone(&state))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            chain_timeout,
+        ));
+
+    // ---- everything else --------------------------------------------------
+    //
+    // The money path and the public verification endpoints. Protected by
+    // signatures and on-chain reconciliation, not by a shared secret — putting
+    // a token here would break every agent and add nothing.
+    let fast = Router::new()
+        .route("/", get(routes::index))
+        .route("/health", get(routes::health))
+        .route("/v1/claim/verify", post(routes::verify_claim))
         .route("/v1/buy/{*resource}", get(routes::buy))
         // One session, by its own address. An agent needs this to resume and
         // to read its remaining escrow; knowing the address is not a secret,
         // and the evidence for it is already public by design.
         .route("/v1/session/{session}", get(routes::get_session))
         .route("/v1/session/{session}/evidence", get(routes::session_evidence))
-        .route(
-            "/v1/session/{session}/settlement",
-            get(routes::on_chain_settlement),
-        )
         .route("/v1/evidence/proof", post(routes::evidence_proof))
         .route("/v1/catalogue", get(control::catalogue))
         // The agent's own planner. In the OPEN router deliberately: identity
         // comes from a signature over the session, not from the operator
         // token, and placement here means `limit_general` already covers it.
         .route("/v1/session/plan", post(control::plan_for_session))
-        .with_state(Arc::clone(&state));
-
-    let open = open.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(&state),
-        ratelimit::limit_general,
-    ));
-
-    open.merge(control_plane(state))
-        .layer(TraceLayer::new_for_http())
-        // A hung upstream must not pin a connection indefinitely.
+        .with_state(Arc::clone(&state))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
-            Duration::from_secs(15),
-        ))
+            GENERAL_TIMEOUT,
+        ));
+
+    // `limit_general` covers both halves, exactly as it covered the single
+    // open router before the split. Applied after the per-group timeouts so a
+    // refusal still costs a caller its quota.
+    let open = chain
+        .merge(fast)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            ratelimit::limit_general,
+        ));
+
+    // The control plane reads tables and writes rows; it never waits on the
+    // chain, so it keeps the shorter deadline.
+    open.merge(control_plane(state).layer(TimeoutLayer::with_status_code(
+        StatusCode::GATEWAY_TIMEOUT,
+        GENERAL_TIMEOUT,
+    )))
+    .layer(TraceLayer::new_for_http())
 }
 
 #[tokio::main]
@@ -177,6 +215,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rpc = %config.rpc_url,
         program_id = %config.program_id,
         legacy_program_id = ?config.legacy_program_id,
+        // Stated at boot because it is the one deadline an operator may need to
+        // raise when the cluster is slow, and a 504 on /v1/session/settle gives
+        // them nothing to go on otherwise.
+        general_timeout_secs = GENERAL_TIMEOUT.as_secs(),
+        chain_timeout_secs = config.chain_timeout.as_secs(),
         "starting agentpay-gateway"
     );
 
@@ -398,6 +441,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         registry,
         require_agent_policy: config.require_agent_policy,
         trusted_proxies: config.trusted_proxies.clone(),
+        chain_timeout: config.chain_timeout,
     });
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;

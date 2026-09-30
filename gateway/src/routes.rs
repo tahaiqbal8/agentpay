@@ -80,6 +80,9 @@ pub struct AppState {
     /// Addresses whose `X-Forwarded-For` may be believed when keying rate
     /// limits. Empty means "believe nobody", which is the safe default.
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Request deadline for the routes that wait on Solana. See
+    /// `Config::chain_timeout` for why these are held to a different one.
+    pub chain_timeout: std::time::Duration,
 }
 
 impl AppState {

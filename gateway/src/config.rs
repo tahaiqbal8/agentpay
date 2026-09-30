@@ -93,6 +93,25 @@ pub struct Config {
     /// runs before any I/O, so a tight limit there would break legitimate
     /// high-volume agents without stopping an attacker.
     pub general_rate_limit: u32,
+    /// Request timeout for the handful of routes that WAIT ON SOLANA.
+    ///
+    /// Everything else answers from Postgres or from memory and is held to a
+    /// much shorter deadline. Settlement is different in kind: it submits a
+    /// transaction and then blocks in `send_and_confirm_transaction` until the
+    /// cluster confirms it, so its latency is set by the network rather than
+    /// by this process.
+    ///
+    /// This exists because a blanket 15s deadline turned a slow devnet into a
+    /// bare `504` with an empty body — the caller could not tell a timeout from
+    /// a malformed reply, and the settlement had not been submitted at all. The
+    /// right deadline for a route that waits on a chain is not the right
+    /// deadline for one that reads a table.
+    ///
+    /// `AGENTPAY_CHAIN_TIMEOUT_SECS`. Clamped to 15..=300: below the general
+    /// timeout it would be pointless, and an unbounded value would let a hung
+    /// RPC pin a connection indefinitely, which is what the original timeout
+    /// was there to prevent.
+    pub chain_timeout: std::time::Duration,
     /// Refuse sessions whose agent has no authorized record.
     ///
     /// Off by default: the control plane is additive, and an existing
@@ -141,6 +160,33 @@ pub enum ConfigError {
 }
 
 /// Reads an optional variable, treating empty and whitespace-only as unset.
+/// Bounds on `AGENTPAY_CHAIN_TIMEOUT_SECS`.
+///
+/// The floor matches the general request timeout: a chain deadline shorter
+/// than that would be a downgrade rather than an allowance. The ceiling keeps
+/// the original guarantee — a hung RPC cannot pin a connection forever.
+pub const CHAIN_TIMEOUT_MIN_SECS: u64 = 15;
+pub const CHAIN_TIMEOUT_MAX_SECS: u64 = 300;
+pub const CHAIN_TIMEOUT_DEFAULT_SECS: u64 = 60;
+
+/// Parses `AGENTPAY_CHAIN_TIMEOUT_SECS`.
+///
+/// 60s by default: a confirmation on a healthy devnet lands in about a second,
+/// and under load it can take tens. Out-of-range values are CLAMPED rather
+/// than rejected, and unparseable ones fall back to the default, because a
+/// typo in a tuning knob must not stop a gateway from booting. Every value
+/// this can return is inside the bounds, so no input — including `0` — can
+/// produce a deadline shorter than the general one.
+///
+/// Pure, so the bounds can be tested without touching process environment.
+fn chain_timeout_from(raw: Option<&str>) -> std::time::Duration {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|v| v.clamp(CHAIN_TIMEOUT_MIN_SECS, CHAIN_TIMEOUT_MAX_SECS))
+        .unwrap_or(CHAIN_TIMEOUT_DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 fn optional_env(key: &str) -> Option<String> {
     match std::env::var(key) {
         Ok(v) if !v.trim().is_empty() => Some(v),
@@ -233,6 +279,8 @@ impl Config {
             .filter(|v| *v > 0)
             .unwrap_or(600);
 
+        let chain_timeout = chain_timeout_from(optional_env("AGENTPAY_CHAIN_TIMEOUT_SECS").as_deref());
+
         let admin_token = optional_env("AGENTPAY_ADMIN_TOKEN");
         if let Some(t) = admin_token.as_deref() {
             if t.len() < crate::auth::MIN_TOKEN_LEN {
@@ -268,6 +316,7 @@ impl Config {
             admin_token,
             open_rate_limit,
             general_rate_limit,
+            chain_timeout,
             require_agent_policy,
             trusted_proxies,
             database_url,
@@ -308,5 +357,48 @@ mod tests {
     #[test]
     fn bind_addr_parses() {
         assert!("127.0.0.1:8080".parse::<SocketAddr>().is_ok());
+    }
+
+    #[test]
+    fn the_chain_timeout_defaults_and_clamps() {
+        let secs = |d: std::time::Duration| d.as_secs();
+
+        // Unset, blank and unparseable all mean "use the default". A tuning
+        // knob with a typo in it must not stop the gateway from booting.
+        assert_eq!(secs(chain_timeout_from(None)), CHAIN_TIMEOUT_DEFAULT_SECS);
+        assert_eq!(secs(chain_timeout_from(Some(""))), CHAIN_TIMEOUT_DEFAULT_SECS);
+        assert_eq!(secs(chain_timeout_from(Some("later"))), CHAIN_TIMEOUT_DEFAULT_SECS);
+        assert_eq!(secs(chain_timeout_from(Some("-5"))), CHAIN_TIMEOUT_DEFAULT_SECS);
+
+        assert_eq!(secs(chain_timeout_from(Some(" 90 "))), 90);
+
+        // Out of range is clamped, never rejected and never passed through.
+        assert_eq!(secs(chain_timeout_from(Some("0"))), CHAIN_TIMEOUT_MIN_SECS);
+        assert_eq!(secs(chain_timeout_from(Some("1"))), CHAIN_TIMEOUT_MIN_SECS);
+        assert_eq!(secs(chain_timeout_from(Some("99999"))), CHAIN_TIMEOUT_MAX_SECS);
+    }
+
+    /// The split exists to give chain routes MORE time, so the floor of the
+    /// chain timeout must never fall below the deadline everything else gets.
+    /// If someone lowers `CHAIN_TIMEOUT_MIN_SECS` or raises `GENERAL_TIMEOUT`,
+    /// this catches it before a "fix" silently becomes a downgrade.
+    #[test]
+    fn the_chain_timeout_can_never_be_shorter_than_the_general_one() {
+        let general = crate::GENERAL_TIMEOUT.as_secs();
+        assert!(
+            CHAIN_TIMEOUT_MIN_SECS >= general,
+            "chain floor {CHAIN_TIMEOUT_MIN_SECS}s is below the general timeout {general}s"
+        );
+        assert!(CHAIN_TIMEOUT_DEFAULT_SECS >= general);
+        assert!(CHAIN_TIMEOUT_MAX_SECS >= CHAIN_TIMEOUT_MIN_SECS);
+
+        // And no input can escape the bounds.
+        for raw in ["0", "1", "14", "15", "60", "300", "301", "99999", "x", ""] {
+            let s = chain_timeout_from(Some(raw)).as_secs();
+            assert!(
+                (CHAIN_TIMEOUT_MIN_SECS..=CHAIN_TIMEOUT_MAX_SECS).contains(&s),
+                "input {raw:?} produced {s}s, outside the bounds"
+            );
+        }
     }
 }
