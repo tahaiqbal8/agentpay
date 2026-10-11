@@ -270,23 +270,25 @@ so the first interaction with AgentPay doesn't need a sales call."
 What funding buys: an audit, a pilot, and mainnet readiness.
 ```
 
-**Recommended ask — _confirm the figure before presenting_**
+**Ask — confirmed**
 ```
-$10,000 – $15,000  (6 months)
+$15,000  (6 months)
 ```
-Sized to the hackathon's own awards: the Solana track pays $10,000 per project
-and the next-20 pool pays $15,000. Asking for roughly one award is coherent;
-asking for $500,000 against a devnet prototype is not.
+Sized to the hackathon's own awards: the next-20 pool pays $15,000 per project
+and the Solana track pays $10,000. Asking for roughly one award is coherent
+against a devnet prototype; asking for half a million is not — and a judge will
+read the restraint as a sign you know what stage you are at.
 
 **Allocation — totals 100%**
 
-| Category | % | What it buys |
-|---|---|---|
-| Independent security review | 40% | External review of the program and the claim/evidence path |
-| Engineering — mainnet readiness | 25% | Key management, monitoring, incident response |
-| Developer experience | 15% | SDK hardening, docs, a one-hour first integration |
-| Infrastructure | 10% | Hosting, CI, a durable devnet/mainnet environment |
-| Pilot support | 10% | Design-partner onboarding and discovery |
+| Category | % | of $15,000 | What it buys |
+|---|---|---|---|
+| Independent security review | 40% | $6,000 | External review of the program and the claim/evidence path |
+| Engineering — mainnet readiness | 25% | $3,750 | Key management, monitoring, incident response |
+| Developer experience | 15% | $2,250 | SDK hardening, docs, a one-hour first integration |
+| Infrastructure | 10% | $1,500 | Hosting, CI, a durable devnet/mainnet environment |
+| Pilot support | 10% | $1,500 | Design-partner onboarding and discovery |
+| **Total** | **100%** | **$15,000** | |
 
 **Milestones the money finances**
 ```

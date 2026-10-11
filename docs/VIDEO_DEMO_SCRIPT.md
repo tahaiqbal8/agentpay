@@ -1,28 +1,33 @@
-# AgentPay — Video Demo Script
+# AgentPay — Technical Demo Video Script
 
-**Target length:** 3:00. A 90-second cut is marked with ✂.
-**Rule:** every number spoken on camera is read off a real devnet run. Nothing
-is staged, seeded, or mocked. If a step fails on the day, say so and show the
-error — a system that proves things cannot be demonstrated with a fake.
+**Target: 3:00.** Written against the UI deployed on 11 Oct 2026 and the
+canonical devnet run of the same date. Supersedes the pre-redesign version of
+this file.
 
-**Surfaces used:** the deployed console at `https://13-200-171-103.sslip.io`
-and one terminal running `npm run demo:v2`.
+**Surfaces:** the deployed console at `https://13-200-171-103.sslip.io` and one
+terminal running `npm run demo:v2`.
+
+**The one rule:** every number spoken on camera is read off a real devnet run.
+If a step fails on the day, say so and show the error. A system whose entire
+claim is "you can check this" cannot be demonstrated with a staged result.
 
 ---
 
 ## The spine
 
-The demo has one job: get the viewer to the sentence *"it refused, and it can
-prove it."* Everything before that is setup; everything after is corroboration.
+One job: get the viewer to *"it refused, and it can prove it."*
 
 ```
-Who allowed it  →  What it tried  →  What was refused  →  Why you can believe me
-   0:00–0:35         0:35–1:05          1:05–1:45              1:45–2:45
+Who allowed it → What it tried → What was refused → Why you can believe me
+  0:00–0:40        0:40–1:35        1:35–2:10           2:10–3:00
 ```
 
 ---
 
-## 0:00 — 0:20 · The problem (no UI yet)
+## 0:00 — 0:20 · The problem
+
+**On screen:** title card only. Do not open the console — a dashboard on screen
+during the framing makes the viewer read instead of listen.
 
 > "If you give a piece of software your card, you are trusting it twice. Once
 > that it spends on the right things, and again that it tells you the truth
@@ -30,157 +35,184 @@ Who allowed it  →  What it tried  →  What was refused  →  Why you can beli
 >
 > AgentPay removes the second half of that trust."
 
-**On screen:** title card only. Do not open the console yet — a dashboard on
-screen during the framing makes the viewer read instead of listen.
+---
 
-✂ *Keep. Cut to two sentences: "Software that spends your money asks you to
-trust it twice — that it spends correctly, and that it reports honestly.
-AgentPay removes the second."*
+## 0:20 — 0:40 · What it is
+
+**On screen:** `https://13-200-171-103.sslip.io` — top of the Overview page.
+Point at the lifecycle rail while speaking.
+
+> "A human funds an escrow on Solana and sets the spending rules. An automated
+> client spends inside it. Every request is checked against those rules before
+> any money moves — and every decision, including the refusals, is hashed into
+> a chain and anchored on-chain."
+
+Read the nine stages off the rail: Human, Agent, Policy, Escrow, Claim,
+Enforcement, Evidence, Settlement, Verified.
+
+> "Nine steps. That's the whole system."
+
+**What the judge should notice:** each stage carries a plain-English line, and
+the rail is lit from live data — 9 of 9 complete.
 
 ---
 
-## 0:20 — 0:35 · What it is, in one breath
+## 0:40 — 1:10 · The human sets the limit
 
-**On screen:** the console landing page, top of the page only.
+**On screen:** terminal, `npm run demo:v2`, steps 2–3.
 
-> "A human funds an escrow on Solana and sets a spending limit. An automated
-> client spends inside it. Every single purchase is checked against that limit
-> before any money moves — and every decision, including the refusals, is
-> hashed into a chain and anchored on-chain."
+> "A person creates the agent, binds it to a keypair, and sets the envelope:
+> one USDC total, two thousand micro-USDC per call, and only two resources —
+> `/weather` and `/quote`. This is the only point a human is involved, and the
+> agent cannot widen it."
 
-Point at the lifecycle strip while saying it: Human → Agent → Policy → Escrow →
-Claim → Enforcement → Evidence → Settlement → Verified.
+**Then:** Overview → the money band.
 
-> "Nine steps. That is the whole system."
-
-✂ *Keep.*
+> "Three USDC escrowed on devnet. Whatever happens next, the program will not
+> release more than that — the ceiling is on chain, not in our database."
 
 ---
 
-## 0:35 — 1:05 · The human sets the limit
+## 1:10 — 1:35 · An allowed request
 
-**On screen:** terminal, `npm run demo:v2`, steps 2–3 scrolling.
+**On screen:** terminal, step 8.
 
-> "Here a person creates an agent, binds it to a keypair, and sets the envelope.
-> This is the only point where a human is involved. The agent cannot widen it."
+> "The agent buys. Each purchase is signed as a *cumulative* total — not
+> 'charge me a thousand', but 'my running total is now a thousand'. Only the
+> highest total ever reaches the chain, so a replayed message cannot
+> double-charge, and a dropped one is superseded by the next."
 
-**On screen:** switch to the console → Agents page → the agent's policy.
+**Then:** console → activity feed, the emerald rows.
 
-> "Three USDC, escrowed on devnet. Whatever happens next, that number is the
-> ceiling, and it is enforced by a program on Solana, not by a promise in our
-> database."
-
-✂ *Compress to 10 seconds: terminal only, say "a human sets a three-USDC
-envelope; the agent cannot widen it."*
+> "Two allowed. Running total fifteen hundred."
 
 ---
 
-## 1:05 — 1:45 · The refusal — **this is the moment**
+## 1:35 — 1:55 · The policy refusal — **the moment**
 
-**On screen:** terminal, demo step 8 then step 9.
+**On screen:** terminal, step 9, first half. **Pause on the output.**
 
-> "The agent goes shopping. Each purchase is signed as a *cumulative* total —
-> not 'charge me thirty cents', but 'my running total is now one dollar twenty'.
-> Only the highest total ever reaches the chain, so a replayed message cannot
-> double-charge.
+> "Now it tries to buy `/analyse`, which the human did not allow."
 >
-> And then it tries to overspend."
-
-**Pause on step 9's output.** Let it sit for a beat.
-
-> "Refused. Not an error — enforcement. The gateway checked the claim against
-> the human's policy and declined it before any money moved."
-
-**On screen:** console → Overview → the REFUSED stat card.
-
-> "Thirty-three percent of the last nine decisions were refusals. On most
-> dashboards that would be a bug report. Here it is the product working."
-
-✂ *Keep all of it. If only one thing survives the cut, it is this block.*
-
----
-
-## 1:45 — 2:20 · The proof
-
-**On screen:** console → Verifier.
-
-> "Now the part that matters. Every decision — allowed and refused — was hashed
-> into a chain, and the root of that chain was written to a Solana account at
-> settlement.
+> *(beat)*
 >
-> This page is not asking the gateway whether it was honest. It fetches the
-> evidence, recomputes the hash chain **in your browser**, fetches the root the
-> Solana program actually stored, and compares them."
-
-**On screen:** the verification result.
-
-> "They match. Which means the gateway could not have quietly dropped a refusal
-> or invented a charge — the root would not reconcile."
-
-Then, briefly:
-
-> "And this works for someone with no account and no access to our control
-> plane. Evidence is a public endpoint. The parts that let you *act* need a
-> token; the parts that let you *audit* never do."
-
-✂ *Compress to 25 seconds: show the Verifier matching, say "recomputed in your
-browser against the root the Solana program stored — and the evidence endpoint
-is public, so you don't need our permission to check."*
+> "`ERR_POLICY_RESOURCE_NOT_ALLOWED`. Refused — and look at the next line: the
+> high-water mark did not move. Still fifteen hundred. The refusal cost
+> nothing, because the provider was never contacted."
 
 ---
 
-## 2:20 — 2:45 · On-chain corroboration
+## 1:55 — 2:10 · The replay refusal
 
-**On screen:** terminal, demo steps 11–12; then a Solana explorer on the
-settlement account.
+**On screen:** terminal, step 9, second half.
 
-> "Settlement is signed by AgentPay's own authority — not by a provider key we
-> hold. And this is the raw account on devnet. The evidence root is sitting at
-> byte offset 72, exactly the value the browser just recomputed."
+> "And this one replays a nonce it already used. `ERR_NONCE_NOT_MONOTONIC`.
+> Not an error — enforcement. Both of these are now *evidence*."
 
-✂ *Cut entirely. It is corroboration; the Verifier already made the point.*
+**Then:** console → activity feed, amber rows.
+
+> "Amber, not red. Red is reserved for a genuine fault. A refusal is the
+> product working."
 
 ---
 
-## 2:45 — 3:00 · Close
+## 2:10 — 2:30 · Evidence
 
-> "A human sets the limit. Software spends inside it. Every decision is
-> enforced before the money moves, recorded so it cannot be edited afterwards,
-> and provable to someone who does not trust us.
+**On screen:** terminal, step 10.
+
+> "Three entries: allowed, allowed, refused. The decision string is inside the
+> hash, so a refusal cannot be quietly edited into an approval — the chain
+> breaks if you try. `chain_valid: true`."
+
+---
+
+## 2:30 — 2:50 · Settlement
+
+**On screen:** terminal, step 11.
+
+> "One transaction closes the session. Fifteen hundred to the provider, and the
+> evidence root written alongside it.
 >
-> That is AgentPay."
-
-**On screen:** the lifecycle strip, all nine stages lit.
-
-✂ *Keep the first sentence and the last four words.*
-
----
-
-## Rules for the recording
-
-1. **Never show `/settle` or `/registry` on camera.** Both mutate state; `/settle`
-   moves real devnet SOL. If the run needs settlement, do it in the terminal.
-2. **Never show `/playground` in a section about verification.** It is a local
-   simulation and the video has no room to explain the distinction. Skip it.
-3. **Do a real run before recording** so the numbers on the Overview page are
-   fresh. A page reading "0 active sessions" while you narrate a live demo is
-   the single most damaging thing that can happen on camera.
-4. **Do not zoom past the refusal.** Every instinct will be to hurry through the
-   failure. The failure is the demo.
-5. **If something breaks, keep it in.** A gateway that refuses a malformed claim
-   on camera is better evidence than a clean run.
+> Note the signer: AgentPay's own settlement authority. The provider's key
+> never signs — we don't hold one. Holding this key can trigger a settlement
+> and nothing else; the amount is fixed by the agent's signature and the
+> destination by the session inside the program."
 
 ---
 
-## Pre-flight checklist
+## 2:50 — 3:00 · Browser = Gateway = Chain
+
+**On screen:** console → Verifier, pre-loaded with the session → press
+**Verify proof**.
+
+> "And this is the point. Your browser recomputes the chain itself, fetches the
+> root Solana actually stored, and compares them."
+
+**Let the three rows land:**
+
+```
+BROWSER ROOT    f4c17919…edd15c   MATCH
+GATEWAY ROOT    f4c17919…edd15c   MATCH
+ON-CHAIN ROOT   f4c17919…edd15c   MATCH
+```
+
+> "Three independent views of the same root. Anyone can do this — no account,
+> no token. Anyone can prove an agent paid. AgentPay proves an agent was
+> stopped."
+
+---
+
+## The verified run to reference (11 Oct 2026 — 25 checks, 0 failures)
+
+| | |
+|---|---|
+| Session | `F9uv8RFszLAuKUdRea121aSwoSUGT5ftPfXXi8Ux8Nfc` |
+| Settlement tx | `5HQWGghSpGaYNUG3Pzym2dXhWMrrvF3BtaYxRssLS4QvAiGaEEP1EmnTkB67ZK65Wan1wJ8hoeq5j2k4SupjXWpX` |
+| Evidence root | `f4c179199c66d6e5981509c2594c05fd8d237e6df0f8f001c89097f511edd15c` |
+| Program v2 | `ApjxJKBUUd8EEAovQe74jS9qZsRCAC2bwe8hTx7TpS9m` |
+| Settlement authority | `7zKU8vFeWEn9M2FVm7bYa5aMtT9srUTJEeca7FDK9ff2` |
+| Conservation | 1500 + 2998500 = 3000000 |
+
+Verifier deep link:
+`https://13-200-171-103.sslip.io/verifier?session=F9uv8RFszLAuKUdRea121aSwoSUGT5ftPfXXi8Ux8Nfc`
+
+**If you re-run the demo before recording, these values change.** Re-read them
+off the new run rather than reciting these.
+
+---
+
+## Pre-flight
 
 ```bash
 npm run demo:v2
 ```
 
-- [ ] Demo completes all 14 steps
-- [ ] Overview shows a non-zero session count
-- [ ] Verifier reports a match on a real session
-- [ ] Console loads over **HTTPS** (WebCrypto is unavailable over plain HTTP —
-      the Verifier will report "DOES NOT VERIFY" and it will not be true)
+- [ ] 25 PASS / 0 FAIL
+- [ ] Overview shows a non-zero session count and the lifecycle at 9 of 9
+- [ ] Verifier shows **Verified** with all three roots matching
+- [ ] Console loaded over **HTTPS** — over plain HTTP the verifier reports a
+      failure that is not real, because WebCrypto needs a secure context
 - [ ] `/settle` and `/registry` closed in every tab you might switch to
+
+## Rules for the recording
+
+1. **Never show `/settle` or `/registry` on camera.** Both mutate state;
+   `/settle` spends real devnet SOL. Settle from the terminal.
+2. **Never show `/playground` in a verification section.** It is an honest
+   local simulation, but the video has no room to explain the distinction.
+3. **Run the demo fresh before recording** so the Overview numbers are current.
+   Narrating a live demo over a page reading zero is the worst thing that can
+   happen on camera.
+4. **Do not hurry past the refusals.** They are the demo.
+5. **If something breaks, keep it in.** A gateway refusing a malformed claim on
+   camera is better evidence than a clean run.
+6. **If you show a previous run rather than a live one, say so**: "this is a
+   verified run from earlier today." Never present an old screenshot as fresh.
+
+## Known limitation to disclose if asked
+
+Settlement waits on Solana confirmation. When devnet's `getAccountInfo` was
+degraded on 27 Sep 2026, settlement timed out. The routes that wait on the
+chain now carry a 60-second deadline rather than the blanket 15 seconds
+(`AGENTPAY_CHAIN_TIMEOUT_SECS`), but a sufficiently degraded cluster will still
+fail — and should. Say this plainly rather than hoping nobody asks.
