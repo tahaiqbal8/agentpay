@@ -25,6 +25,39 @@ because it does not increase.
 
 ---
 
+## Try it — no account needed
+
+| | |
+|---|---|
+| **Live console** | https://13-200-171-103.sslip.io |
+| **Judge view** (read-only, no state-changing surfaces) | https://13-200-171-103.sslip.io/?judge=1 |
+| **Verify a real settled session** | [open the verifier](https://13-200-171-103.sslip.io/verifier?session=F9uv8RFszLAuKUdRea121aSwoSUGT5ftPfXXi8Ux8Nfc) and press **Verify proof** |
+
+The verifier needs no account and no token. It fetches the evidence, recomputes
+the hash chain **in your browser**, reads the root the Solana program actually
+stored, and compares the three. Reading the evidence is deliberately public;
+only the control plane requires an operator token, and that token never reaches
+the browser.
+
+> **HTTPS is load-bearing, not cosmetic.** The verifier uses WebCrypto, which
+> browsers expose only in a secure context. Over plain HTTP it reports a failure
+> that is not real — which is why the deployment terminates TLS and port 3100 is
+> closed.
+
+Most recent end-to-end devnet run — **11 Oct 2026, 25 checks, 0 failures**:
+
+| | |
+|---|---|
+| Session | `F9uv8RFszLAuKUdRea121aSwoSUGT5ftPfXXi8Ux8Nfc` |
+| Settlement tx | [`5HQWGghS…SupjXWpX`](https://explorer.solana.com/tx/5HQWGghSpGaYNUG3Pzym2dXhWMrrvF3BtaYxRssLS4QvAiGaEEP1EmnTkB67ZK65Wan1wJ8hoeq5j2k4SupjXWpX?cluster=devnet) |
+| Evidence root | `f4c179199c66d6e5981509c2594c05fd8d237e6df0f8f001c89097f511edd15c` |
+| Decisions recorded | ALLOWED, ALLOWED, **ERR_NONCE_NOT_MONOTONIC** |
+| Conservation | 1500 + 2998500 = 3000000 |
+
+Reproduce it yourself with `npm run demo:v2` (needs a funded devnet wallet).
+
+---
+
 ## Status
 
 Deployed and exercised on **Solana devnet**, frozen at tag
